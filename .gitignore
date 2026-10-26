@@ -1,4 +1,6 @@
 /dist/
+# 本地私有文件（真实订阅、节点配置等），不入库
+/.local/
 /tunlr
 *.exe
 *.test
