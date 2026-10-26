@@ -35,10 +35,12 @@ type planView struct {
 	Warnings   []config.Warning    `json:"warnings,omitempty"`
 	RollbackTo int                 `json:"rollback_to,omitempty"`
 	// Restart 是需要重启内核才能生效的变化；不为空时发布后重启内核而不是热重载。
-	Restart []string  `json:"restart,omitempty"`
-	Diff    string    `json:"diff,omitempty"`
-	Config  string    `json:"config,omitempty"`
-	Check   checkView `json:"check"`
+	Restart []string `json:"restart,omitempty"`
+	// Proxies 汇总节点的变化，没有变化时省略。
+	Proxies *config.ProxyChanges `json:"proxies,omitempty"`
+	Diff    string               `json:"diff,omitempty"`
+	Config  string               `json:"config,omitempty"`
+	Check   checkView            `json:"check"`
 }
 
 // hiddenSecret 在输出中代替 API secret 的值。
@@ -79,7 +81,7 @@ func newPlanView(p *pipeline.Plan, full bool) planView {
 	v := planView{
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
 		Subscription: p.Subscription, Dropped: p.Dropped, Mixins: p.Mixins,
-		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, Diff: p.Diff,
+		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, Proxies: p.Proxies, Diff: p.Diff,
 	}
 	if p.Generated != nil {
 		g := *p.Generated
@@ -157,6 +159,9 @@ func (a *app) printPlan(v planView) {
 		fmt.Fprintln(w, "Nothing has been published yet; this will be the first configuration (show it with --full).")
 		fmt.Fprintln(w)
 	default:
+		if v.Proxies != nil {
+			fmt.Fprintf(w, "Proxies: %s\n\n", describeProxies(v.Proxies))
+		}
 		fmt.Fprint(w, v.Diff)
 		fmt.Fprintln(w)
 	}
@@ -177,6 +182,42 @@ func (a *app) printPlan(v planView) {
 	default:
 		fmt.Fprintf(w, "Check (mihomo -t): could not complete: %s\n", v.Check.Messages[0])
 	}
+}
+
+// describeProxies 用一行概括节点的变化，例如
+// “26 changed (port), 1 renamed (剩余流量：90.57 GB → 90.55 GB)”。
+func describeProxies(c *config.ProxyChanges) string {
+	const maxNames = 3
+	names := func(list []string) string {
+		if len(list) > maxNames {
+			return strings.Join(list[:maxNames], ", ") + fmt.Sprintf(", … (%d more)", len(list)-maxNames)
+		}
+		return strings.Join(list, ", ")
+	}
+	var parts []string
+	if c.Changed > 0 {
+		fields := slices.Sorted(maps.Keys(c.Fields))
+		if len(fields) > 1 {
+			for i, f := range fields {
+				fields[i] = fmt.Sprintf("%s: %d", f, c.Fields[f])
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%d changed (%s)", c.Changed, strings.Join(fields, ", ")))
+	}
+	if len(c.Renamed) > 0 {
+		rs := make([]string, len(c.Renamed))
+		for i, r := range c.Renamed {
+			rs[i] = r.From + " → " + r.To
+		}
+		parts = append(parts, fmt.Sprintf("%d renamed (%s)", len(c.Renamed), names(rs)))
+	}
+	if len(c.Added) > 0 {
+		parts = append(parts, fmt.Sprintf("%d added (%s)", len(c.Added), names(c.Added)))
+	}
+	if len(c.Removed) > 0 {
+		parts = append(parts, fmt.Sprintf("%d removed (%s)", len(c.Removed), names(c.Removed)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // checkExit 把校验结果转换为命令的错误：配置有误为“检查未通过”（退出码 3），

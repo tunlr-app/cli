@@ -463,6 +463,35 @@ func TestRestartKeysWithoutService(t *testing.T) {
 	}
 }
 
+// TestApplyAfterConfigRemoved 验证生效的配置被删除（如卸载后重新 init）后再发布同样的内容时，
+// 沿用最新的修订而不是重复记录。
+func TestApplyAfterConfigRemoved(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	useSubscription(t, p.Layout, "main", subscriptionV1)
+	first := mustApply(t, p, mustPlan(t, p))
+	if err := os.Remove(p.Layout.CoreConfig()); err != nil {
+		t.Fatal(err)
+	}
+	again := mustApply(t, p, mustPlan(t, p))
+	if again.Number != first.Number {
+		t.Fatalf("revision = %d, want %d", again.Number, first.Number)
+	}
+	if revs, _, _ := p.Revisions(); len(revs) != 1 {
+		t.Fatalf("revisions = %+v", revs)
+	}
+}
+
+func TestPlanSummarizesProxies(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	useSubscription(t, p.Layout, "main", subscriptionV1)
+	mustApply(t, p, mustPlan(t, p))
+	useSubscription(t, p.Layout, "main", strings.Replace(subscriptionV1, "port: 1,", "port: 2,", 1))
+	plan := mustPlan(t, p)
+	if plan.Proxies == nil || plan.Proxies.Changed != 1 || plan.Proxies.Fields["port"] != 1 {
+		t.Fatalf("proxies = %+v", plan.Proxies)
+	}
+}
+
 func TestReloadFailureOnFirstApplyRemovesConfig(t *testing.T) {
 	p, _, r := newPipeline(t)
 	r.fail = true

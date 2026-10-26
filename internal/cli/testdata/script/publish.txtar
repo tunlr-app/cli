@@ -37,6 +37,7 @@ exec tunlr sub add main $PROVIDER/airport.yaml
 exec tunlr plan
 stdout 'Subscription: main'
 stdout 'Ignored from the subscription: port, external-controller'
+stdout '^Proxies: 1 added \(a\)$'
 stdout '^\+  - MATCH,g$'
 ! stdout '^\+external-controller: 0'
 exec tunlr plan --full

@@ -122,6 +122,8 @@ type Plan struct {
 	RollbackTo int
 	// Restart 是有变化、需要重启内核才能生效的顶层键；不为空时发布后重启内核而不是热重载。
 	Restart []string
+	// Proxies 汇总节点的变化，尚未发布过、没有变化或无法解析时为 nil。
+	Proxies *config.ProxyChanges
 	// Check 是校验结果，nil 表示通过；没有变化时不校验，也为 nil。
 	// 配置有误时为 *mihomo.CheckError，内核未安装时满足 errors.Is(err, mihomo.ErrNotInstalled)。
 	Check error
@@ -281,6 +283,9 @@ func (p *Pipeline) finish(ctx context.Context, plan *Plan) error {
 		plan.Diff = config.Diff("current", "new", current, plan.Config)
 		// 解析失败的配置交给 mihomo -t 报告。
 		plan.Restart, _ = config.RestartKeys(current, plan.Config)
+		if c := config.DiffProxies(current, plan.Config); c != nil && !c.Empty() {
+			plan.Proxies = c
+		}
 	}
 	v, err := p.validator()
 	if err != nil {
@@ -309,7 +314,7 @@ type ApplyResult struct {
 }
 
 // Apply 发布 plan：存档发布前不是由 tunlr 发布的配置，原子写入新配置，让运行中的内核加载，
-// 然后记录为新的历史修订。内核加载失败时恢复原来的配置并让内核重新加载它，返回满足
+// 然后记录为新的历史修订（与最新修订相同时沿用它）。内核加载失败时恢复原来的配置并让内核重新加载它，返回满足
 // errors.Is(err, core.ErrRolledBack) 的错误。没有变化时什么都不做，返回 nil。
 func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) {
 	if plan.Check != nil {
@@ -341,15 +346,13 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) 
 	}
 
 	h := p.history()
-	if current != nil {
-		revs, err := h.List()
-		if err != nil {
-			return nil, err
-		}
-		if len(revs) == 0 || revs[0].SHA256 != config.Checksum(current) {
-			if _, err := h.Add(current, config.Revision{CreatedAt: p.now().UTC(), Reason: config.ReasonFound, ToolVersion: p.Version}); err != nil {
-				return nil, fmt.Errorf("archive the current configuration: %w", err)
-			}
+	revs, err := h.List()
+	if err != nil {
+		return nil, err
+	}
+	if current != nil && (len(revs) == 0 || revs[0].SHA256 != config.Checksum(current)) {
+		if _, err := h.Add(current, config.Revision{CreatedAt: p.now().UTC(), Reason: config.ReasonFound, ToolVersion: p.Version}); err != nil {
+			return nil, fmt.Errorf("archive the current configuration: %w", err)
 		}
 	}
 
@@ -361,6 +364,11 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) 
 		return nil, p.restore(ctx, current, plan.Restart, err)
 	}
 
+	// 生效的配置被删除后（如卸载后重新 init）发布的与最新修订相同，不重复记录。
+	if current == nil && len(revs) > 0 && revs[0].SHA256 == config.Checksum(plan.Config) {
+		result.Revision = &revs[0]
+		return result, nil
+	}
 	rev := config.Revision{
 		CreatedAt:    p.now().UTC(),
 		Reason:       config.ReasonApply,
