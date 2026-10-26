@@ -22,6 +22,9 @@ func (l Layout) join(elem ...string) string {
 // ConfigDir 存放用户可编辑的文件。
 func (l Layout) ConfigDir() string { return l.join("etc", "tunlr") }
 
+// SettingsFile 是工具设置，例如 GitHub 下载镜像。
+func (l Layout) SettingsFile() string { return l.join("etc", "tunlr", "settings.yaml") }
+
 // MixinFile 是用户的 mixin，即配置合成的第三层。
 func (l Layout) MixinFile() string { return l.join("etc", "tunlr", "mixin.yaml") }
 
