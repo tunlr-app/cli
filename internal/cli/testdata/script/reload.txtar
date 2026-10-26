@@ -1,0 +1,36 @@
+# 运行中的内核经 API socket 加载新配置；加载失败时恢复原配置，退出码 4
+
+install-mihomo
+kernel start
+exec tunlr apply --yes
+stdout 'Published revision 1 to '
+stdout 'mihomo has reloaded it'
+cmp kernel-loaded root/var/lib/tunlr/core/config.yaml
+
+# 内核拒绝新配置：恢复原配置并让内核重新加载它，失败的配置不进历史
+cp root/var/lib/tunlr/core/config.yaml before.yaml
+mkdir root/etc/tunlr
+cp reject-mixin.yaml root/etc/tunlr/mixin.yaml
+exitcode 4 tunlr apply --yes
+stderr 'operation failed and was rolled back: mihomo failed to load the new configuration: mihomo API: listener REJECT failed; the previous configuration is back in place'
+cmp root/var/lib/tunlr/core/config.yaml before.yaml
+cmp kernel-loaded before.yaml
+exec tunlr rollback --list
+! stdout '^\*?\s+2\s'
+
+exitcode 4 tunlr apply --yes --json
+stdout '"code": 4'
+
+# 内核停止后照常发布，下次启动时生效
+rm root/etc/tunlr/mixin.yaml
+cp ok-mixin.yaml root/etc/tunlr/mixin.yaml
+kernel stop
+exec tunlr apply --yes --json
+stdout '"applied": true'
+stdout '"reloaded": false'
+cmp kernel-loaded before.yaml
+
+-- reject-mixin.yaml --
+x-test: REJECT
+-- ok-mixin.yaml --
+log-level: warning

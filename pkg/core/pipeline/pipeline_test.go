@@ -13,6 +13,7 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/config"
+	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/templates"
@@ -29,16 +30,26 @@ func (v *fakeValidator) Validate(_ context.Context, cfg []byte) error {
 	return nil
 }
 
-// fakeReloader 记录每次加载时磁盘上的配置，fail 置位时加载失败。
+// fakeReloader 记录每次加载时磁盘上的配置。fail 置位时加载失败；
+// stopped 置位时报告内核没有运行；crash 置位时加载失败且内核随之退出。
 type fakeReloader struct {
-	layout paths.Layout
-	fail   bool
-	loaded []string
+	layout  paths.Layout
+	fail    bool
+	stopped bool
+	crash   bool
+	loaded  []string
 }
 
 func (r *fakeReloader) Reload(context.Context) error {
+	if r.stopped {
+		return mihomo.ErrNotRunning
+	}
 	data, _ := os.ReadFile(r.layout.CoreConfig())
 	r.loaded = append(r.loaded, string(data))
+	if r.crash {
+		r.crash, r.stopped = false, true
+		return errors.New("mihomo stopped responding after loading the configuration")
+	}
 	if r.fail {
 		r.fail = false // 只让新配置加载失败，恢复后的旧配置正常加载
 		return errors.New("kernel rejected the config")
@@ -96,13 +107,20 @@ func mustPlan(t *testing.T, p *Pipeline) *Plan {
 	return plan
 }
 
+// mustApply 发布 plan，返回记录下的修订；没有变化时返回 nil。
 func mustApply(t *testing.T, p *Pipeline, plan *Plan) *config.Revision {
 	t.Helper()
-	rev, err := p.Apply(context.Background(), plan)
+	res, err := p.Apply(context.Background(), plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return rev
+	if res == nil {
+		return nil
+	}
+	if !res.Reloaded {
+		t.Error("not reloaded")
+	}
+	return res.Revision
 }
 
 func TestFirstApply(t *testing.T) {
@@ -254,6 +272,38 @@ func TestReloadFailureRollsBack(t *testing.T) {
 	revs, _, _ := p.Revisions()
 	if len(revs) != 1 {
 		t.Errorf("failed apply recorded in history: %+v", revs)
+	}
+}
+
+// TestKernelNotRunning 验证内核没有运行时照常发布，只是标明未重新加载。
+func TestKernelNotRunning(t *testing.T) {
+	p, _, r := newPipeline(t)
+	r.stopped = true
+	res, err := p.Apply(context.Background(), mustPlan(t, p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Reloaded || res.Revision.Number != 1 {
+		t.Errorf("result = %+v", res)
+	}
+	if _, err := os.Stat(p.Layout.CoreConfig()); err != nil {
+		t.Errorf("config not written: %v", err)
+	}
+}
+
+// TestKernelCrashOnReload 验证内核在加载新配置时退出的，恢复原配置（内核下次启动时加载它）。
+func TestKernelCrashOnReload(t *testing.T) {
+	p, _, r := newPipeline(t)
+	mustApply(t, p, mustPlan(t, p))
+	before, _ := os.ReadFile(p.Layout.CoreConfig())
+	useSubscription(t, p.Layout, "main", subscriptionV1)
+	r.crash = true
+	_, err := p.Apply(context.Background(), mustPlan(t, p))
+	if !errors.Is(err, core.ErrRolledBack) || !strings.Contains(err.Error(), "stopped responding") {
+		t.Fatalf("err = %v", err)
+	}
+	if after, _ := os.ReadFile(p.Layout.CoreConfig()); !bytes.Equal(after, before) {
+		t.Error("previous config not restored")
 	}
 }
 

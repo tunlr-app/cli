@@ -21,6 +21,7 @@ stdout 'Dry run: nothing applied'
 ! exists root/var/lib/tunlr/core/config.yaml
 exec tunlr apply --yes
 stdout 'Published revision 1 to '
+stdout 'mihomo is not running; it will use this configuration when it starts'
 grep '^external-controller-unix: api\.sock$' root/var/lib/tunlr/core/config.yaml
 grep '^secret: [0-9a-f]{32}$' root/var/lib/tunlr/core/config.yaml
 grep '"api_secret": "[0-9a-f]{32}"' root/var/lib/tunlr/state.json
@@ -42,6 +43,7 @@ exec tunlr plan --full
 stdout '^mixed-port: 7890$'
 exec tunlr apply --yes --json
 stdout '"applied": true'
+stdout '"reloaded": false'
 stdout '"revision": 2'
 stdout '"subscription": "main"'
 

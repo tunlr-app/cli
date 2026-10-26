@@ -1,0 +1,148 @@
+package mihomo
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+)
+
+// ErrNotRunning 表示内核没有在运行：API socket 不存在，或存在但无人监听
+// （内核退出后 socket 文件会留下）。
+var ErrNotRunning = errors.New("mihomo is not running")
+
+const (
+	// apiTimeout 是普通 API 请求的时限。
+	apiTimeout = 10 * time.Second
+	// reloadTimeout 是重新加载配置的时限。内核在加载时同步初始化 proxy-providers 和
+	// rule-providers，新的 provider 需要现场抓取，可能较慢。
+	reloadTimeout = 2 * time.Minute
+)
+
+// APIError 是内核 API 返回的错误。
+type APIError struct {
+	Status  int
+	Message string
+}
+
+func (e *APIError) Error() string {
+	if e.Message == "" {
+		return fmt.Sprintf("mihomo API: HTTP %d", e.Status)
+	}
+	return "mihomo API: " + e.Message
+}
+
+// Client 经 Unix socket（external-controller-unix）访问内核的 REST API。经 socket 访问不需要 secret。
+type Client struct {
+	socket string
+	http   *http.Client
+}
+
+// NewClient 返回经 socket 访问内核 API 的客户端。
+func NewClient(socket string) *Client {
+	var d net.Dialer
+	return &Client{
+		socket: socket,
+		http: &http.Client{Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return d.DialContext(ctx, "unix", socket)
+			},
+			// 每个命令只发少量请求，不保留空闲连接，避免持有已被内核关闭的连接。
+			DisableKeepAlives: true,
+		}},
+	}
+}
+
+// Version 返回运行中的内核版本，例如 v1.19.33。
+func (c *Client) Version(ctx context.Context) (string, error) {
+	var v struct {
+		Version string `json:"version"`
+	}
+	if err := c.do(ctx, apiTimeout, http.MethodGet, "/version", nil, &v); err != nil {
+		return "", err
+	}
+	return v.Version, nil
+}
+
+// ReloadConfig 让内核重新加载 path（绝对路径，须位于内核工作目录内）的配置。
+// 使用 force，端口等监听设置的变化也会生效。内核解析失败时返回 *APIError，并继续运行原来的配置。
+//
+// 内核加载时不报告监听端口失败等问题，所以成功返回只表示内核接受了这份配置。
+func (c *Client) ReloadConfig(ctx context.Context, path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, reloadTimeout, http.MethodPut, "/configs?force=true", map[string]string{"path": abs}, nil)
+}
+
+func (c *Client) do(ctx context.Context, timeout time.Duration, method, path string, in, out any) error {
+	if _, err := os.Stat(c.socket); errors.Is(err, fs.ErrNotExist) {
+		return ErrNotRunning
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var body io.Reader
+	if in != nil {
+		data, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(data)
+	}
+	// 主机名只用于 HTTP 请求行，连接总是走 socket。
+	req, err := http.NewRequestWithContext(ctx, method, "http://mihomo"+path, body)
+	if err != nil {
+		return err
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT) {
+			return ErrNotRunning
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("mihomo API %s %s: no response within %s", method, path, timeout)
+		}
+		// 去掉 url.Error 附带的请求地址，它只是占位的 http://mihomo。
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return fmt.Errorf("mihomo API %s %s: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return fmt.Errorf("mihomo API %s %s: %w", method, path, err)
+	}
+	if resp.StatusCode/100 != 2 {
+		e := &APIError{Status: resp.StatusCode}
+		var msg struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(data, &msg) == nil {
+			e.Message = strings.TrimSpace(msg.Message)
+		}
+		return e
+	}
+	if out != nil {
+		if err := json.Unmarshal(data, out); err != nil {
+			return fmt.Errorf("mihomo API %s %s: %w", method, path, err)
+		}
+	}
+	return nil
+}

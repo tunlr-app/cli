@@ -63,7 +63,8 @@ type Pipeline struct {
 	Version string
 	// Validator 为空时使用 Layout.CoreBinary() 的 mihomo -t，缺失的 geo 数据按工具设置中的镜像下载。
 	Validator Validator
-	// Reloader 为空时只写入文件，不通知内核。
+	// Reloader 为空时经 Layout.CoreSocket() 的 API 让内核重新加载 Layout.CoreConfig()。
+	// 返回 mihomo.ErrNotRunning 表示内核没有运行，配置会在内核启动时生效。
 	Reloader Reloader
 	// Keep 为零时使用 DefaultKeep。
 	Keep int
@@ -219,10 +220,18 @@ func (p *Pipeline) finish(ctx context.Context, plan *Plan) error {
 	return nil
 }
 
-// Apply 发布 plan：存档发布前不是由 tunlr 发布的配置，原子写入新配置，通知内核加载，
-// 然后记录为新的历史修订。内核加载失败时恢复原来的配置并返回满足
-// errors.Is(err, core.ErrRolledBack) 的错误。没有变化时什么都不做，返回 nil 修订。
-func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*config.Revision, error) {
+// ApplyResult 是一次发布的结果。
+type ApplyResult struct {
+	// Revision 是记录下的历史修订。
+	Revision *config.Revision
+	// Reloaded 报告运行中的内核是否已加载新配置；为 false 表示内核没有运行。
+	Reloaded bool
+}
+
+// Apply 发布 plan：存档发布前不是由 tunlr 发布的配置，原子写入新配置，让运行中的内核加载，
+// 然后记录为新的历史修订。内核加载失败时恢复原来的配置并让内核重新加载它，返回满足
+// errors.Is(err, core.ErrRolledBack) 的错误。没有变化时什么都不做，返回 nil。
+func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) {
 	if plan.Check != nil {
 		return nil, plan.Check
 	}
@@ -264,10 +273,11 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*config.Revision, err
 	if err := p.writeConfig(plan.Config); err != nil {
 		return nil, err
 	}
-	if p.Reloader != nil {
-		if err := p.Reloader.Reload(ctx); err != nil {
-			return nil, p.restore(ctx, current, err)
-		}
+	result := &ApplyResult{Reloaded: true}
+	if err := p.reloader().Reload(ctx); errors.Is(err, mihomo.ErrNotRunning) {
+		result.Reloaded = false
+	} else if err != nil {
+		return nil, p.restore(ctx, current, err)
 	}
 
 	rev := config.Revision{
@@ -279,25 +289,34 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*config.Revision, err
 	if plan.Kind == KindRollback {
 		rev.Reason, rev.RollbackOf = config.ReasonRollback, plan.RollbackTo
 	}
-	saved, err := h.Add(plan.Config, rev)
-	if err != nil {
+	if result.Revision, err = h.Add(plan.Config, rev); err != nil {
 		return nil, fmt.Errorf("configuration published, but recording it in the history failed: %w", err)
 	}
-	return saved, nil
+	return result, nil
 }
 
 // restore 在内核加载新配置失败后恢复原来的配置，并让内核重新加载它。
+// 内核在加载新配置时退出的，恢复文件后由它下次启动时加载。
 func (p *Pipeline) restore(ctx context.Context, previous []byte, cause error) error {
 	var err error
 	if previous == nil {
 		err = os.Remove(p.Layout.CoreConfig())
 	} else if err = p.writeConfig(previous); err == nil {
-		err = p.Reloader.Reload(ctx)
+		if err = p.reloader().Reload(ctx); errors.Is(err, mihomo.ErrNotRunning) {
+			err = nil
+		}
 	}
 	if err != nil {
-		return fmt.Errorf("reload failed: %w; restoring the previous configuration also failed: %v", cause, err)
+		return fmt.Errorf("mihomo failed to load the new configuration: %w; restoring the previous one also failed: %v", cause, err)
 	}
-	return fmt.Errorf("%w: reload failed: %w", core.ErrRolledBack, cause)
+	return fmt.Errorf("%w: mihomo failed to load the new configuration: %w", core.ErrRolledBack, cause)
+}
+
+func (p *Pipeline) reloader() Reloader {
+	if p.Reloader != nil {
+		return p.Reloader
+	}
+	return &mihomo.Reloader{Client: mihomo.NewClient(p.Layout.CoreSocket()), ConfigPath: p.Layout.CoreConfig()}
 }
 
 // Revisions 返回历史修订（最新的在前）和与生效配置一致的修订号，没有一致的修订时为 0。

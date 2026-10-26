@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/rogpeppe/go-internal/testscript"
@@ -34,6 +37,7 @@ func TestScripts(t *testing.T) {
 		Cmds: map[string]func(ts *testscript.TestScript, neg bool, args []string){
 			"exitcode":       cmdExitCode,
 			"install-mihomo": cmdInstallMihomo,
+			"kernel":         cmdKernel,
 		},
 	})
 }
@@ -56,6 +60,61 @@ func fakeMihomo(args []string) int {
 	fmt.Println("configuration file " + args[4] + " test is successful")
 	return 0
 }
+
+// cmdKernel 实现 kernel start|stop：在布局中的 API socket 上模拟运行中的内核。
+// PUT /configs 加载 path 指向的配置，内容含 REJECT 时按内核的格式拒绝；
+// 每次成功加载的内容写入 $WORK/kernel-loaded，供脚本检查。
+func cmdKernel(ts *testscript.TestScript, neg bool, args []string) {
+	if neg || len(args) != 1 {
+		ts.Fatalf("usage: kernel start|stop")
+	}
+	switch args[0] {
+	case "start":
+		socket := paths.Layout{Root: ts.Getenv(rootEnv)}.CoreSocket()
+		ts.Check(os.MkdirAll(filepath.Dir(socket), 0o750))
+		ln, err := net.Listen("unix", socket)
+		ts.Check(err)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"meta":true,"version":"v1.19.33"}`))
+		})
+		mux.HandleFunc("PUT /configs", func(w http.ResponseWriter, r *http.Request) {
+			var req struct{ Path string }
+			json.NewDecoder(r.Body).Decode(&req)
+			data, err := os.ReadFile(req.Path)
+			if err != nil || strings.Contains(string(data), "REJECT") {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`{"message":"listener REJECT failed"}`))
+				return
+			}
+			os.WriteFile(ts.MkAbs("kernel-loaded"), data, 0o644)
+			w.WriteHeader(http.StatusNoContent)
+		})
+		srv := &http.Server{Handler: mux}
+		go srv.Serve(ln)
+		kernelsMu.Lock()
+		kernels[ts] = srv
+		kernelsMu.Unlock()
+		ts.Defer(func() { srv.Close() })
+	case "stop":
+		kernelsMu.Lock()
+		srv := kernels[ts]
+		delete(kernels, ts)
+		kernelsMu.Unlock()
+		if srv == nil {
+			ts.Fatalf("kernel not started")
+		}
+		srv.Close()
+	default:
+		ts.Fatalf("usage: kernel start|stop")
+	}
+}
+
+// kernels 记录各脚本启动的模拟内核。脚本并行运行，访问需加锁。
+var (
+	kernels   = map[*testscript.TestScript]*http.Server{}
+	kernelsMu sync.Mutex
+)
 
 // cmdInstallMihomo 把测试二进制复制到布局中的内核位置，它以 mihomo 的名字运行时由 fakeMihomo 处理。
 func cmdInstallMihomo(ts *testscript.TestScript, neg bool, args []string) {

@@ -43,6 +43,8 @@ type applyView struct {
 	Plan     planView         `json:"plan"`
 	Applied  bool             `json:"applied"`
 	Revision *config.Revision `json:"revision,omitempty"`
+	// Reloaded 报告运行中的内核是否已加载新配置；内核没有运行时为 false。
+	Reloaded bool `json:"reloaded"`
 }
 
 type revisionView struct {
@@ -256,16 +258,22 @@ func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) 
 		}
 	}
 
-	rev, err := a.pipeline().Apply(cmd.Context(), plan)
+	res, err := a.pipeline().Apply(cmd.Context(), plan)
 	if errors.Is(err, core.ErrRolledBack) {
 		return fmt.Errorf("%w; the previous configuration is back in place", err)
 	}
 	if err != nil {
 		return err
 	}
-	v.Applied, v.Revision = true, rev
+	v.Applied, v.Revision, v.Reloaded = true, res.Revision, res.Reloaded
 	return a.render(v, func() error {
-		_, err := fmt.Fprintf(a.stdout, "\nPublished revision %d to %s.\n", rev.Number, a.layout.CoreConfig())
+		fmt.Fprintf(a.stdout, "\nPublished revision %d to %s.\n", res.Revision.Number, a.layout.CoreConfig())
+		var err error
+		if res.Reloaded {
+			_, err = fmt.Fprintln(a.stdout, "mihomo has reloaded it.")
+		} else {
+			_, err = fmt.Fprintln(a.stdout, "mihomo is not running; it will use this configuration when it starts.")
+		}
 		return err
 	})
 }
