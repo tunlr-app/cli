@@ -49,6 +49,9 @@ pkg/core/           全部业务逻辑，公开包，将来供 agent 等组件�
   service/          systemd unit 与 timer 生成和控制
   doctor/           环境诊断
   lock/             文件锁
+  paths/            磁盘布局（所有路径都从这里取，测试时用 Root 指向临时目录）
+  fsutil/           原子写入等文件操作
+  state/            状态文件、安装实例 ID、结构版本迁移
 internal/cli/       cobra 命令，只做参数解析、调用 core、渲染输出
 templates/          nft、systemd、默认配置模板
 docs/               设计文档
