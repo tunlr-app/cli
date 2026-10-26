@@ -27,11 +27,13 @@ type planView struct {
 	Dropped      []string          `json:"dropped,omitempty"`
 	Mixins       []string          `json:"mixins,omitempty"`
 	Overrides    []config.Override `json:"overrides,omitempty"`
-	Warnings     []config.Warning  `json:"warnings,omitempty"`
-	RollbackTo   int               `json:"rollback_to,omitempty"`
-	Diff         string            `json:"diff,omitempty"`
-	Config       string            `json:"config,omitempty"`
-	Check        checkView         `json:"check"`
+	// GeneratedRules 是工具插在订阅规则前面的规则（如让 GitHub 镜像直连）。
+	GeneratedRules []string         `json:"generated_rules,omitempty"`
+	Warnings       []config.Warning `json:"warnings,omitempty"`
+	RollbackTo     int              `json:"rollback_to,omitempty"`
+	Diff           string           `json:"diff,omitempty"`
+	Config         string           `json:"config,omitempty"`
+	Check          checkView        `json:"check"`
 }
 
 // checkView 是校验结果。Status 取值：
@@ -48,6 +50,9 @@ type applyView struct {
 	Revision *config.Revision `json:"revision,omitempty"`
 	// Reloaded 报告运行中的内核是否已加载新配置；内核没有运行时为 false。
 	Reloaded bool `json:"reloaded"`
+	// UIInstalled 是本次新安装的面板目录；UIError 是安装失败的原因（不影响发布）。
+	UIInstalled string `json:"ui_installed,omitempty"`
+	UIError     string `json:"ui_error,omitempty"`
 }
 
 type revisionView struct {
@@ -56,14 +61,14 @@ type revisionView struct {
 }
 
 func (a *app) pipeline() *pipeline.Pipeline {
-	return &pipeline.Pipeline{Layout: a.layout, Version: a.info.Version, Validator: a.validator, Reloader: a.reloader}
+	return &pipeline.Pipeline{Layout: a.layout, Version: a.info.Version, Validator: a.validator, Reloader: a.reloader, Download: a.download}
 }
 
 func newPlanView(p *pipeline.Plan, full bool) planView {
 	v := planView{
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
 		Subscription: p.Subscription, Dropped: p.Dropped, Mixins: p.Mixins,
-		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Diff: p.Diff,
+		Overrides: p.Overrides, GeneratedRules: p.GeneratedRules, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Diff: p.Diff,
 	}
 	if full {
 		v.Config = string(p.Config)
@@ -103,6 +108,9 @@ func (a *app) printPlan(v planView) {
 	}
 	for _, o := range v.Overrides {
 		fmt.Fprintf(w, "  %s: %s overrides %s\n", o.Path, o.File, o.Previous)
+	}
+	if len(v.GeneratedRules) > 0 {
+		fmt.Fprintf(w, "Rules added by tunlr (remove with delete-rules in a mixin): %s\n", strings.Join(v.GeneratedRules, ", "))
 	}
 	if len(v.Warnings) > 0 {
 		fmt.Fprintln(w, "Warnings:")
@@ -282,9 +290,18 @@ func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) 
 	if err != nil {
 		return err
 	}
-	v.Applied, v.Revision, v.Reloaded = true, res.Revision, res.Reloaded
+	v.Applied, v.Revision, v.Reloaded, v.UIInstalled = true, res.Revision, res.Reloaded, res.UIInstalled
+	if res.UIError != nil {
+		v.UIError = res.UIError.Error()
+	}
 	return a.render(v, func() error {
 		fmt.Fprintf(a.stdout, "\nPublished revision %d to %s.\n", res.Revision.Number, a.layout.CoreConfig())
+		if res.UIInstalled != "" {
+			fmt.Fprintf(a.stdout, "Installed the panel (zashboard, checksum verified) in %s.\n", res.UIInstalled)
+		}
+		if res.UIError != nil {
+			fmt.Fprintf(a.stdout, "Could not install the panel: %v; mihomo will try to download it itself.\n", res.UIError)
+		}
 		var err error
 		if res.Reloaded {
 			_, err = fmt.Fprintln(a.stdout, "mihomo has reloaded it.")

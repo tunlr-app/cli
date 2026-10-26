@@ -1,9 +1,15 @@
 package pipeline
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +19,7 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/config"
+	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/pkg/core/state"
@@ -68,7 +75,14 @@ func newPipeline(t *testing.T) (*Pipeline, *fakeValidator, *fakeReloader) {
 	v := &fakeValidator{}
 	r := &fakeReloader{layout: l}
 	now := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
-	return &Pipeline{Layout: l, Version: "test", Validator: v, Reloader: r, Now: func() time.Time { return now }}, v, r
+	// 默认不能访问 GitHub：安装面板失败，不影响发布。
+	gh := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(gh.Close)
+	return &Pipeline{
+		Layout: l, Version: "test", Validator: v, Reloader: r,
+		Download: &download.Client{APIBase: gh.URL},
+		Now:      func() time.Time { return now },
+	}, v, r
 }
 
 // useSubscription 让名为 name 的订阅成为启用的订阅，内容为 content。
@@ -431,7 +445,103 @@ func TestMirrorDefaults(t *testing.T) {
 
 // TestTemplateUIURL 确认镜像改写的面板地址与模板中的一致。
 func TestTemplateUIURL(t *testing.T) {
-	if !bytes.Contains(templates.Config, []byte("\nexternal-ui-url: "+zashboardURL+"\n")) {
-		t.Errorf("template external-ui-url differs from %s", zashboardURL)
+	if !bytes.Contains(templates.Config, []byte("\nexternal-ui-url: "+mihomo.ZashboardURL+"\n")) {
+		t.Errorf("template external-ui-url differs from %s", mihomo.ZashboardURL)
 	}
+}
+
+// TestMirrorRules 验证配置了 GitHub 镜像时，镜像主机的直连规则插在订阅规则前面，用户可以在 mixin 中去掉。
+func TestMirrorRules(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	useSubscription(t, p.Layout, "main", subscriptionV1)
+	writeFile(t, p.Layout.SettingsFile(), "github-mirror: https://gh-proxy.com/\n")
+	plan := mustPlan(t, p)
+	if strings.Join(plan.GeneratedRules, ",") != "DOMAIN,gh-proxy.com,DIRECT" {
+		t.Errorf("generated rules = %v", plan.GeneratedRules)
+	}
+	if !strings.Contains(string(plan.Config), "\nrules:\n  - DOMAIN,gh-proxy.com,DIRECT\n  - MATCH,a\n") {
+		t.Errorf("config:\n%s", plan.Config)
+	}
+
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "delete-rules:\n  - DOMAIN,gh-proxy.com,DIRECT\n")
+	if cfg := string(mustPlan(t, p).Config); strings.Contains(cfg, "gh-proxy.com,DIRECT") {
+		t.Errorf("mixin could not remove the rule:\n%s", cfg)
+	}
+
+	for mirror, want := range map[string]string{
+		"":                       "",
+		"http://192.0.2.7:8080/": "IP-CIDR,192.0.2.7/32,DIRECT,no-resolve",
+		"https://[2001:db8::1]/": "IP-CIDR6,2001:db8::1/128,DIRECT,no-resolve",
+	} {
+		if got := strings.Join(mirrorRules(mirror), ","); got != want {
+			t.Errorf("mirrorRules(%q) = %q, want %q", mirror, got, want)
+		}
+	}
+}
+
+// TestApplyInstallsUI 验证发布时下载并校验面板，已有面板时不再下载；下载失败不影响发布。
+func TestApplyInstallsUI(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	res, err := p.Apply(context.Background(), mustPlan(t, p))
+	if err != nil || res.UIInstalled != "" || res.UIError == nil || !strings.Contains(res.UIError.Error(), "install the panel") {
+		t.Fatalf("unreachable GitHub: %+v, %v", res, err)
+	}
+
+	archive := zipOf(t, map[string]string{"dist/index.html": "<html>"})
+	p.Download = fakeRelease(t, "Zephyruso/zashboard", "dist.zip", archive)
+	useSubscription(t, p.Layout, "main", subscriptionV1)
+	res, err = p.Apply(context.Background(), mustPlan(t, p))
+	want := filepath.Join(p.Layout.CoreDir(), "ui", "zashboard")
+	if err != nil || res.UIInstalled != want || res.UIError != nil {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(want, "index.html")); string(got) != "<html>" {
+		t.Errorf("index.html = %q", got)
+	}
+
+	// 用户在 mixin 中换了面板：交给内核。
+	os.RemoveAll(want)
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-ui.yaml"), "external-ui-url: https://example.net/other.zip\n")
+	res, err = p.Apply(context.Background(), mustPlan(t, p))
+	if err != nil || res.UIInstalled != "" || res.UIError != nil {
+		t.Fatalf("other panel: %+v, %v", res, err)
+	}
+}
+
+func zipOf(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Write([]byte(content))
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// fakeRelease 模拟 repo 最新发布中的一个资产，返回指向它的下载客户端。
+func fakeRelease(t *testing.T, repo, name string, data []byte) *download.Client {
+	sum := sha256.Sum256(data)
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/" + repo + "/releases/latest":
+			json.NewEncoder(w).Encode(map[string]any{"assets": []download.Asset{{
+				Name: name, Size: int64(len(data)), URL: srv.URL + "/" + name,
+				Digest: "sha256:" + hex.EncodeToString(sum[:]),
+			}}})
+		case "/" + name:
+			w.Write(data)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &download.Client{APIBase: srv.URL}
 }

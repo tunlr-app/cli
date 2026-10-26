@@ -53,23 +53,40 @@ type Asset struct {
 // FetchAsset 下载 repo（形如 "owner/name"）在 tag 下名为 name 的资产，按官方 sha256 校验后
 // 原子写入 dst。dst 所在目录必须已存在。
 func (c *Client) FetchAsset(ctx context.Context, repo, tag, name, dst string, perm os.FileMode) error {
-	asset, err := c.lookup(ctx, repo, tag, name)
+	data, err := c.Fetch(ctx, repo, tag, name)
 	if err != nil {
 		return err
 	}
+	return fsutil.WriteFile(dst, data, perm)
+}
+
+// Fetch 下载 repo 在 tag 下名为 name 的资产并按官方 sha256 校验，返回其内容。
+// tag 为空时使用最新的正式发布。
+func (c *Client) Fetch(ctx context.Context, repo, tag, name string) ([]byte, error) {
+	asset, err := c.lookup(ctx, repo, tag, name)
+	if err != nil {
+		return nil, err
+	}
 	want, ok := strings.CutPrefix(asset.Digest, "sha256:")
 	if !ok || len(want) != sha256.Size*2 {
-		return fmt.Errorf("%s %s: GitHub provides no sha256 digest for %s; refusing to download unverified", repo, tag, name)
+		return nil, fmt.Errorf("%s %s: GitHub provides no sha256 digest for %s; refusing to download unverified", repo, releaseName(tag), name)
 	}
 	data, err := c.get(ctx, MirrorURL(c.Mirror, asset.URL), asset.Size)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", name, err)
+		return nil, fmt.Errorf("download %s: %w", name, err)
 	}
 	sum := sha256.Sum256(data)
 	if got := hex.EncodeToString(sum[:]); got != want {
-		return fmt.Errorf("download %s: %w (want %s, got %s)", name, ErrChecksumMismatch, want, got)
+		return nil, fmt.Errorf("download %s: %w (want %s, got %s)", name, ErrChecksumMismatch, want, got)
 	}
-	return fsutil.WriteFile(dst, data, perm)
+	return data, nil
+}
+
+func releaseName(tag string) string {
+	if tag == "" {
+		return "latest release"
+	}
+	return tag
 }
 
 // MirrorURL 返回经镜像下载 url（完整的 github.com 地址）的地址：镜像前缀后接 url。
@@ -89,31 +106,35 @@ func (c *Client) lookup(ctx context.Context, repo, tag, name string) (*Asset, er
 	if base == "" {
 		base = defaultAPIBase
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/repos/"+repo+"/releases/tags/"+tag, nil)
+	path := "/releases/tags/" + tag
+	if tag == "" {
+		path = "/releases/latest"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/repos/"+repo+path, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := c.client().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("query release %s %s: %w", repo, tag, err)
+		return nil, fmt.Errorf("query release %s %s: %w", repo, releaseName(tag), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("query release %s %s: HTTP %s", repo, tag, resp.Status)
+		return nil, fmt.Errorf("query release %s %s: HTTP %s", repo, releaseName(tag), resp.Status)
 	}
 	var rel struct {
 		Assets []Asset `json:"assets"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&rel); err != nil {
-		return nil, fmt.Errorf("query release %s %s: %w", repo, tag, err)
+		return nil, fmt.Errorf("query release %s %s: %w", repo, releaseName(tag), err)
 	}
 	for i := range rel.Assets {
 		if rel.Assets[i].Name == name {
 			return &rel.Assets[i], nil
 		}
 	}
-	return nil, fmt.Errorf("release %s %s has no asset %s", repo, tag, name)
+	return nil, fmt.Errorf("release %s %s has no asset %s", repo, releaseName(tag), name)
 }
 
 func (c *Client) get(ctx context.Context, url string, size int64) ([]byte, error) {

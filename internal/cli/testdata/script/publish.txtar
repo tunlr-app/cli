@@ -84,6 +84,13 @@ stdout '"path": "log-level"'
 stdout '"line": 4'
 rm root/etc/tunlr/mixin.d/50-rules.yaml root/etc/tunlr/mixin.d/10-level.yaml root/etc/tunlr/mixin.d/90-ignored.yml
 
+# 配置了 GitHub 镜像：镜像主机直连的规则插在订阅规则前面，plan 中列出
+cp mirror-settings.yaml root/etc/tunlr/settings.yaml
+exec tunlr plan
+stdout 'Rules added by tunlr \(remove with delete-rules in a mixin\): DOMAIN,gh-proxy.com,DIRECT'
+stdout '^\+  - DOMAIN,gh-proxy.com,DIRECT$'
+rm root/etc/tunlr/settings.yaml
+
 # edit 需要终端
 exitcode 2 tunlr edit 20-home
 stderr 'edit needs a terminal'
@@ -141,6 +148,8 @@ log-level: error
 patch-proxy-groups:
   - {name: g, prepend-proxies: [DIRECT]}
   - {name: missing, interval: 60}
+-- mirror-settings.yaml --
+github-mirror: https://gh-proxy.com/
 -- level-mixin.yaml --
 log-level: warning
 -- edited.yaml --

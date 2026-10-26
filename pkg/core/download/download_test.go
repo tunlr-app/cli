@@ -16,7 +16,7 @@ import (
 )
 
 // fakeGitHub 同时模拟 API、github.com 下载和一个镜像：
-// /repos/o/r/releases/tags/v1 返回资产列表，/dl/<name> 返回内容，
+// /repos/o/r/releases/tags/v1 和 /repos/o/r/releases/latest 返回资产列表，/dl/<name> 返回内容，
 // /mirror/<完整地址> 是镜像，tampered 置位时镜像返回被篡改的内容。
 type fakeGitHub struct {
 	*httptest.Server
@@ -31,7 +31,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 	g := &fakeGitHub{files: map[string][]byte{"geoip.metadb": []byte("mmdb-content")}}
 	g.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/repos/o/r/releases/tags/v1":
+		case r.URL.Path == "/repos/o/r/releases/tags/v1", r.URL.Path == "/repos/o/r/releases/latest":
 			var assets []Asset
 			for name, data := range g.files {
 				sum := sha256.Sum256(data)
@@ -122,5 +122,17 @@ func TestFetchAssetErrors(t *testing.T) {
 	}
 	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("failed downloads wrote %s", dst)
+	}
+}
+
+func TestFetchLatest(t *testing.T) {
+	g := newFakeGitHub(t)
+	c := &Client{APIBase: g.URL, Mirror: g.URL + "/mirror/"}
+	data, err := c.Fetch(context.Background(), "o/r", "", "geoip.metadb")
+	if err != nil || string(data) != "mmdb-content" {
+		t.Fatalf("Fetch latest = %q, %v", data, err)
+	}
+	if _, err := c.Fetch(context.Background(), "o/x", "", "geoip.metadb"); err == nil || !strings.Contains(err.Error(), "o/x latest release: HTTP 404") {
+		t.Errorf("missing repo: err = %v", err)
 	}
 }

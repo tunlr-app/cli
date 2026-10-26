@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -35,11 +37,11 @@ import (
 // DefaultKeep 是保留的历史修订数。
 const DefaultKeep = 10
 
+// uiTimeout 是安装面板的时限。面板不是必需的，下载太慢时放弃，交给内核。
+const uiTimeout = 5 * time.Minute
+
 // lockWait 是等待其他 tunlr 操作释放锁的最长时间。
 const lockWait = 30 * time.Second
-
-// zashboardURL 是模板中 external-ui-url 的值，配置了 GitHub 镜像时加上镜像前缀。
-const zashboardURL = "https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip"
 
 var (
 	// ErrStale 表示生效的配置在 Plan 之后被改动过，需要重新预览。
@@ -65,6 +67,8 @@ type Pipeline struct {
 	Version string
 	// Validator 为空时使用 Layout.CoreBinary() 的 mihomo -t，缺失的 geo 数据按工具设置中的镜像下载。
 	Validator Validator
+	// Download 为空时按工具设置中的镜像下载（geo 数据、面板）。
+	Download *download.Client
 	// Reloader 为空时经 Layout.CoreSocket() 的 API 让内核重新加载 Layout.CoreConfig()。
 	// 返回 mihomo.ErrNotRunning 表示内核没有运行，配置会在内核启动时生效。
 	Reloader Reloader
@@ -99,6 +103,8 @@ type Plan struct {
 	Warnings []config.Warning
 	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键（仅 KindApply）。
 	Overrides []config.Override
+	// GeneratedRules 是工具插在订阅规则前面的规则（仅 KindApply），目前是让 GitHub 镜像直连的规则。
+	GeneratedRules []string
 	// RollbackTo 是回滚的目标修订（仅 KindRollback）。
 	RollbackTo int
 	// Check 是校验结果，nil 表示通过；没有变化时不校验，也为 nil。
@@ -148,6 +154,11 @@ func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin) (*Plan, error
 	if err != nil {
 		return nil, err
 	}
+	plan.GeneratedRules = mirrorRules(set.GitHubMirror)
+	generated, err := generatedLayer(plan.GeneratedRules)
+	if err != nil {
+		return nil, err
+	}
 
 	var sub []byte
 	if st.Active != "" {
@@ -181,6 +192,7 @@ func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin) (*Plan, error
 		Template:     templates.Config,
 		Defaults:     defaults,
 		Subscription: sub,
+		Generated:    generated,
 		Mixins:       mixins,
 		Enforced:     enforcedLayer(),
 	})
@@ -259,6 +271,11 @@ type ApplyResult struct {
 	Revision *config.Revision
 	// Reloaded 报告运行中的内核是否已加载新配置；为 false 表示内核没有运行。
 	Reloaded bool
+	// UIInstalled 是本次新安装的面板目录，没有安装时为空。
+	UIInstalled string
+	// UIError 是安装面板失败的原因。面板不是发布的必要条件，失败时照常发布，
+	// 由内核按 external-ui-url 自己下载。
+	UIError error
 }
 
 // Apply 发布 plan：存档发布前不是由 tunlr 发布的配置，原子写入新配置，让运行中的内核加载，
@@ -271,6 +288,9 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) 
 	if !plan.Changed() {
 		return nil, nil
 	}
+	// 面板下载可能较慢，在加锁之前进行，不阻塞定时任务；安装是原子的。
+	uiDir, uiErr := p.installUI(ctx, plan.Config)
+
 	l, err := p.lock(ctx)
 	if err != nil {
 		return nil, err
@@ -306,7 +326,7 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) 
 	if err := p.writeConfig(plan.Config); err != nil {
 		return nil, err
 	}
-	result := &ApplyResult{Reloaded: true}
+	result := &ApplyResult{Reloaded: true, UIInstalled: uiDir, UIError: uiErr}
 	if err := p.reloader().Reload(ctx); errors.Is(err, mihomo.ErrNotRunning) {
 		result.Reloaded = false
 	} else if err != nil {
@@ -391,14 +411,45 @@ func (p *Pipeline) saveSecret(secret string) error {
 // writeConfig 原子写入生效的配置。工作目录中的 API socket 由内核以 0666 创建且访问免 secret，
 // 只能靠目录权限阻止其他本地用户，因此每次发布都把目录权限收紧到 0750。
 func (p *Pipeline) writeConfig(data []byte) error {
+	if err := p.ensureCoreDir(); err != nil {
+		return err
+	}
+	return fsutil.WriteFile(p.Layout.CoreConfig(), data, 0o640)
+}
+
+func (p *Pipeline) ensureCoreDir() error {
 	dir := p.Layout.CoreDir()
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	if err := os.Chmod(dir, 0o750); err != nil {
-		return err
+	return os.Chmod(dir, 0o750)
+}
+
+// installUI 在面板目录不存在时下载并校验 zashboard，免得内核自己从未经校验的地址下载。
+// 只处理 external-ui-url 仍是 zashboard 官方地址（或经镜像的地址）的配置，
+// 用户在 mixin 中换了面板时交给内核。返回新安装的目录。
+func (p *Pipeline) installUI(ctx context.Context, cfg []byte) (string, error) {
+	set, err := settings.Load(p.Layout.SettingsFile())
+	if err != nil {
+		return "", err
 	}
-	return fsutil.WriteFile(p.Layout.CoreConfig(), data, 0o640)
+	dir, url, err := config.ExternalUI(cfg, p.Layout.CoreDir())
+	if err != nil || dir == "" {
+		return "", nil
+	}
+	if url != mihomo.ZashboardURL && url != download.MirrorURL(set.GitHubMirror, mihomo.ZashboardURL) {
+		return "", nil
+	}
+	if err := p.ensureCoreDir(); err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, uiTimeout)
+	defer cancel()
+	installed, err := mihomo.EnsureUI(ctx, p.downloader(set), dir)
+	if !installed {
+		return "", err
+	}
+	return dir, nil
 }
 
 func (p *Pipeline) readCurrent() ([]byte, error) {
@@ -420,8 +471,15 @@ func (p *Pipeline) validator() (Validator, error) {
 	return &mihomo.Validator{
 		Binary:   p.Layout.CoreBinary(),
 		HomeDir:  p.Layout.CoreDir(),
-		Download: &download.Client{Mirror: set.GitHubMirror},
+		Download: p.downloader(set),
 	}, nil
+}
+
+func (p *Pipeline) downloader(set *settings.Settings) *download.Client {
+	if p.Download != nil {
+		return p.Download
+	}
+	return &download.Client{Mirror: set.GitHubMirror}
 }
 
 func (p *Pipeline) history() *config.History {
@@ -453,9 +511,37 @@ func defaultsLayer(secret, mirror string) ([]byte, error) {
 		GeoxURL       map[string]string `yaml:"geox-url,omitempty"`
 	}{Secret: secret, GeoxURL: mihomo.GeoxURL(mirror)}
 	if mirror != "" {
-		d.ExternalUIURL = download.MirrorURL(mirror, zashboardURL)
+		d.ExternalUIURL = download.MirrorURL(mirror, mihomo.ZashboardURL)
 	}
 	return yaml.Marshal(d)
+}
+
+// mirrorRules 返回让 GitHub 镜像直连的规则。内核自己的下载（面板、geo 数据）同样按规则分流，
+// 实测选中不可用的节点时全部失败；镜像本来就是为直连准备的，因此让它绕开节点。没有配置镜像时为空。
+func mirrorRules(mirror string) []string {
+	if mirror == "" {
+		return nil
+	}
+	u, err := url.Parse(mirror)
+	if err != nil || u.Hostname() == "" {
+		return nil
+	}
+	host := u.Hostname()
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if ip.Is4() {
+			return []string{"IP-CIDR," + ip.String() + "/32,DIRECT,no-resolve"}
+		}
+		return []string{"IP-CIDR6," + ip.String() + "/128,DIRECT,no-resolve"}
+	}
+	return []string{"DOMAIN," + host + ",DIRECT"}
+}
+
+// generatedLayer 把工具生成的规则写成 mixin，插在订阅规则的前面。
+func generatedLayer(rules []string) ([]byte, error) {
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	return yaml.Marshal(map[string][]string{"prepend-rules": rules})
 }
 
 // enforcedLayer 生成强制项：工具运行所依赖、mixin 不能覆盖的键。

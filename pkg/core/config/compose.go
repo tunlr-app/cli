@@ -35,11 +35,17 @@ type Layers struct {
 	Defaults []byte
 	// Subscription 是机场提供的完整配置，只采用其中的路由部分。
 	Subscription []byte
+	// Generated 是工具按设置生成的调整（如让 GitHub 镜像直连的规则），以 mixin 的语义
+	// 应用在订阅之后、用户的 mixin 之前，用户可以在 mixin 中去掉或覆盖。
+	Generated []byte
 	// Mixins 是用户的 mixin 文件，按顺序逐个应用，语义见 Mixin。
 	Mixins []Mixin
 	// Enforced 是工具运行所依赖的键，最后写入，mixin 无法覆盖。
 	Enforced []byte
 }
+
+// GeneratedName 是工具生成的调整在警告和覆盖记录中的名称。
+const GeneratedName = "tunlr"
 
 // Result 是合成的结果。
 type Result struct {
@@ -103,7 +109,11 @@ func Compose(l Layers) (*Result, error) {
 		enforcedPaths = leafPaths(enforced.Content[0], nil)
 	}
 
-	for _, mx := range l.Mixins {
+	mixins := l.Mixins
+	if len(l.Generated) > 0 {
+		mixins = append([]Mixin{{Name: GeneratedName, Data: l.Generated}}, mixins...)
+	}
+	for _, mx := range mixins {
 		doc, err := parseNode(mx.Data)
 		if err != nil {
 			return nil, &MixinError{File: mx.Name, Err: err}

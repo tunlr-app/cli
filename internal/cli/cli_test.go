@@ -134,14 +134,19 @@ func cmdInstallMihomo(ts *testscript.TestScript, neg bool, args []string) {
 	}
 }
 
-// setupScript 把磁盘布局放进 $WORK/root，并为每个脚本启动一个模拟机场 $PROVIDER。
+// setupScript 把磁盘布局放进 $WORK/root（其中已有面板），并为每个脚本启动一个模拟机场 $PROVIDER。
 // 模拟机场的行为由 $WORK/provider 下的文件决定，脚本用普通的文件操作控制它：
 //   - GET /<name> 返回 provider/<name> 的内容，文件不存在时返回 404；
 //   - provider/<name>.userinfo 存在时，其内容作为 subscription-userinfo 响应头；
 //   - provider/.down 存在时一律返回 500；
 //   - 每次请求的 User-Agent 写入 provider/.last-ua。
 func setupScript(env *testscript.Env) error {
-	env.Setenv(rootEnv, filepath.Join(env.WorkDir, "root"))
+	root := filepath.Join(env.WorkDir, "root")
+	env.Setenv(rootEnv, root)
+	// 面板已存在，发布时不去 GitHub 下载。
+	if err := os.MkdirAll(filepath.Join(paths.Layout{Root: root}.CoreDir(), "ui", "zashboard"), 0o755); err != nil {
+		return err
+	}
 	dir := filepath.Join(env.WorkDir, "provider")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		os.WriteFile(filepath.Join(dir, ".last-ua"), []byte(r.UserAgent()+"\n"), 0o644)

@@ -128,7 +128,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 - 文件一律经 `pkg/core/fsutil.WriteFile` 原子写入：同目录临时文件 → 刷盘 → `os.Rename` → 刷新目录。
 - 锁被占用时重试到期限为止，超时报告“另一个 tunlr 操作正在进行”。锁文件不删除，否则并发的获取者会锁住不同的文件。
 - 状态文件读取时检查版本：比当前工具新则拒绝并提示升级，比当前旧则按迁移链逐级升级。
-- 工具设置（`pkg/core/settings`）由用户编辑，文件不存在时用默认值；未知的键视为错误，避免拼写错误被静默忽略。目前的设置项：`github-mirror`（GitHub 下载镜像前缀）、`user-agent`（抓取订阅的默认 User-Agent）。
+- 工具设置（`pkg/core/settings`）由用户编辑，文件不存在时用默认值；未知的键视为错误，避免拼写错误被静默忽略。目前的设置项：`github-mirror`（GitHub 下载镜像前缀，只支持一个；作用见第 6 节“内核自己的下载”）、`user-agent`（抓取订阅的默认 User-Agent）。
 
 ## 6. 配置流水线
 
@@ -163,8 +163,9 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   1. 模板：工具内置的系统部分，如端口、DNS、geo 更新、面板、profile。
   2. 默认值：工具为这台服务器生成的值，mixin 可以覆盖。包括 HTTP API 的 `secret`（第一次发布时随机生成，存在状态文件中），以及配置了 `github-mirror` 时经镜像的面板地址（`external-ui-url`）和 geo 数据地址（`geox-url`）。
   3. 订阅：**只取路由部分**，即 `proxies`、`proxy-groups`、`rules`、`proxy-providers`、`rule-providers`、`sub-rules`，其余键一律丢弃并在 `plan` 中列出。订阅是不可信输入，不能让机场配置打开端口、改监听地址或设置 API。
-  4. mixin：用户的覆盖，可以改任何键（强制项除外），见下文。
-  5. 工具强制项：工具运行所依赖的键（目前是 `external-controller-unix`，将来还有 TUN 阶段与 nft 规则联动的几个 `tun` 键），最后写入，mixin 无法覆盖。
+  4. 工具生成的调整：以 mixin 的语义应用，用户的 mixin 可以去掉或覆盖。目前只有配置了 `github-mirror` 时让镜像主机直连的规则（见下文“内核自己的下载”），`plan` 中单独列出。
+  5. mixin：用户的覆盖，可以改任何键（强制项除外），见下文。
+  6. 工具强制项：工具运行所依赖的键（目前是 `external-controller-unix`，将来还有 TUN 阶段与 nft 规则联动的几个 `tun` 键），最后写入，mixin 无法覆盖。
 - **mixin**（`pkg/core/config/mixin.go`）。参考了 clashctl（单个 mixin.yaml，嵌套的 `prepend`/`append`/`override`/`inject`）和 ShellCrash（按类别分文件、文本拼接、`-t` 失败时静默丢弃全部自定义）后的设计：
   - 场景：改通用设置；加自己的节点、策略组、规则、rule-providers、listeners；改订阅里已有的策略组和节点（塞入自己的节点、改 interval、加 dialer-proxy）；去掉机场的信息节点和不要的组或规则；按用途分文件、可以单独停用。
   - **语法：mihomo 原生写法 + 前缀操作**。不带前缀的键与 mihomo 配置语义完全一致；同一个文件里可以对同一个键做多种操作；一条规则推广到任意层级。没有采用 clashctl 的嵌套写法（`rules` 是列表就替换、是映射就执行操作，语义由类型决定，且只对写死的几个键有效），也没有用 YAML 标签（同一个键在一个文件里只能出现一次，无法既前插又追加）。
@@ -200,9 +201,26 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 校验失败时区分“配置错误”和“依赖下载失败”：mihomo 的错误消息含 `can't download` 时属于后者，不报告为配置问题（不映射到退出码 3）。
   - 实测 `-t` 不会抓取远程的 proxy-providers 和 rule-providers，它们暂时不可达不影响校验。
   - 内核自己的 geo 定时更新（`geox-url`）同样受网络影响，其地址由工具按镜像设置写入默认值层。用户在 mixin 中自己指定的地址优先，因此不放在强制项中。
+- **内核自己的下载**：
+
+  | 下载 | 发起者 | 路径 | 校验 |
+  |---|---|---|---|
+  | 内核、校验前补齐的 geo 数据、面板（首次） | tunlr | 直连或经镜像 | 官方 sha256 |
+  | 订阅 | tunlr | 直连 | 无（机场内容无从校验） |
+  | 面板手动更新、geo 定时更新 | 内核 | 按规则分流，地址经镜像 | 无 |
+  | 订阅中的 proxy-providers、rule-providers | 内核 | 按规则分流，或 provider 的 `proxy` 字段 | 无 |
+  | 面板触发的内核升级 | 内核 | 按规则分流 | 无（见第 7 节） |
+
+  - 读 mihomo 源码（`component/http`）确认：内核自己的 HTTP 请求交给内部 tunnel，按目标域名匹配规则，失败时才退回直连。所以策略组选中不可用的节点时，面板和 geo 下载全部失败（实测）。
+  - **镜像直连规则**：配置了 `github-mirror` 时，工具在订阅规则前插入 `DOMAIN,<镜像域名>,DIRECT`（镜像是 IP 时用 `IP-CIDR`/`IP-CIDR6`）。镜像本来就是为直连准备的；实测选中不可用的节点时，加上这条规则后面板经镜像下载成功。它属于“工具生成的调整”而不是强制项：用户有理由让镜像也走代理，可以用 `delete-rules` 去掉。没有配置镜像时不加，直连 github.com 在国内很慢，交给规则决定。将来 TUN 阶段需要直连的主机（如订阅域名）也放在这一层。
+  - **信任边界**：镜像可以篡改它转发的内容。工具的下载有官方 sha256 兜底，内核的下载没有。其中面板在浏览器中运行并持有 API secret，geo 数据决定分流，被篡改的后果都很严重，因此改由工具下载并校验：
+    - 面板：apply 时若面板目录不存在，工具从 zashboard 最新发布下载 `dist.zip`，按官方 sha256 校验，解压（拒绝指向目录外的路径和非普通文件，限制解压后大小）后原子地放到位。实测内核启动时发现面板目录已存在就跳过下载。只处理 `external-ui-url` 仍是 zashboard 官方地址或其镜像地址的配置，用户在 mixin 中换了面板时交给内核。面板不是必需的：下载失败（时限 5 分钟）照常发布，由内核按 `external-ui-url` 自己下载；下载在加锁之前进行，不阻塞定时任务。
+    - geo 数据：校验前缺失的文件已由工具校验下载。定时更新计划随 MVP 第 2 步的 `_update` 定时任务改由工具负责（校验后让内核加载），届时模板关闭 `geo-auto-update`；在此之前保留内核的自动更新，否则 geo 数据永远不更新。
+    - `external-ui-url`、`geox-url` 仍写成经镜像的地址，只用于用户在面板上主动点“更新”，是用户自己触发的操作。
+  - 实测：zashboard 与 meta-rules-dat 的发布资产都带有 GitHub 提供的 sha256 digest。经 API（`POST /configs/geo`）触发的内核 geo 更新在 120 秒内没有结果，也没有报错，原因待查。
 - **充分利用内核已有能力**，由工具写入模板默认开启：
   - `geo-auto-update` / `geo-update-interval`：geo 数据定时更新
-  - `external-ui` / `external-ui-url` / `external-ui-name`：内核自行下载面板
+  - `external-ui` / `external-ui-url` / `external-ui-name`：面板的位置和更新地址（首次由工具校验安装，之后可在面板上手动更新）
   - proxy-providers / rule-providers 的 `interval`：订阅与规则集热更新
   - `profile.store-selected` / `store-fake-ip`：保存面板选择的节点和 fake-ip 映射
   - `ntp`：时间同步（或交给系统的 timesyncd）
@@ -360,6 +378,6 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 ## 14. 待决事项
 
 - 透明代理是否需要 tproxy 实现（取决于第 8.2 节实测）
-- 内核自己的下载（面板、geo 定时更新、http provider）也按规则分流。实测策略组当前选中不可用的节点时，这些下载全部失败。机场默认选中的第一个节点不可用，或首次启动时，面板会下载不下来。可以考虑：配置了镜像时，在规则最前面让镜像主机直连；或在 `doctor` 中检查这一情况。
+- 经 API 触发的内核 geo 更新（`POST /configs/geo`）实测 120 秒内没有结果也没有报错，需在实现 `_update` 的 geo 更新时查明，并确认面板上的“更新 geo”按钮可用。
 - 开源协议
 - 商标查询

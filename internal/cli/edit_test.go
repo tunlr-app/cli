@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/templates"
@@ -26,6 +29,13 @@ func (editValidator) Validate(_ context.Context, cfg []byte) error {
 		return &mihomo.CheckError{Messages: []string{"can't download geosite.dat"}, MissingData: true}
 	}
 	return nil
+}
+
+// unreachableGitHub 返回一个对所有请求都返回 404 的地址，测试不访问真正的 GitHub。
+func unreachableGitHub(t *testing.T) string {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 type stoppedKernel struct{}
@@ -90,6 +100,7 @@ func newEditTest(t *testing.T, edits ...string) *editTest {
 		stderr:    stdout,
 		validator: editValidator{},
 		reloader:  stoppedKernel{},
+		download:  &download.Client{APIBase: unreachableGitHub(t)},
 		terminal:  func() bool { return true },
 		prompt:    et.prompt,
 	}

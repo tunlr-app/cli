@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
 )
@@ -48,6 +49,7 @@ type app struct {
 	// 以下供测试替换，为空时使用默认实现。
 	validator pipeline.Validator
 	reloader  pipeline.Reloader
+	download  *download.Client
 	// terminal 报告标准输入是否为终端。
 	terminal func() bool
 	// editor 让用户编辑文件，默认运行 $VISUAL 或 $EDITOR。

@@ -1,0 +1,29 @@
+工具生成的调整（配置了 GitHub 镜像时让镜像直连的规则）以 mixin 语义应用在订阅之后、
+用户的 mixin 之前：用户前插的规则排在它前面，用户也可以用 delete-rules 去掉它。
+
+-- template.yaml --
+mixed-port: 7890
+-- subscription.yaml --
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+rules:
+  - MATCH,a
+-- generated.yaml --
+prepend-rules:
+  - DOMAIN,gh-proxy.com,DIRECT
+  - DOMAIN,mirror.example.net,DIRECT
+-- mixin.d/10-test.yaml --
+prepend-rules:
+  - DOMAIN-SUFFIX,corp.example.com,DIRECT
+delete-rules:
+  - DOMAIN,mirror.example.net,DIRECT
+-- want.yaml --
+mixed-port: 7890
+
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+
+rules:
+  - DOMAIN-SUFFIX,corp.example.com,DIRECT
+  - DOMAIN,gh-proxy.com,DIRECT
+  - MATCH,a

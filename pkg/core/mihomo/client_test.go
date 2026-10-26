@@ -108,10 +108,12 @@ func TestClientNotRunning(t *testing.T) {
 		t.Skip("stale socket detection is Linux-only")
 	}
 	k := newFakeKernel(t)
-	k.srv.Close()
+	// 直接关闭监听并保留 socket 文件，模拟内核退出后留下的 socket。不能用 k.srv.Close()：
+	// Serve 可能还没开始，监听会在短时间内仍可连接，结果取决于时序。
+	k.ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	k.ln.Close()
 	if _, err := os.Stat(k.socket); err != nil {
-		// 部分平台关闭监听时会删除 socket 文件，此时等同于上面的情况。
-		t.Skipf("socket removed on close: %v", err)
+		t.Fatalf("socket file: %v", err)
 	}
 	if _, err := NewClient(k.socket).Version(context.Background()); !errors.Is(err, ErrNotRunning) {
 		t.Errorf("stale socket: err = %v", err)
