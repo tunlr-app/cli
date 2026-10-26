@@ -41,7 +41,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 				}
 				assets = append(assets, a)
 			}
-			json.NewEncoder(w).Encode(map[string]any{"assets": assets})
+			json.NewEncoder(w).Encode(map[string]any{"tag_name": "v1", "assets": assets})
 		case strings.HasPrefix(r.URL.Path, "/dl/"):
 			g.directHits.Add(1)
 			w.Write(g.files[strings.TrimPrefix(r.URL.Path, "/dl/")])
@@ -134,5 +134,16 @@ func TestFetchLatest(t *testing.T) {
 	}
 	if _, err := c.Fetch(context.Background(), "o/x", "", "geoip.metadb"); err == nil || !strings.Contains(err.Error(), "o/x latest release: HTTP 404") {
 		t.Errorf("missing repo: err = %v", err)
+	}
+	rel, err := c.Release(context.Background(), "o/r", "")
+	if err != nil || rel.Tag != "v1" {
+		t.Fatalf("Release = %+v, %v", rel, err)
+	}
+	a, err := rel.Asset("geoip.metadb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum, err := a.SHA256(); err != nil || len(sum) != 64 {
+		t.Errorf("SHA256 = %q, %v", sum, err)
 	}
 }

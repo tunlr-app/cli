@@ -16,6 +16,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/download"
+	"github.com/tunlr-app/cli/pkg/core/fsutil"
 )
 
 // defaultTestTimeout 是 mihomo -t 的时限。geo 数据预先备好时校验只需几十毫秒；
@@ -30,6 +31,9 @@ type Validator struct {
 	HomeDir string
 	// Download 用于下载缺失的 geo 文件；为空时不下载。
 	Download *download.Client
+	// RunAs 是运行 mihomo -t 的身份，也是下载到 HomeDir 的 geo 文件的属主。内核二进制可被内核用户改写，
+	// root 不能直接运行它，因此降权到内核用户；为 nil 时以当前身份运行（尚未创建内核用户，或测试）。
+	RunAs *fsutil.Owner
 	// Timeout 为零时使用 defaultTestTimeout。
 	Timeout time.Duration
 }
@@ -72,7 +76,7 @@ func (v *Validator) Validate(ctx context.Context, cfg []byte) error {
 	if v.Download != nil {
 		// 解析失败的配置交给 mihomo -t 报告，这里不提前返回。
 		if needs, err := config.DetectGeo(cfg); err == nil {
-			if _, err := EnsureGeo(ctx, v.Download, v.HomeDir, GeoFilesFor(needs)); err != nil {
+			if _, err := EnsureGeo(ctx, v.Download, v.HomeDir, GeoFilesFor(needs), v.RunAs); err != nil {
 				return err
 			}
 		}
@@ -95,6 +99,9 @@ func (v *Validator) test(ctx context.Context, cfg []byte) error {
 	if err := os.WriteFile(cfgPath, cfg, 0o600); err != nil {
 		return err
 	}
+	if err := v.RunAs.ChownTree(tmp); err != nil {
+		return err
+	}
 
 	timeout := v.Timeout
 	if timeout == 0 {
@@ -104,6 +111,9 @@ func (v *Validator) test(ctx context.Context, cfg []byte) error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, v.Binary, "-t", "-d", tmp, "-f", cfgPath)
 	cmd.WaitDelay = 5 * time.Second
+	if err := runAs(cmd, v.RunAs); err != nil {
+		return err
+	}
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -123,7 +133,7 @@ func linkGeo(home, dst string) error {
 	if home == "" {
 		return nil
 	}
-	for _, f := range allGeoFiles {
+	for _, f := range AllGeoFiles {
 		p, err := findGeo(home, f)
 		if err != nil || p == "" {
 			continue

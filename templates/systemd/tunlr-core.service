@@ -1,0 +1,28 @@
+# 由 tunlr 生成，tunlr init 时重写；不要直接修改。
+[Unit]
+Description=mihomo proxy kernel (managed by tunlr)
+Documentation=https://tunlr.app
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+OnFailure=tunlr-rescue.service
+
+[Service]
+Type=simple
+User={{.User}}
+Group={{.User}}
+ExecStart={{.Binary}} -d {{.CoreDir}}
+Restart=on-failure
+RestartSec=3
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths={{.BinDir}} {{.CoreDir}}
+ProtectHome=yes
+PrivateTmp=yes
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

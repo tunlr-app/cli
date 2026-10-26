@@ -49,6 +49,11 @@ func (l Layout) HistoryDir() string { return l.join("var", "lib", "tunlr", "hist
 // KernelsDir 存放已知可用的内核版本，每个版本一个子目录。
 func (l Layout) KernelsDir() string { return l.join("var", "lib", "tunlr", "kernels") }
 
+// KernelBinary 是 version 版本内核的存放位置。version 须先经过校验，不能包含路径分隔符。
+func (l Layout) KernelBinary(version string) string {
+	return l.join("var", "lib", "tunlr", "kernels", version, "mihomo")
+}
+
 // BinDir 存放运行中的内核二进制。归运行内核的专用用户所有，面板触发的内核升级需要原地替换它。
 func (l Layout) BinDir() string { return l.join("var", "lib", "tunlr", "bin") }
 
@@ -70,3 +75,9 @@ func (l Layout) CoreSocket() string { return l.join("var", "lib", "tunlr", "core
 
 // LockFile 是所有会改动系统的操作共用的文件锁。放在 /run 下，未安装时也可用。
 func (l Layout) LockFile() string { return l.join("run", "lock", "tunlr.lock") }
+
+// UnitDir 存放工具生成的 systemd unit。
+func (l Layout) UnitDir() string { return l.join("etc", "systemd", "system") }
+
+// ToolBinary 是安装后的 tunlr 自身，unit 中引用这个路径。
+func (l Layout) ToolBinary() string { return l.join("usr", "local", "bin", "tunlr") }

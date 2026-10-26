@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -366,6 +367,99 @@ func TestKernelCrashOnReload(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(p.Layout.CoreConfig()); !bytes.Equal(after, before) {
 		t.Error("previous config not restored")
+	}
+}
+
+// fakeRestarter 记录每次重启时磁盘上的配置。fail 置位时第一次重启失败；stopped 置位时报告
+// 服务没有运行（ifRunning 时）。
+type fakeRestarter struct {
+	layout    paths.Layout
+	fail      bool
+	stopped   bool
+	restarted []string
+	forced    int
+}
+
+func (r *fakeRestarter) RestartLocked(_ context.Context, ifRunning bool) error {
+	if ifRunning && r.stopped {
+		return mihomo.ErrNotRunning
+	}
+	if !ifRunning {
+		r.forced++
+	}
+	data, _ := os.ReadFile(r.layout.CoreConfig())
+	r.restarted = append(r.restarted, string(data))
+	if r.fail {
+		r.fail = false
+		return mihomo.ErrUnhealthy
+	}
+	return nil
+}
+
+func TestApplyRestartsForControllerChanges(t *testing.T) {
+	p, _, r := newPipeline(t)
+	rs := &fakeRestarter{layout: p.Layout}
+	p.Restarter = rs
+	mustApply(t, p, mustPlan(t, p))
+	if len(rs.restarted) != 0 {
+		t.Fatal("first apply restarted mihomo")
+	}
+
+	// 只改订阅：热重载。
+	useSubscription(t, p.Layout, "main", subscriptionV1)
+	if plan := mustPlan(t, p); len(plan.Restart) != 0 {
+		t.Fatalf("restart keys for a subscription change = %v", plan.Restart)
+	}
+	mustApply(t, p, mustPlan(t, p))
+	reloads := len(r.loaded)
+
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "secret: changed\nexternal-controller: 127.0.0.1:9091\n")
+	plan := mustPlan(t, p)
+	if !slices.Equal(plan.Restart, []string{"external-controller", "secret"}) {
+		t.Fatalf("restart keys = %v", plan.Restart)
+	}
+	res, err := p.Apply(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Restarted || res.Reloaded || len(rs.restarted) != 1 || len(r.loaded) != reloads {
+		t.Fatalf("result = %+v, restarts %d, reloads %d", res, len(rs.restarted), len(r.loaded)-reloads)
+	}
+}
+
+func TestRestartFailureRollsBack(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	rs := &fakeRestarter{layout: p.Layout}
+	p.Restarter = rs
+	mustApply(t, p, mustPlan(t, p))
+	before, _ := os.ReadFile(p.Layout.CoreConfig())
+
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "secret: changed\n")
+	rs.fail = true
+	_, err := p.Apply(context.Background(), mustPlan(t, p))
+	if !errors.Is(err, core.ErrRolledBack) || !errors.Is(err, mihomo.ErrUnhealthy) {
+		t.Fatalf("err = %v", err)
+	}
+	if after, _ := os.ReadFile(p.Layout.CoreConfig()); !bytes.Equal(after, before) {
+		t.Error("previous config not restored")
+	}
+	// 恢复原配置后不论服务状态都再次重启。
+	if len(rs.restarted) != 2 || rs.restarted[1] != string(before) || rs.forced != 1 {
+		t.Errorf("restarts = %d, forced = %d", len(rs.restarted), rs.forced)
+	}
+}
+
+func TestRestartKeysWithoutService(t *testing.T) {
+	p, _, r := newPipeline(t)
+	p.Restarter = &fakeRestarter{layout: p.Layout, stopped: true}
+	mustApply(t, p, mustPlan(t, p))
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "secret: changed\n")
+	res, err := p.Apply(context.Background(), mustPlan(t, p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Reloaded || res.Restarted || !slices.Equal(res.RestartNeeded, []string{"secret"}) || len(r.loaded) != 2 {
+		t.Fatalf("result = %+v", res)
 	}
 }
 

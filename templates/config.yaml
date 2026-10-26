@@ -28,8 +28,9 @@ profile:
   store-selected: true
   store-fake-ip: true
 
-geo-auto-update: true
-geo-update-interval: 24
+# geo 数据由 tunlr 每天的定时更新让内核下载，再按官方 sha256 核对。
+# 内核自己的定时更新下载后不做校验，因此关闭。
+geo-auto-update: false
 
 # geo 数据的下载地址。设置了 github-mirror 时由 tunlr 改为经镜像下载。
 geox-url:

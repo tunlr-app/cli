@@ -48,7 +48,8 @@ pkg/core/           全部业务逻辑，公开包，将来供 agent 等组件�
   subscription/     订阅的抓取、保存、增删与切换（可保存多个，同一时间只启用一个）
   mihomo/           内核下载、升级、已知可用版本、geo 数据、mihomo -t 校验、API client
   netfilter/        nft 规则生成、应用、清理；TUN 前置检查
-  service/          systemd unit 与 timer 生成和控制
+  service/          systemd unit 与 timer 生成和控制，内核用户
+  setup/            跨模块的编排：init、uninstall、定时更新（_update）、状态汇总
   doctor/           环境诊断
   lock/             文件锁
   paths/            磁盘布局（所有路径都从这里取，测试时用 Root 指向临时目录）

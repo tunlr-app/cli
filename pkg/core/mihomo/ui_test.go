@@ -61,7 +61,7 @@ func TestEnsureUI(t *testing.T) {
 	d := fakeZashboard(t, archive)
 	dir := filepath.Join(t.TempDir(), "core", "ui", "zashboard")
 
-	installed, err := EnsureUI(context.Background(), d, dir)
+	installed, err := EnsureUI(context.Background(), d, dir, nil)
 	if err != nil || !installed {
 		t.Fatalf("EnsureUI = %v, %v", installed, err)
 	}
@@ -77,7 +77,7 @@ func TestEnsureUI(t *testing.T) {
 
 	// 已存在时不再下载，也不改动。
 	os.WriteFile(filepath.Join(dir, "index.html"), []byte("mine"), 0o644)
-	if installed, err := EnsureUI(context.Background(), d, dir); err != nil || installed {
+	if installed, err := EnsureUI(context.Background(), d, dir, nil); err != nil || installed {
 		t.Fatalf("second EnsureUI = %v, %v", installed, err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dir, "index.html")); string(got) != "mine" {
@@ -93,7 +93,7 @@ func TestEnsureUIRejectsUnsafeArchives(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			d := fakeZashboard(t, makeZip(t, files))
 			dir := filepath.Join(t.TempDir(), "ui", "zashboard")
-			_, err := EnsureUI(context.Background(), d, dir)
+			_, err := EnsureUI(context.Background(), d, dir, nil)
 			if err == nil || !strings.Contains(err.Error(), "points outside the target directory") {
 				t.Fatalf("err = %v", err)
 			}
@@ -107,7 +107,7 @@ func TestEnsureUIRejectsUnsafeArchives(t *testing.T) {
 func TestEnsureUIDownloadFailure(t *testing.T) {
 	d := &download.Client{APIBase: httptest.NewServer(http.NotFoundHandler()).URL}
 	dir := filepath.Join(t.TempDir(), "ui", "zashboard")
-	if installed, err := EnsureUI(context.Background(), d, dir); installed || err == nil || !strings.Contains(err.Error(), "install the panel") {
+	if installed, err := EnsureUI(context.Background(), d, dir, nil); installed || err == nil || !strings.Contains(err.Error(), "install the panel") {
 		t.Fatalf("EnsureUI = %v, %v", installed, err)
 	}
 	if _, err := os.Stat(dir); err == nil {

@@ -46,9 +46,9 @@
 原则：**不限制面板能力，工具做兜底**。内核支持的操作，面板照样能用。
 
 - **TUN 开关**：面板可以在运行时切换，但不会写回配置文件，也不处理系统前置条件。持久化的开关以工具为准；工具读取实际状态，并提供“把当前运行状态保存到配置”的操作。
-- **内核升级**：面板可以通过内核自带接口升级；工具负责兜底——保留已知可用版本，内核启动失败时自动回滚（见第 7 节）。工具自己升级时会先做兼容性校验，没有断网窗口。
+- **内核升级**：面板可以通过内核自带接口升级；工具负责兜底——保留已知可用版本，内核启动失败时自动回滚，并在定时任务中核对面板升级来的二进制（见第 7 节）。工具自己升级时会先做兼容性校验，没有断网窗口。
 - **重载配置**：面板重载读的是工具生成的文件，不冲突。
-- **geo 更新**：定时更新写在配置里由内核完成，面板手动刷新作为补充。
+- **geo 更新**：定时更新由工具的 `_update` 触发内核更新并核对结果（见第 7 节），面板手动刷新作为补充。
 - **订阅更新**：订阅是完整配置，由工具的 timer（`tunlr _update`）拉取并走完整的配置流水线；配置中的 rule-providers 等仍由内核按 `interval` 刷新。
 
 ### 3.4 明确不做
@@ -119,12 +119,16 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 | `/var/lib/tunlr/state.json` | 状态文件：结构版本号、安装实例 ID | 工具维护，权限 0600 |
 | `/var/lib/tunlr/subscriptions/` | 每个订阅最近一次成功抓取的内容 | 含机场凭据 |
 | `/var/lib/tunlr/history/` | 已发布配置的历史：每个修订一份配置（`<号>.yaml`）和一份记录（`<号>.json`） | 用于回滚，保留最近 10 个，权限 0600 |
-| `/var/lib/tunlr/kernels/<版本>/` | 已知可用的内核 | 见第 7 节 |
-| `/var/lib/tunlr/bin/mihomo` | 运行中的内核，也用于校验配置 | 归运行内核的专用用户所有，面板升级时原地替换 |
-| `/var/lib/tunlr/core/` | mihomo 工作目录（`-d`）：生效的配置、API socket（`api.sock`）、geo 数据、面板、缓存 | 归运行内核的专用用户所有，权限 0750（保护 API socket） |
+| `/var/lib/tunlr/kernels/<版本>/mihomo` | 已知可用的内核 | root 所有，保留最近 3 个，见第 7 节 |
+| `/var/lib/tunlr/bin/mihomo` | 运行中的内核，也用于校验配置 | 归内核用户 `tunlr` 所有，面板升级时原地替换 |
+| `/var/lib/tunlr/core/` | mihomo 工作目录（`-d`）：生效的配置、API socket（`api.sock`）、geo 数据、面板、缓存 | 归内核用户 `tunlr` 所有，权限 0750（保护 API socket） |
+| `/etc/systemd/system/tunlr-*.{service,timer}` | 工具生成的 unit：`tunlr-core.service`、`tunlr-rescue.service`、`tunlr-update.service`、`tunlr-update.timer` | 每次 `init` 重写 |
+| `/usr/local/bin/tunlr` | 工具自身 | unit 引用这个路径，`init` 时不在这里则复制过来 |
 | `/run/lock/tunlr.lock` | 文件锁 | 放在 `/run` 下，安装前也可用 |
 
-- 所有路径由 `pkg/core/paths.Layout` 统一给出，测试时设置 `Root` 把整套布局放进临时目录。
+- `/var/lib/tunlr` 为 0711：内核用户只能进入它拥有的 `bin/`、`core/`，不能列出或读取其他内容（订阅、历史、状态文件都是 root 的 0600/0700）。
+
+- 所有路径由 `pkg/core/paths.Layout` 统一给出，测试时设置 `Root` 把整套布局放进临时目录。这样的测试布局不涉及内核用户：文件不改属主，`mihomo -t` 以当前身份运行。
 - 文件一律经 `pkg/core/fsutil.WriteFile` 原子写入：同目录临时文件 → 刷盘 → `os.Rename` → 刷新目录。
 - 锁被占用时重试到期限为止，超时报告“另一个 tunlr 操作正在进行”。锁文件不删除，否则并发的获取者会锁住不同的文件。
 - 状态文件读取时检查版本：比当前工具新则拒绝并提示升级，比当前旧则按迁移链逐级升级。
@@ -198,7 +202,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 编辑器取 `$VISUAL`、`$EDITOR`，否则依次尝试 `editor`、`nano`、`vi`；需要终端，非交互模式下报用法错误，直接改文件后用 `plan`/`apply` 即可。
 - 合成前展开订阅中的 YAML 锚点与别名（被引用的锚点可能位于被丢弃的键里），并限制展开后的节点数，防止恶意订阅放大。
 - **校验前必须备好 geo 数据**。`mihomo -t` 会加载规则用到的 GeoIP/GeoSite 数据，缺失时现场从 GitHub 下载；在国内服务器上实测下载耗时 84 秒，超过 90 秒即判定校验失败，与配置本身无关。因此：
-  - 工具从配置判断需要哪些 geo 数据（规则、DNS 设置中出现 geoip、geosite、ip-asn 即视为需要；宁可多备一个文件，不能漏），缺失的下载到内核工作目录（下载方式见第 7 节的镜像与校验）。已有的文件不更新，由内核的 geo-auto-update 负责。预先备好后实测校验耗时 49 毫秒。
+  - 工具从配置判断需要哪些 geo 数据（规则、DNS 设置中出现 geoip、geosite、ip-asn 即视为需要；宁可多备一个文件，不能漏），缺失的下载到内核工作目录（下载方式见第 7 节的镜像与校验）。已有的文件不在这里更新，由定时任务 `_update` 负责（见第 7 节）。预先备好后实测校验耗时 49 毫秒。
   - `-t` 在临时工作目录中运行，内核工作目录中的 geo 文件以符号链接提供：`-t` 可能写入缓存，直接用内核的工作目录会与运行中的内核冲突。
   - 校验失败时区分“配置错误”和“依赖下载失败”：mihomo 的错误消息含 `can't download` 时属于后者，不报告为配置问题（不映射到退出码 3）。
   - 实测 `-t` 不会抓取远程的 proxy-providers 和 rule-providers，它们暂时不可达不影响校验。
@@ -209,19 +213,19 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   |---|---|---|---|
   | 内核、校验前补齐的 geo 数据、面板（首次） | tunlr | 直连或经镜像 | 官方 sha256 |
   | 订阅 | tunlr | 直连 | 无（机场内容无从校验） |
-  | 面板手动更新、geo 定时更新 | 内核 | 按规则分流，地址经镜像 | 无 |
+  | 面板手动更新、面板上手动更新 geo | 内核 | 按规则分流，地址经镜像 | 无 |
+  | geo 定时更新 | `_update` 触发内核下载 | 按规则分流，地址经镜像 | 事后由工具按官方 sha256 核对 |
   | 订阅中的 proxy-providers、rule-providers | 内核 | 按规则分流，或 provider 的 `proxy` 字段 | 无 |
-  | 面板触发的内核升级 | 内核 | 按规则分流 | 无（见第 7 节） |
+  | 面板触发的内核升级 | 内核 | 按规则分流，直连 github.com | 无，事后由工具核对（见第 7 节） |
 
   - 读 mihomo 源码（`component/http`）确认：内核自己的 HTTP 请求交给内部 tunnel，按目标域名匹配规则，失败时才退回直连。所以策略组选中不可用的节点时，面板和 geo 下载全部失败（实测）。
   - **镜像直连规则**：配置了 `github-mirror` 时，工具在订阅规则前插入 `DOMAIN,<镜像域名>,DIRECT`（镜像是 IP 时用 `IP-CIDR`/`IP-CIDR6`）。镜像本来就是为直连准备的；实测选中不可用的节点时，加上这条规则后面板经镜像下载成功。它属于“工具生成的调整”而不是强制项：用户有理由让镜像也走代理，可以用 `delete-rules` 去掉。没有配置镜像时不加，直连 github.com 在国内很慢，交给规则决定。将来 TUN 阶段需要直连的主机（如订阅域名）也放在这一层。
   - **信任边界**：镜像可以篡改它转发的内容。工具的下载有官方 sha256 兜底，内核的下载没有。其中面板在浏览器中运行并持有 API secret，geo 数据决定分流，被篡改的后果都很严重，因此改由工具下载并校验：
     - 面板：apply 时若面板目录不存在，工具从 zashboard 最新发布下载 `dist.zip`，按官方 sha256 校验，解压（拒绝指向目录外的路径和非普通文件，限制解压后大小）后原子地放到位。实测内核启动时发现面板目录已存在就跳过下载。只处理 `external-ui-url` 仍是 zashboard 官方地址或其镜像地址的配置，用户在 mixin 中换了面板时交给内核。面板不是必需的：下载失败（时限 5 分钟）照常发布，由内核按 `external-ui-url` 自己下载；下载在加锁之前进行，不阻塞定时任务。
-    - geo 数据：校验前缺失的文件已由工具校验下载。定时更新计划随 MVP 第 2 步的 `_update` 定时任务改由工具负责（校验后让内核加载），届时模板关闭 `geo-auto-update`；在此之前保留内核的自动更新，否则 geo 数据永远不更新。
-    - `external-ui-url`、`geox-url` 仍写成经镜像的地址，只用于用户在面板上主动点“更新”，是用户自己触发的操作。
-  - 实测：zashboard 与 meta-rules-dat 的发布资产都带有 GitHub 提供的 sha256 digest。经 API（`POST /configs/geo`）触发的内核 geo 更新在 120 秒内没有结果，也没有报错，原因待查。
+    - geo 数据：校验前缺失的文件由工具校验下载；定时更新由 `_update` 触发内核下载后按官方 sha256 核对（见第 7 节“定时更新”）。模板关闭内核自己的 `geo-auto-update`，它下载后不做任何校验。
+    - `external-ui-url`、`geox-url` 仍写成经镜像的地址，用于 `_update` 触发的更新和用户在面板上主动点“更新”。
+  - 实测：zashboard 与 meta-rules-dat 的发布资产都带有 GitHub 提供的 sha256 digest。
 - **充分利用内核已有能力**，由工具写入模板默认开启：
-  - `geo-auto-update` / `geo-update-interval`：geo 数据定时更新
   - `external-ui` / `external-ui-url` / `external-ui-name`：面板的位置和更新地址（首次由工具校验安装，之后可在面板上手动更新）
   - proxy-providers / rule-providers 的 `interval`：订阅与规则集热更新
   - `profile.store-selected` / `store-fake-ip`：保存面板选择的节点和 fake-ip 映射
@@ -242,24 +246,58 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 内核在重载时同步初始化 proxy-providers 和 rule-providers，新的 http provider 会现场抓取：地址不可达时实测重载耗时 3.4 秒。重载时限因此设为 2 分钟，超时按失败处理。
   - 内核退出后 socket 文件仍会留下，连接时被拒绝。socket 不存在和连接被拒绝都视为内核没有运行：配置照常发布，由内核启动时加载。
   - 重载失败（返回错误，或重载后不再响应）时，恢复原配置并让内核重新加载它，退出码 4。重载后内核不再响应时，即使随后连接被拒绝，也不能当作“没有运行”，同样回滚，让内核下次启动时用回原配置。
+  - 热重载只调用 `executor.ApplyConfig`，不重建 API 服务；geo 定时器也只在启动时注册（读源码 `hub/hub.go`、`main.go`，并实测改 `secret`、`external-controller` 后重载不生效）。以下键变化时，apply 改为重启内核，plan 中说明“本次会重启内核”：`external-controller`、`external-controller-tls`、`external-controller-unix`、`external-controller-pipe`、`external-controller-cors`、`external-doh-server`、`secret`、`external-ui`、`external-ui-name`、`tls`、`geo-auto-update`、`geo-update-interval`。重启后做健康检查，失败时恢复原配置并再次重启，退出码 4。没有安装服务时照常写入，并提示需要重启内核。
 - **回滚**：`rollback` 不带修订号时，回到最近一个与生效配置不同的修订，所以连续执行两次会在两个版本间来回切换（与 `helm rollback` 相同）。`rollback <号>` 恢复指定修订，`--list` 列出历史。回滚同样经过 `-t` 校验和确认，并记为新修订（来源为 rollback）。修订号递增、不复用。回滚只恢复配置文件，下一次 apply（包括订阅更新）会按当前的订阅和 mixin 重新合成。
 
 ## 7. 内核管理与救援
 
-- **工具升级内核**：下载到临时目录并校验 checksum → 用新二进制对当前配置执行 `-t` → 通过后替换并保留旧版本 → systemd 重启 → 健康检查失败则换回旧版本。
-- **按 CPU 指令集级别选择内核构建**：mihomo 的标准 amd64 构建要求 x86-64-v3（AVX2、BMI2、FMA 等），在更低级别的 CPU 上直接报错退出；另有 `compatible` 构建面向低级别 CPU。虚拟机很常见这种情况：实测一台 KVM 虚拟机的 CPU 类型配置为通用型号时只暴露 x86-64-v1，标准构建无法运行。
-  - 安装和升级时读取 `/proc/cpuinfo` 的 flags 判断级别，v3 及以上用标准构建，否则用 `compatible`。面板触发的内核升级由内核自己选择构建，救援流程需要能识别并回滚到可运行的版本。
+- **内核自升级的实际行为**（读 v1.19.33 源码 `component/updater/update_core.go`、`hub/route/upgrade.go`、`restart.go` 确认）：
+  - 面板经 `POST /upgrade` 触发。内核从 `github.com/MetaCubeX/mihomo/releases/latest/download/` 下载，请求按规则分流，不经镜像，**不做任何校验**（只限制 32 MB、90 秒）。
+  - 在二进制所在目录建 `meta-update/`、`meta-backup/`，备份后原地覆盖二进制（文件忙时先删除再创建），所以内核用户必须能写二进制和它所在的目录。
+  - 资产名由编译时的 GOAMD64 决定（如 `mihomo-linux-amd64-v3-<版本>.gz`），升级后 CPU 级别不变。
+  - 替换后以 `syscall.Exec` 在原进程内运行新二进制，PID 不变，systemd 看不到重启；新版本起不来时进程退出，才进入 systemd 的重启与救援。`POST /restart` 同样原地 exec。
+- **按 CPU 指令集级别选择内核构建**：mihomo 的标准 amd64 构建要求 x86-64-v3（AVX2、BMI2、FMA 等），在更低级别的 CPU 上直接报错退出。虚拟机很常见这种情况：实测一台 KVM 虚拟机的 CPU 类型配置为通用型号时只暴露 x86-64-v1，标准构建无法运行。
+  - 发布中有明确标注级别的构建 `mihomo-linux-amd64-v1|v2|v3-<版本>.gz`（另有不带级别的构建和旧名 `compatible`，不使用：带级别的资产名与面板升级时内核自己选的一致）。arm64 只有 `mihomo-linux-arm64-<版本>.gz`。
+  - 读取 `/proc/cpuinfo` 的 flags 判断级别：v3 需要 avx avx2 bmi1 bmi2 f16c fma abm（lzcnt）movbe xsave；v2 需要 cx16 lahf_lm popcnt pni（sse3）sse4_1 sse4_2 ssse3；否则为 v1。
   - `doctor` 报告 CPU 级别；低于 v3 时提示虚拟机可改用 host 或更新的 CPU 型号以获得更好的性能（同时会带来 AES-NI）。
+- **版本**：默认安装最新正式发布（不支持 alpha），`--version` 可以指定。
 - **镜像下载，官方校验**：国内服务器直连 GitHub 下载很慢（实测 2 分钟只下完 22MB 中的 6.5MB），经 gh-proxy 等镜像只需约 12 秒。工具支持配置 GitHub 下载镜像（内核、geo 数据、面板，以及安装脚本），但**校验值必须取自官方来源**：从 `api.github.com` 读取 release 资产的 `digest`（sha256），镜像只负责传输字节，校验不一致则丢弃；GitHub 没有提供 digest 的资产拒绝下载。api.github.com 在国内通常可以直连。实现见 `pkg/core/download`。
-- **兼容面板升级**：面板通过内核接口升级时会原地替换二进制，因此：
-  - 工具在每个版本被确认运行正常后，把它复制到 `/var/lib/tunlr/kernels/<版本>/` 作为已知可用版本。
-  - systemd unit 配置 `Restart=on-failure`、`StartLimitBurst`，以及 `OnFailure=` 触发 `tunlr _rescue`。
-  - `_rescue` 先清理 TUN/auto-redirect 残留的 nftables 规则以恢复直连和 SSH，再在二进制与已知可用版本不一致时自动回滚并重启。
+- **运行身份与权限**：
+  - 内核以系统用户 `tunlr` 运行（`useradd --system`），通过 systemd `AmbientCapabilities` 只授予 `CAP_NET_ADMIN` 和 `CAP_NET_BIND_SERVICE`。不用 `DynamicUser`：工作目录要由 root 写入配置又归内核用户所有，动态用户的 uid 不固定，目录还会被移到 `/var/lib/private`。
+  - 为了让面板升级可用，`bin/` 归 `tunlr` 所有；工作目录（含 external-ui）同样归它所有。
+  - **root 不执行内核用户可写的二进制**：`bin/mihomo` 可被内核改写，root 运行它就是提权。因此 `mihomo -t` 降权到 `tunlr` 用户运行（系统中没有这个用户，即尚未 `init` 时，以当前用户运行）。
+- **已知可用版本**：`/var/lib/tunlr/kernels/<版本>/mihomo`，root 所有、0755，保留最近 3 个；状态文件记录每个版本的资产名、二进制的 sha256 和确认时间。工具安装的版本通过健康检查后加入，面板升级来的版本由 `_update` 核对后加入。
+- **健康检查**：启动或重启后 15 秒内经 socket 得到 `/version` 响应且版本与预期一致，再等 3 秒，服务仍为 active 且 systemd 的重启计数（`NRestarts`）没有增加。
+- **工具升级内核**（`tunlr upgrade core [--version <v>]`）：
+  1. 下载并按官方 sha256 校验，解压到 `kernels/<版本>/`（此时尚未记为已知可用）。
+  2. 降权用新内核对生效的配置执行 `-t`，不通过则停止（退出码 3），运行中的内核不受影响。
+  3. 加锁，读入当前二进制备用（失败时换回）。
+  4. 在 `bin/` 中写临时文件后 rename 替换，归 `tunlr` 所有。
+  5. 服务在运行时重启并做健康检查；失败则换回原二进制、再次重启，退出码 4。服务没有运行时只替换，下次 `start` 通过健康检查后才记为已知可用。
+  6. 记为已知可用，清理多余的版本（`kernels/` 中不在记录里的目录，包括校验未通过、下载后没用上的）。
+  - 只有 `kernels/` 中工具下载校验过、sha256 与 `bin/mihomo` 一致的版本，才会在健康检查通过后记为已知可用。
+  - `--rollback` 换到上一个已知可用版本，同样经过 `-t`、重启和健康检查。
+- **面板升级的善后**（`_update`）：`bin/mihomo` 的 sha256 不在已知可用记录中时，查询运行中的版本（`/version`），下载该版本对应的官方资产解压后比较：一致则记为已知可用；不一致则换成校验过的二进制（下载不到时，如 alpha 版本，换回最近的已知可用版本）并重启。内核没有运行时跳过，交给救援。
+  - 实测（tunlr-dev）：面板经 `POST /upgrade` 升级时，内核经节点下载 github.com 失败（`io.Copy(): unexpected EOF`），原二进制不受影响；以 `tunlr` 身份换上官方 v1.19.33 后 `_update` 核对通过并记为已知可用；换上末尾多一个字节的官方二进制（仍能运行）后被换成校验过的版本。
+- **救援**：
+  - `tunlr-core.service` 配置 `Restart=on-failure`、`RestartSec=3`、`StartLimitIntervalSec=120`、`StartLimitBurst=5`，以及 `OnFailure=tunlr-rescue.service`（执行 `tunlr _rescue`）。达到重启上限后服务进入 failed，触发救援。
+  - `_rescue`：（MVP 3 起先清理透明代理的 nftables 规则，恢复直连和 SSH。）当前二进制不是已知可用版本时，换回最近的已知可用版本，`reset-failed` 后启动并做健康检查。已经是已知可用版本仍然起不来时，多半是配置或环境问题：不循环重启，保持停止，在日志中说明原因。
+  - `upgrade core` 进行中持有锁并自己处理回滚；`_rescue` 拿不到锁时直接退出，不与它争抢。
   - 代价：面板升级出问题时，会有一个从启动失败到自动回滚的短暂断网窗口；工具升级则没有。README 中说明这一取舍。
-- **权限**：mihomo 以专用的非 root 用户运行，通过 systemd `AmbientCapabilities` 只授予 `CAP_NET_ADMIN` 和 `CAP_NET_BIND_SERVICE`。为了让面板升级可用，内核二进制放在该用户拥有的目录中；external-ui 目录同样可写。
+  - 实测（tunlr-dev）：把 `bin/mihomo` 换成立即退出的脚本后，systemd 重启 5 次（约 20 秒）进入 failed，触发 `tunlr-rescue.service`，换回已知可用版本并通过健康检查。
+- **unit 的其他设置**：`ExecStart=/var/lib/tunlr/bin/mihomo -d /var/lib/tunlr/core`；`CapabilityBoundingSet` 与 `AmbientCapabilities` 相同；`NoNewPrivileges=yes`、`ProtectSystem=strict`、`ReadWritePaths=` 只含 `bin/` 与 `core/`、`ProtectHome=yes`、`PrivateTmp=yes`；`LimitNOFILE=1048576`。TUN 需要的设备与权限在 MVP 3 实测后调整。实测 Debian 12（systemd 252）上 `AmbientCapabilities` 对非 root 用户生效。
+- **定时更新**（`tunlr-update.timer` 触发 `tunlr-update.service`，执行 `tunlr _update`）：每天一次，`OnCalendar=daily`、`RandomizedDelaySec=1h`、`Persistent=true`。`init` 用 `enable --now` 启动 timer：只启用不启动的话要到下次开机才开始计时（实测）；第一次启动不会立即触发。依次：
+  1. 更新启用的订阅，失败时保留上一次的内容。
+  2. 按当前订阅和 mixin 合成并发布，与 `apply --yes` 相同；有变化才发布，检查不通过则保持当前配置。
+  3. 面板升级的善后（见上）。
+  4. geo 数据更新。
+  - 任何一步失败都记录在日志中，继续后面的步骤，最后以非零退出码结束，让 systemd 记为失败。每一步的结果（ok、skipped、failed 和说明）输出到 journal。
+- **geo 数据更新**（读源码 `component/updater/update_geo.go` 并实测）：
+  - 内核的 geo 数据只能由内核自己的更新器重新加载（`mmdb.ReloadIP` 等只在更新器中调用）；工具替换文件后要重启内核才生效。
+  - `POST /configs/geo` 同步执行：内容与磁盘上的相同时直接返回 204，不写文件也不记日志（之前“没有结果”的原因）；单个文件的下载时限 90 秒，经 gh-proxy 实测一次 64 秒成功、一次 90 秒超时。
+  - 所以 `_update` 先调用 `POST /configs/geo` 让内核经镜像更新，无需重启；成功后由工具查询 meta-rules-dat 最新发布的官方 sha256，核对工作目录中内核正在使用的 geo 文件。不一致时下载校验过的文件（经镜像校验不通过时改为直连）替换并重启内核；拿不到校验过的文件则记录错误。内核下载失败（如超时）时本次跳过，留给下一次。
 - **状态以实际为准**：版本、TUN 状态等一律通过 API 查询内核实际情况；工具自己的记录只作为“已知可用的历史”。
 - 注意：内核 API 并不稳定（例如曾有标注为 break 的 `/proxies` 行为变更），API 调用集中封装在 `pkg/core/mihomo` 的 client 中，并随 mihomo 发版做兼容性测试。
-- 内核自升级的具体实现（是否校验 checksum、重启方式）需查阅 mihomo 源码中的 updater 确认，这会影响 unit 的写法。
 
 ## 8. 透明代理
 
@@ -342,6 +380,14 @@ tunlr version
 
 内部命令（供 systemd 调用，不显示在帮助中）：`tunlr _check`、`tunlr _rescue`、`tunlr _update`。
 
+服务与安装相关命令的行为：
+
+- `init`：可重复执行，再次执行即修复。依次：检查环境（root、systemd、架构）→ 把自身复制到 `/usr/local/bin/tunlr` → 创建用户 `tunlr` → 建目录并设置属主与权限 → 没有内核时安装最新版 → 写入 unit 和 timer、`daemon-reload`、启用 `tunlr-core.service` 与 `tunlr-update.timer` → 给了订阅就添加 → 有启用的订阅时发布配置并启动内核、做健康检查。交互模式下询问 GitHub 镜像和订阅地址（都可以留空）；非交互模式由 `--mirror`、`--sub <名称>=<地址>` 给出，没给就跳过。
+- `start`、`stop`、`restart`：执行 `systemctl`，`start`、`restart` 之后做健康检查。`logs` 执行 `journalctl -u tunlr-core.service`，透传 `-f`、`-n`。
+- `status`：服务状态、运行中的内核版本、已知可用版本、启用的订阅、最近一次发布、下次定时更新的时间。
+- `uninstall`：停止并禁用、删除 unit，删除 `bin/`、`core/`、`kernels/` 和用户 `tunlr`；保留 `/etc/tunlr`、订阅、历史、状态文件和 `/usr/local/bin/tunlr`（之后可以直接 `tunlr init` 恢复），`--purge` 才一并删除。需要确认（`--yes`）。
+- `sub use <名称>`：交互模式下询问是否立即发布，`--apply` 直接发布（同 `apply`，非交互时需配合 `--yes`）。`_check` 推迟到 MVP 3。
+
 设计思路：高频的服务控制放在顶层，与 `systemctl` 的直觉一致；只保留 `sub`、`tun`、`env` 三组子命令（`sub use` 的说法与 `kubectl config use-context`、`nvm use` 一致）；合并含义重叠的命令。检验标准：没看过文档的人能猜对大部分常用操作。
 
 全局参数、非交互模式与退出码见 `CLAUDE.md`。
@@ -380,7 +426,5 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 ## 14. 待决事项
 
 - 透明代理是否需要 tproxy 实现（取决于第 8.2 节实测）
-- 经 API 触发的内核 geo 更新（`POST /configs/geo`）实测 120 秒内没有结果也没有报错，需在实现 `_update` 的 geo 更新时查明，并确认面板上的“更新 geo”按钮可用。
-- 热重载（`PUT /configs`）不应用 API 自身的设置：实测（v1.19.33）改 `secret`、`external-controller` 后重载，`log-level` 等已生效，API 仍按旧的 secret 和地址服务，重启内核后才生效。`apply` 目前仍报告“已重新加载”。需要识别这类键的变化，提示或（有 systemd 服务后）自动重启内核。
 - 开源协议
 - 商标查询

@@ -1,0 +1,9 @@
+# 由 tunlr 生成，tunlr init 时重写；不要直接修改。
+# tunlr-core.service 达到重启上限后由 OnFailure= 触发。
+[Unit]
+Description=Rescue the mihomo kernel after repeated failures (tunlr)
+Documentation=https://tunlr.app
+
+[Service]
+Type=oneshot
+ExecStart={{.Tool}} _rescue

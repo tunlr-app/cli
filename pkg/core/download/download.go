@@ -50,6 +50,34 @@ type Asset struct {
 	URL    string `json:"browser_download_url"`
 }
 
+// SHA256 返回 GitHub 提供的 sha256（十六进制）。没有时返回错误：没有官方校验值的资产不能下载。
+func (a *Asset) SHA256() (string, error) {
+	sum, ok := strings.CutPrefix(a.Digest, "sha256:")
+	if !ok || len(sum) != sha256.Size*2 {
+		return "", fmt.Errorf("GitHub provides no sha256 digest for %s; refusing to download unverified", a.Name)
+	}
+	return sum, nil
+}
+
+// Release 是一个 GitHub release。
+type Release struct {
+	Repo string `json:"-"`
+	Tag  string `json:"tag_name"`
+	// requested 是查询时给出的 tag，为空表示最新的正式发布，用于错误信息。
+	requested string
+	Assets    []Asset `json:"assets"`
+}
+
+// Asset 返回名为 name 的资产。
+func (r *Release) Asset(name string) (*Asset, error) {
+	for i := range r.Assets {
+		if r.Assets[i].Name == name {
+			return &r.Assets[i], nil
+		}
+	}
+	return nil, fmt.Errorf("release %s %s has no asset %s", r.Repo, releaseName(r.requested), name)
+}
+
 // FetchAsset 下载 repo（形如 "owner/name"）在 tag 下名为 name 的资产，按官方 sha256 校验后
 // 原子写入 dst。dst 所在目录必须已存在。
 func (c *Client) FetchAsset(ctx context.Context, repo, tag, name, dst string, perm os.FileMode) error {
@@ -63,21 +91,30 @@ func (c *Client) FetchAsset(ctx context.Context, repo, tag, name, dst string, pe
 // Fetch 下载 repo 在 tag 下名为 name 的资产并按官方 sha256 校验，返回其内容。
 // tag 为空时使用最新的正式发布。
 func (c *Client) Fetch(ctx context.Context, repo, tag, name string) ([]byte, error) {
-	asset, err := c.lookup(ctx, repo, tag, name)
+	rel, err := c.Release(ctx, repo, tag)
 	if err != nil {
 		return nil, err
 	}
-	want, ok := strings.CutPrefix(asset.Digest, "sha256:")
-	if !ok || len(want) != sha256.Size*2 {
-		return nil, fmt.Errorf("%s %s: GitHub provides no sha256 digest for %s; refusing to download unverified", repo, releaseName(tag), name)
+	asset, err := rel.Asset(name)
+	if err != nil {
+		return nil, err
+	}
+	return c.Get(ctx, asset)
+}
+
+// Get 下载已查询到的资产并按官方 sha256 校验，返回其内容。
+func (c *Client) Get(ctx context.Context, asset *Asset) ([]byte, error) {
+	want, err := asset.SHA256()
+	if err != nil {
+		return nil, err
 	}
 	data, err := c.get(ctx, MirrorURL(c.Mirror, asset.URL), asset.Size)
 	if err != nil {
-		return nil, fmt.Errorf("download %s: %w", name, err)
+		return nil, fmt.Errorf("download %s: %w", asset.Name, err)
 	}
 	sum := sha256.Sum256(data)
 	if got := hex.EncodeToString(sum[:]); got != want {
-		return nil, fmt.Errorf("download %s: %w (want %s, got %s)", name, ErrChecksumMismatch, want, got)
+		return nil, fmt.Errorf("download %s: %w (want %s, got %s)", asset.Name, ErrChecksumMismatch, want, got)
 	}
 	return data, nil
 }
@@ -98,8 +135,9 @@ func MirrorURL(mirror, url string) string {
 	return strings.TrimSuffix(mirror, "/") + "/" + url
 }
 
-// lookup 通过官方 API 查询资产的地址、大小和 sha256。
-func (c *Client) lookup(ctx context.Context, repo, tag, name string) (*Asset, error) {
+// Release 通过官方 API 查询 repo 在 tag 下的发布（tag 为空时为最新的正式发布），
+// 包括各资产的地址、大小和 sha256。
+func (c *Client) Release(ctx context.Context, repo, tag string) (*Release, error) {
 	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 	base := c.APIBase
@@ -123,18 +161,11 @@ func (c *Client) lookup(ctx context.Context, repo, tag, name string) (*Asset, er
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("query release %s %s: HTTP %s", repo, releaseName(tag), resp.Status)
 	}
-	var rel struct {
-		Assets []Asset `json:"assets"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&rel); err != nil {
+	rel := &Release{Repo: repo, requested: tag}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(rel); err != nil {
 		return nil, fmt.Errorf("query release %s %s: %w", repo, releaseName(tag), err)
 	}
-	for i := range rel.Assets {
-		if rel.Assets[i].Name == name {
-			return &rel.Assets[i], nil
-		}
-	}
-	return nil, fmt.Errorf("release %s %s has no asset %s", repo, releaseName(tag), name)
+	return rel, nil
 }
 
 func (c *Client) get(ctx context.Context, url string, size int64) ([]byte, error) {

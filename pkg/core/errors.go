@@ -1,7 +1,7 @@
 // Package core 包含 tunlr 的全部业务逻辑，供 CLI 以及将来的 agent 等组件复用。
 //
 // 子包按职责划分：config（配置流水线）、mihomo（内核与 API）、netfilter（nftables）、
-// service（systemd）、doctor（诊断）、lock（文件锁）。
+// service（systemd）、setup（安装与定时更新的编排）、doctor（诊断）、lock（文件锁）。
 package core
 
 import "errors"

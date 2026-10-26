@@ -198,16 +198,28 @@ func (a *app) newSubUpdateCommand() *cobra.Command {
 }
 
 func (a *app) newSubUseCommand() *cobra.Command {
-	return &cobra.Command{
+	var apply bool
+	cmd := &cobra.Command{
 		Use:   "use <name>",
 		Short: "Make a saved subscription the active one",
-		Args:  usageArgs(cobra.ExactArgs(1)),
+		Long: "Make a saved subscription the active one. With --apply, publish the configuration\n" +
+			"right away like tunlr apply (pass --yes too when not interactive); interactively\n" +
+			"tunlr asks whether to publish it now.",
+		Args: usageArgs(cobra.ExactArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if apply {
+				if a.opts.JSON {
+					return usageErrorf("--apply cannot be combined with --json; run tunlr apply --json afterwards")
+				}
+				if err := a.requireConfirmation("sub use --apply"); err != nil {
+					return err
+				}
+			}
 			res, err := a.subscriptions().Use(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
-			return a.render(fetchedView{res.Name, res.Activated, res.Summary}, func() error {
+			err = a.render(fetchedView{res.Name, res.Activated, res.Summary}, func() error {
 				var err error
 				if res.Activated {
 					_, err = fmt.Fprintf(a.stdout, "Switched to %q: %s.\n", res.Name, describeSummary(res.Summary))
@@ -216,8 +228,34 @@ func (a *app) newSubUseCommand() *cobra.Command {
 				}
 				return err
 			})
+			if err != nil || a.opts.JSON {
+				return err
+			}
+			if !apply {
+				if !res.Activated {
+					return nil
+				}
+				if !a.interactive() {
+					_, err := fmt.Fprintln(a.stdout, "Publish the new configuration with: tunlr apply")
+					return err
+				}
+				if apply, err = a.confirm(cmd.Context(), "Publish the new configuration now?"); err != nil || !apply {
+					if err == nil {
+						fmt.Fprintln(a.stdout, "Not published; run tunlr apply when ready.")
+					}
+					return err
+				}
+			}
+			fmt.Fprintln(a.stdout)
+			plan, err := a.pipeline().Plan(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return a.publish(cmd, plan, "Apply this configuration?")
 		},
 	}
+	cmd.Flags().BoolVar(&apply, "apply", false, "publish the configuration right away (like tunlr apply)")
+	return cmd
 }
 
 func describeSummary(s config.SubscriptionSummary) string {

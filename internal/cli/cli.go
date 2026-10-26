@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
 	"github.com/tunlr-app/cli/pkg/core/download"
@@ -68,10 +69,8 @@ func Main(info BuildInfo, args []string) int {
 		stderr: os.Stderr,
 		log:    slog.New(slog.DiscardHandler),
 	}
-	a.terminal = func() bool {
-		fi, err := a.stdin.Stat()
-		return err == nil && fi.Mode()&os.ModeCharDevice != 0
-	}
+	// 不能只看是否为字符设备：/dev/null 也是（systemd 运行的命令、< /dev/null 都会误判为终端）。
+	a.terminal = func() bool { return term.IsTerminal(a.stdin.Fd()) }
 	a.editor = a.runEditor
 	a.prompt = huhPrompter{a}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -136,6 +135,16 @@ func (a *app) newRootCommand() *cobra.Command {
 	})
 
 	root.AddCommand(
+		a.newInitCommand(),
+		a.newStatusCommand(),
+		a.newStartCommand(),
+		a.newStopCommand(),
+		a.newRestartCommand(),
+		a.newLogsCommand(),
+		a.newUpgradeCommand(),
+		a.newUninstallCommand(),
+		a.newRescueCommand(),
+		a.newUpdateCommand(),
 		a.newPlanCommand(),
 		a.newApplyCommand(),
 		a.newRollbackCommand(),

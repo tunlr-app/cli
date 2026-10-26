@@ -35,6 +35,31 @@ type State struct {
 
 	// APISecret 是内核 HTTP API（面板经它访问）的 secret，第一次发布配置时生成。
 	APISecret string `json:"api_secret,omitempty"`
+
+	// Kernels 是已知可用的内核版本，最近确认的在前。
+	Kernels []Kernel `json:"kernels,omitempty"`
+}
+
+// Kernel 是一个已知可用的内核版本，二进制存放在 paths.Layout.KernelBinary(Version)。
+type Kernel struct {
+	// Version 形如 v1.19.33。
+	Version string `json:"version"`
+	// Asset 是它在官方发布中的资产名，如 mihomo-linux-amd64-v3-v1.19.33.gz。
+	Asset string `json:"asset"`
+	// SHA256 是解压后的二进制的 sha256。
+	SHA256 string `json:"sha256"`
+	// VerifiedAt 是它通过健康检查或核对的时间。
+	VerifiedAt time.Time `json:"verified_at"`
+}
+
+// FindKernel 返回二进制的 sha256 为 sum 的已知可用版本，不存在时返回 nil。
+func (s *State) FindKernel(sum string) *Kernel {
+	for i := range s.Kernels {
+		if s.Kernels[i].SHA256 == sum {
+			return &s.Kernels[i]
+		}
+	}
+	return nil
 }
 
 // Subscription 是一个已保存的订阅。抓取到的内容单独存放在 paths.Layout.SubscriptionFile 中。

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/tunlr-app/cli/pkg/core/download"
+	"github.com/tunlr-app/cli/pkg/core/fsutil"
 )
 
 // zashboard 是默认的面板。模板中的 external-ui-url 指向它最新发布的 dist.zip。
@@ -28,11 +29,11 @@ const maxUISize = 256 << 20
 
 // EnsureUI 确保 dir 中有面板。dir 已存在时什么都不做，与内核一致：实测内核启动时发现
 // 面板目录已存在就跳过下载。否则经 d 下载 zashboard 的最新发布，按官方 sha256 校验，
-// 解压后原子地放到 dir。返回是否新安装了面板。
+// 解压后原子地放到 dir，属主设为 owner（内核在面板上手动更新时要能替换它）。返回是否新安装了面板。
 //
 // 内核自己下载面板时不做任何校验；面板在浏览器中运行并持有 API secret，
 // 经镜像下载时尤其需要校验，因此由工具代为安装。
-func EnsureUI(ctx context.Context, d *download.Client, dir string) (bool, error) {
+func EnsureUI(ctx context.Context, d *download.Client, dir string, owner *fsutil.Owner) (bool, error) {
 	if _, err := os.Stat(dir); err == nil {
 		return false, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -46,6 +47,9 @@ func EnsureUI(ctx context.Context, d *download.Client, dir string) (bool, error)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return false, err
 	}
+	if err := owner.Chown(parent); err != nil {
+		return false, err
+	}
 	tmp, err := os.MkdirTemp(parent, ".tunlr-ui-*")
 	if err != nil {
 		return false, err
@@ -55,6 +59,9 @@ func EnsureUI(ctx context.Context, d *download.Client, dir string) (bool, error)
 		return false, fmt.Errorf("install the panel: %w", err)
 	}
 	if err := os.Chmod(tmp, 0o755); err != nil {
+		return false, err
+	}
+	if err := owner.ChownTree(tmp); err != nil {
 		return false, err
 	}
 	if err := os.Rename(tmp, dir); err != nil {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -33,9 +34,11 @@ type planView struct {
 	Generated  *pipeline.Generated `json:"generated,omitempty"`
 	Warnings   []config.Warning    `json:"warnings,omitempty"`
 	RollbackTo int                 `json:"rollback_to,omitempty"`
-	Diff       string              `json:"diff,omitempty"`
-	Config     string              `json:"config,omitempty"`
-	Check      checkView           `json:"check"`
+	// Restart 是需要重启内核才能生效的变化；不为空时发布后重启内核而不是热重载。
+	Restart []string  `json:"restart,omitempty"`
+	Diff    string    `json:"diff,omitempty"`
+	Config  string    `json:"config,omitempty"`
+	Check   checkView `json:"check"`
 }
 
 // hiddenSecret 在输出中代替 API secret 的值。
@@ -53,8 +56,11 @@ type applyView struct {
 	Plan     planView         `json:"plan"`
 	Applied  bool             `json:"applied"`
 	Revision *config.Revision `json:"revision,omitempty"`
-	// Reloaded 报告运行中的内核是否已加载新配置；内核没有运行时为 false。
-	Reloaded bool `json:"reloaded"`
+	// Reloaded 报告运行中的内核是否已热重载新配置，Restarted 报告是否已重启并通过健康检查；
+	// 都为 false 表示内核没有运行。RestartNeeded 是热重载后仍需重启才能生效的键（内核不由服务运行时）。
+	Reloaded      bool     `json:"reloaded"`
+	Restarted     bool     `json:"restarted"`
+	RestartNeeded []string `json:"restart_needed,omitempty"`
 	// UIInstalled 是本次新安装的面板目录；UIError 是安装失败的原因（不影响发布）。
 	UIInstalled string `json:"ui_installed,omitempty"`
 	UIError     string `json:"ui_error,omitempty"`
@@ -73,7 +79,7 @@ func newPlanView(p *pipeline.Plan, full bool) planView {
 	v := planView{
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
 		Subscription: p.Subscription, Dropped: p.Dropped, Mixins: p.Mixins,
-		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Diff: p.Diff,
+		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, Diff: p.Diff,
 	}
 	if p.Generated != nil {
 		g := *p.Generated
@@ -153,6 +159,9 @@ func (a *app) printPlan(v planView) {
 	default:
 		fmt.Fprint(w, v.Diff)
 		fmt.Fprintln(w)
+	}
+	if len(v.Restart) > 0 {
+		fmt.Fprintf(w, "mihomo will be restarted: %s cannot change by reloading.\n", strings.Join(v.Restart, ", "))
 	}
 
 	switch v.Check.Status {
@@ -271,6 +280,20 @@ func (a *app) requireConfirmation(command string) error {
 	return usageErrorf("%s needs confirmation; pass --yes to proceed without asking (or --dry-run to preview)", command)
 }
 
+// confirm 向用户确认；--yes 时直接同意。调用前须用 requireConfirmation 排除无法提问的情况。
+func (a *app) confirm(ctx context.Context, question string) (bool, error) {
+	if a.opts.Yes {
+		return true, nil
+	}
+	ok := false
+	err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(question).Value(&ok))).
+		WithInput(a.stdin).WithOutput(a.stderr).RunWithContext(ctx)
+	if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+		return false, err
+	}
+	return ok, nil
+}
+
 // publish 输出计划，经确认后发布。校验未通过、--dry-run 或用户取消时不发布。
 func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) error {
 	v := applyView{Plan: newPlanView(plan, false)}
@@ -290,17 +313,11 @@ func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) 
 		return err
 	}
 
-	if !a.opts.Yes {
-		ok := false
-		err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(question).Value(&ok))).
-			WithInput(a.stdin).WithOutput(a.stderr).RunWithContext(cmd.Context())
-		if err != nil && !errors.Is(err, huh.ErrUserAborted) {
-			return err
-		}
-		if !ok {
+	if ok, err := a.confirm(cmd.Context(), question); err != nil || !ok {
+		if err == nil {
 			fmt.Fprintln(a.stdout, "Not applied.")
-			return nil
 		}
+		return err
 	}
 
 	res, err := a.pipeline().Apply(cmd.Context(), plan)
@@ -311,6 +328,7 @@ func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) 
 		return err
 	}
 	v.Applied, v.Revision, v.Reloaded, v.UIInstalled = true, res.Revision, res.Reloaded, res.UIInstalled
+	v.Restarted, v.RestartNeeded = res.Restarted, res.RestartNeeded
 	if res.UIError != nil {
 		v.UIError = res.UIError.Error()
 	}
@@ -323,9 +341,16 @@ func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) 
 			fmt.Fprintf(a.stdout, "Could not install the panel: %v; mihomo will try to download it itself.\n", res.UIError)
 		}
 		var err error
-		if res.Reloaded {
+		switch {
+		case res.Restarted:
+			_, err = fmt.Fprintln(a.stdout, "mihomo has restarted with it and passed the health check.")
+		case res.Reloaded && len(res.RestartNeeded) > 0:
+			_, err = fmt.Fprintf(a.stdout, "mihomo has reloaded it, but %s only take effect after mihomo restarts;\n"+
+				"it is not run by the tunlr service, so restart it yourself (or set it up with: tunlr init).\n",
+				strings.Join(res.RestartNeeded, ", "))
+		case res.Reloaded:
 			_, err = fmt.Fprintln(a.stdout, "mihomo has reloaded it.")
-		} else {
+		default:
 			_, err = fmt.Fprintln(a.stdout, "mihomo is not running; it will use this configuration when it starts.")
 		}
 		return err

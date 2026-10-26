@@ -29,6 +29,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/lock"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/paths"
+	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/templates"
@@ -60,6 +61,12 @@ type Reloader interface {
 	Reload(ctx context.Context) error
 }
 
+// Restarter 重启由服务运行的内核并做健康检查，通常是 *mihomo.Manager。服务没有安装，或 ifRunning
+// 时服务没有运行，返回 mihomo.ErrNotRunning。调用时 Apply 持有文件锁。
+type Restarter interface {
+	RestartLocked(ctx context.Context, ifRunning bool) error
+}
+
 // Pipeline 执行配置的预览、发布与回滚。
 type Pipeline struct {
 	Layout paths.Layout
@@ -72,6 +79,12 @@ type Pipeline struct {
 	// Reloader 为空时经 Layout.CoreSocket() 的 API 让内核重新加载 Layout.CoreConfig()。
 	// 返回 mihomo.ErrNotRunning 表示内核没有运行，配置会在内核启动时生效。
 	Reloader Reloader
+	// Restarter 用于需要重启内核才能生效的变化（见 config.RestartKeys），为空时经 systemd 重启
+	// tunlr-core.service。
+	Restarter Restarter
+	// Owner 是内核用户：内核工作目录及其中的文件归它所有，mihomo -t 也以它运行。
+	// 为 nil 时用 service.KernelUser，用户尚不存在时（尚未 init）保持当前身份。
+	Owner *fsutil.Owner
 	// Keep 为零时使用 DefaultKeep。
 	Keep int
 	// Now 为空时使用 time.Now。
@@ -107,6 +120,8 @@ type Plan struct {
 	Generated *Generated
 	// RollbackTo 是回滚的目标修订（仅 KindRollback）。
 	RollbackTo int
+	// Restart 是有变化、需要重启内核才能生效的顶层键；不为空时发布后重启内核而不是热重载。
+	Restart []string
 	// Check 是校验结果，nil 表示通过；没有变化时不校验，也为 nil。
 	// 配置有误时为 *mihomo.CheckError，内核未安装时满足 errors.Is(err, mihomo.ErrNotInstalled)。
 	Check error
@@ -264,6 +279,8 @@ func (p *Pipeline) finish(ctx context.Context, plan *Plan) error {
 	}
 	if current != nil {
 		plan.Diff = config.Diff("current", "new", current, plan.Config)
+		// 解析失败的配置交给 mihomo -t 报告。
+		plan.Restart, _ = config.RestartKeys(current, plan.Config)
 	}
 	v, err := p.validator()
 	if err != nil {
@@ -277,8 +294,13 @@ func (p *Pipeline) finish(ctx context.Context, plan *Plan) error {
 type ApplyResult struct {
 	// Revision 是记录下的历史修订。
 	Revision *config.Revision
-	// Reloaded 报告运行中的内核是否已加载新配置；为 false 表示内核没有运行。
+	// Reloaded 报告运行中的内核是否已热重载新配置。
 	Reloaded bool
+	// Restarted 报告内核是否已重启（有需要重启才能生效的变化）并通过健康检查。
+	// Reloaded 与 Restarted 都为 false 表示内核没有运行，配置会在内核启动时生效。
+	Restarted bool
+	// RestartNeeded 是热重载后仍需重启内核才能生效的键：内核不是由服务运行的，工具无法重启它。
+	RestartNeeded []string
 	// UIInstalled 是本次新安装的面板目录，没有安装时为空。
 	UIInstalled string
 	// UIError 是安装面板失败的原因。面板不是发布的必要条件，失败时照常发布，
@@ -334,11 +356,9 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) 
 	if err := p.writeConfig(plan.Config); err != nil {
 		return nil, err
 	}
-	result := &ApplyResult{Reloaded: true, UIInstalled: uiDir, UIError: uiErr}
-	if err := p.reloader().Reload(ctx); errors.Is(err, mihomo.ErrNotRunning) {
-		result.Reloaded = false
-	} else if err != nil {
-		return nil, p.restore(ctx, current, err)
+	result := &ApplyResult{UIInstalled: uiDir, UIError: uiErr}
+	if err := p.activate(ctx, plan.Restart, result); err != nil {
+		return nil, p.restore(ctx, current, plan.Restart, err)
 	}
 
 	rev := config.Revision{
@@ -356,21 +376,61 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) 
 	return result, nil
 }
 
-// restore 在内核加载新配置失败后恢复原来的配置，并让内核重新加载它。
+// activate 让运行中的内核使用刚写入的配置：restart 不为空时重启由服务运行的内核，否则热重载。
+// 没有由服务运行的内核时（如手动运行）退回热重载，并在 result 中提示需要重启。
+func (p *Pipeline) activate(ctx context.Context, restart []string, result *ApplyResult) error {
+	if len(restart) > 0 {
+		err := p.restarter().RestartLocked(ctx, true)
+		if err == nil {
+			result.Restarted = true
+			return nil
+		}
+		if !errors.Is(err, mihomo.ErrNotRunning) {
+			return &restartError{err}
+		}
+	}
+	err := p.reloader().Reload(ctx)
+	if errors.Is(err, mihomo.ErrNotRunning) {
+		return nil
+	}
+	if err == nil {
+		result.Reloaded = true
+		result.RestartNeeded = restart
+	}
+	return err
+}
+
+// restartError 表示重启内核后健康检查等失败：恢复原配置后要再次重启，而不是热重载，
+// 因为此时内核可能已经停止或正在被 systemd 重启。
+type restartError struct{ err error }
+
+func (e *restartError) Error() string { return e.err.Error() }
+func (e *restartError) Unwrap() error { return e.err }
+
+// restore 在内核加载新配置失败后恢复原来的配置，并让内核重新加载（或重启后加载）它。
 // 内核在加载新配置时退出的，恢复文件后由它下次启动时加载。
-func (p *Pipeline) restore(ctx context.Context, previous []byte, cause error) error {
+func (p *Pipeline) restore(ctx context.Context, previous []byte, restart []string, cause error) error {
 	var err error
 	if previous == nil {
 		err = os.Remove(p.Layout.CoreConfig())
 	} else if err = p.writeConfig(previous); err == nil {
-		if err = p.reloader().Reload(ctx); errors.Is(err, mihomo.ErrNotRunning) {
-			err = nil
+		if _, ok := errors.AsType[*restartError](cause); ok {
+			err = p.restarter().RestartLocked(ctx, false)
+		} else {
+			err = p.activate(ctx, restart, &ApplyResult{})
 		}
 	}
 	if err != nil {
 		return fmt.Errorf("mihomo failed to load the new configuration: %w; restoring the previous one also failed: %v", cause, err)
 	}
 	return fmt.Errorf("%w: mihomo failed to load the new configuration: %w", core.ErrRolledBack, cause)
+}
+
+func (p *Pipeline) restarter() Restarter {
+	if p.Restarter != nil {
+		return p.Restarter
+	}
+	return &mihomo.Manager{Layout: p.Layout, Service: &service.Systemd{Layout: p.Layout}, Download: p.Download, Owner: p.owner(), Now: p.Now}
 }
 
 func (p *Pipeline) reloader() Reloader {
@@ -416,21 +476,25 @@ func (p *Pipeline) saveSecret(secret string) error {
 	return ErrStale
 }
 
-// writeConfig 原子写入生效的配置。工作目录中的 API socket 由内核以 0666 创建且访问免 secret，
-// 只能靠目录权限阻止其他本地用户，因此每次发布都把目录权限收紧到 0750。
+// writeConfig 原子写入生效的配置，归内核用户所有。工作目录中的 API socket 由内核以 0666 创建且
+// 访问免 secret，只能靠目录权限阻止其他本地用户，因此每次发布都把目录权限收紧到 0750。
 func (p *Pipeline) writeConfig(data []byte) error {
 	if err := p.ensureCoreDir(); err != nil {
 		return err
 	}
-	return fsutil.WriteFile(p.Layout.CoreConfig(), data, 0o640)
+	return fsutil.WriteFileOwned(p.Layout.CoreConfig(), data, 0o640, p.owner())
 }
 
 func (p *Pipeline) ensureCoreDir() error {
-	dir := p.Layout.CoreDir()
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return err
+	return mihomo.EnsureHome(p.Layout.CoreDir(), p.owner())
+}
+
+// owner 返回内核用户，见 Pipeline.Owner。查找失败时保持当前身份。
+func (p *Pipeline) owner() *fsutil.Owner {
+	if p.Owner == nil {
+		p.Owner, _ = service.KernelUser(p.Layout)
 	}
-	return os.Chmod(dir, 0o750)
+	return p.Owner
 }
 
 // installUI 在面板目录不存在时下载并校验 zashboard，免得内核自己从未经校验的地址下载。
@@ -453,7 +517,7 @@ func (p *Pipeline) installUI(ctx context.Context, cfg []byte) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, uiTimeout)
 	defer cancel()
-	installed, err := mihomo.EnsureUI(ctx, p.downloader(set), dir)
+	installed, err := mihomo.EnsureUI(ctx, p.downloader(set), dir, p.owner())
 	if !installed {
 		return "", err
 	}
@@ -480,6 +544,7 @@ func (p *Pipeline) validator() (Validator, error) {
 		Binary:   p.Layout.CoreBinary(),
 		HomeDir:  p.Layout.CoreDir(),
 		Download: p.downloader(set),
+		RunAs:    p.owner(),
 	}, nil
 }
 

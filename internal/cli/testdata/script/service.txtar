@@ -1,0 +1,31 @@
+# 尚未 init 时，status 照常报告
+exec tunlr status
+stdout 'Service: +not installed \(run: tunlr init\)'
+stdout 'mihomo: +not installed'
+stdout 'Subscription: +none'
+
+exec tunlr status --json
+stdout '"installed": false'
+stdout '"kernels": \[\]'
+
+# 服务控制需要先 init
+exitcode 1 tunlr start
+stderr 'the mihomo service is not installed; run: tunlr init'
+exitcode 1 tunlr stop
+stderr 'run: tunlr init'
+
+# 参数用法错误：退出码 2
+exitcode 2 tunlr init --sub nope
+stderr '--sub must be <name>=<url>'
+exitcode 2 tunlr upgrade core --rollback --version v1.19.33
+stderr 'cannot be used together'
+exitcode 2 tunlr upgrade core --version 1.19
+stderr 'invalid mihomo version "v1.19"'
+exitcode 2 tunlr logs --json
+stdout 'logs does not support --json'
+
+# 非交互时卸载必须带 --yes
+exitcode 2 tunlr uninstall
+stderr 'uninstall needs confirmation; pass --yes'
+exitcode 2 tunlr uninstall --dry-run
+stderr 'does not support --dry-run'

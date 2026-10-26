@@ -1,0 +1,12 @@
+# 由 tunlr 生成，tunlr init 时重写；不要直接修改。
+[Unit]
+Description=Daily tunlr update
+Documentation=https://tunlr.app
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

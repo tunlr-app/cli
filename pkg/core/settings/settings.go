@@ -1,4 +1,4 @@
-// Package settings 读取工具设置（/etc/tunlr/settings.yaml）。设置由用户编辑，
+// Package settings 读取和修改工具设置（/etc/tunlr/settings.yaml）。设置由用户编辑，
 // 文件不存在时使用默认值。
 package settings
 
@@ -10,11 +10,14 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
 
 	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/pkg/core/fsutil"
 )
 
 // Version 是设置文件当前的结构版本。手写的文件可以省略 version，视为当前版本。
@@ -63,13 +66,78 @@ func (s *Settings) validate() error {
 		return fmt.Errorf("%w: invalid version %d", core.ErrInvalidArgument, s.Version)
 	}
 	if s.GitHubMirror != "" {
-		u, err := url.Parse(s.GitHubMirror)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("%w: github-mirror must be an http or https URL", core.ErrInvalidArgument)
+		if err := ValidateMirror(s.GitHubMirror); err != nil {
+			return err
 		}
 	}
 	if err := ValidateUserAgent(s.UserAgent); err != nil {
 		return fmt.Errorf("user-agent: %w", err)
+	}
+	return nil
+}
+
+// Set 把设置文件中的 key 设为 value（为空时删除该键），保留其他键和注释，校验通过后原子写入。
+// 文件不存在时创建。
+func Set(path, key, value string) error {
+	var doc yaml.Node
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("settings %s: %w", path, err)
+	}
+	if doc.Kind == 0 {
+		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}}
+	}
+	m := doc.Content[0]
+	if m.Kind != yaml.MappingNode {
+		return fmt.Errorf("settings %s: not a mapping", path)
+	}
+	found := false
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value != key {
+			continue
+		}
+		found = true
+		if value == "" {
+			m.Content = slices.Delete(m.Content, i, i+2)
+		} else {
+			m.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+		}
+		break
+	}
+	if !found && value != "" {
+		m.Content = append(m.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return err
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(buf.Bytes()))
+	dec.KnownFields(true)
+	s := &Settings{Version: Version}
+	if err := dec.Decode(s); err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("%w: %v", core.ErrInvalidArgument, err)
+	}
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return fsutil.WriteFile(path, buf.Bytes(), 0o644)
+}
+
+// ValidateMirror 检查 GitHub 镜像前缀：必须是 http 或 https 地址。
+func ValidateMirror(mirror string) error {
+	u, err := url.Parse(mirror)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("%w: github-mirror must be an http or https URL", core.ErrInvalidArgument)
 	}
 	return nil
 }

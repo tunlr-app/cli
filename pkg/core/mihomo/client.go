@@ -87,6 +87,15 @@ func (c *Client) ReloadConfig(ctx context.Context, path string) error {
 	return c.do(ctx, reloadTimeout, http.MethodPut, "/configs?force=true", map[string]string{"path": abs}, nil)
 }
 
+// geoUpdateTimeout 是 UpdateGeo 的时限。内核逐个下载 geo 文件，单个文件的时限是 90 秒。
+const geoUpdateTimeout = 10 * time.Minute
+
+// UpdateGeo 让内核按 geox-url 下载并加载配置用到的 geo 数据（POST /configs/geo）。请求同步执行；
+// 内容与磁盘上相同的文件内核不做任何事。内核下载时不做任何校验，见 VerifyGeo。
+func (c *Client) UpdateGeo(ctx context.Context) error {
+	return c.do(ctx, geoUpdateTimeout, http.MethodPost, "/configs/geo", nil, nil)
+}
+
 func (c *Client) do(ctx context.Context, timeout time.Duration, method, path string, in, out any) error {
 	if _, err := os.Stat(c.socket); errors.Is(err, fs.ErrNotExist) {
 		return ErrNotRunning
