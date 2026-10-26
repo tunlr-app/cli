@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestLoadOrCreate(t *testing.T) {
+func TestLoadOrNew(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "var", "lib", "tunlr", "state.json")
 	now := time.Date(2026, 10, 26, 9, 0, 0, 0, time.FixedZone("CST", 8*3600))
 
@@ -18,7 +18,7 @@ func TestLoadOrCreate(t *testing.T) {
 		t.Fatalf("Load before create: err = %v, want fs.ErrNotExist", err)
 	}
 
-	s, created, err := LoadOrCreate(path, now)
+	s, created, err := LoadOrNew(path, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,8 +28,14 @@ func TestLoadOrCreate(t *testing.T) {
 	if s.Version != Version || !uuidPattern.MatchString(s.InstanceID) || !s.CreatedAt.Equal(now) {
 		t.Errorf("unexpected state %+v", s)
 	}
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("LoadOrNew wrote the state file: %v", err)
+	}
+	if err := Save(path, s); err != nil {
+		t.Fatal(err)
+	}
 
-	again, created, err := LoadOrCreate(path, now.Add(time.Hour))
+	again, created, err := LoadOrNew(path, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

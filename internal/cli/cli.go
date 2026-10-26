@@ -3,13 +3,21 @@
 package cli
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
+
+	"github.com/tunlr-app/cli/pkg/core/paths"
 )
+
+// rootEnv 把整套磁盘布局移到给定目录下，仅供测试使用。
+const rootEnv = "TUNLR_ROOT"
 
 // BuildInfo 是构建时注入的版本信息。
 type BuildInfo struct {
@@ -30,24 +38,28 @@ type globalOptions struct {
 type app struct {
 	info   BuildInfo
 	opts   globalOptions
+	layout paths.Layout
 	stdin  *os.File
 	stdout io.Writer
 	stderr io.Writer
 	log    *slog.Logger
 }
 
-// Main 执行命令并返回进程退出码。
+// Main 执行命令并返回进程退出码。收到 SIGINT 或 SIGTERM 时取消命令的 context。
 func Main(info BuildInfo, args []string) int {
 	a := &app{
 		info:   info,
+		layout: paths.Layout{Root: os.Getenv(rootEnv)},
 		stdin:  os.Stdin,
 		stdout: os.Stdout,
 		stderr: os.Stderr,
 		log:    slog.New(slog.DiscardHandler),
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	root := a.newRootCommand()
 	root.SetArgs(args)
-	err := root.Execute()
+	err := root.ExecuteContext(ctx)
 	if err == nil {
 		return exitOK
 	}
@@ -100,6 +112,7 @@ func (a *app) newRootCommand() *cobra.Command {
 	})
 
 	root.AddCommand(
+		a.newSubCommand(),
 		a.newVersionCommand(),
 	)
 	return root

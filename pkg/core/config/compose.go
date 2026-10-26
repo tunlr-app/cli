@@ -23,6 +23,8 @@ var routingKeys = map[string]bool{
 // maxNodes 限制展开锚点和别名后的 YAML 节点数，防止恶意订阅用别名放大。
 const maxNodes = 1_000_000
 
+var errNotMapping = errors.New("not a YAML mapping")
+
 // Layers 是配置合成的各层输入，均为 YAML 文本。除 Template 外都可以为空。
 type Layers struct {
 	// Template 是工具内置的基础配置（系统部分）。
@@ -140,7 +142,7 @@ func parseDocument(name string, data []byte) (*yaml.Node, error) {
 		return nil, nil
 	}
 	if doc.Content[0].Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("%s: not a YAML mapping", name)
+		return nil, fmt.Errorf("%s: %w", name, errNotMapping)
 	}
 	budget := maxNodes
 	root, err := expandAliases(doc.Content[0], &budget)

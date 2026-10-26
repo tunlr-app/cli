@@ -38,6 +38,10 @@ func (a *app) writeJSON(v envelope) error {
 // printError 报告命令失败。--json 时错误同样以 envelope 写到标准输出，
 // 方便调用方只解析一个流；否则写到标准错误。
 func (a *app) printError(err error, code int) {
+	var re renderedError
+	if errors.As(err, &re) {
+		return
+	}
 	if a.opts.JSON {
 		if a.writeJSON(envelope{Version: schemaVersion, Error: &jsonError{Code: code, Message: err.Error()}}) == nil {
 			return

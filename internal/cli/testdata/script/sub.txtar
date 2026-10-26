@@ -1,0 +1,102 @@
+# 尚未添加订阅
+exec tunlr sub list
+stdout 'No subscriptions'
+exec tunlr sub list --json
+stdout '"data": \[\]'
+
+# 添加：第一个订阅自动启用，带默认 User-Agent
+cp airport.yaml provider/airport.yaml
+cp airport.yaml.userinfo provider/airport.yaml.userinfo
+exec tunlr sub add main $PROVIDER/airport.yaml?token=secret-token
+stdout '^Added subscription "main": 2 proxies, 1 groups, 2 rules\.$'
+stdout '"main" is now the active subscription'
+grep '^clash\.meta mihomo tunlr/v0\.0\.0-test$' provider/.last-ua
+
+# 第二个订阅不自动启用，自定义 User-Agent
+exec tunlr sub add backup $PROVIDER/airport.yaml --user-agent custom/1.0
+! stdout 'active'
+grep '^custom/1\.0$' provider/.last-ua
+
+# 列表：启用标记、流量、到期时间；URL 缩写，不泄露令牌
+exec tunlr sub list
+stdout '^\*\s+main\s+2\s+\S+ \S+\s+1\.0 GiB / 100\.0 GiB\s+2027-01-01\s+http://127\.0\.0\.1:\d+/\.\.\.$'
+stdout '^\s+backup\s+2\s+'
+! stdout 'secret-token'
+exec tunlr sub list --json
+stdout '"active": true'
+stdout '"total": 107374182400'
+! stdout 'secret-token'
+
+# 内容和状态文件落在布局中，状态文件带版本号
+exists root/var/lib/tunlr/subscriptions/main.yaml
+grep '"version": 1' root/var/lib/tunlr/state.json
+grep '"active": "main"' root/var/lib/tunlr/state.json
+
+# 错误：重名、非法名称（用法错误）、机场返回节点列表
+exitcode 1 tunlr sub add main $PROVIDER/airport.yaml
+stderr 'subscription already exists: main'
+exitcode 2 tunlr sub add ../x $PROVIDER/airport.yaml
+stderr 'invalid argument'
+cp nodes.txt provider/nodes.txt
+exitcode 1 tunlr sub add nodes $PROVIDER/nodes.txt
+stderr 'try a different --user-agent'
+exitcode 2 tunlr sub add onlyname
+stderr 'accepts 2 arg'
+
+# 不能删除启用中的订阅
+exitcode 1 tunlr sub remove main
+stderr 'subscription is active: main; switch to another subscription first'
+
+# 切换
+exec tunlr sub use backup
+stdout '^Switched to "backup": 2 proxies'
+exec tunlr sub use backup
+stdout 'already the active subscription'
+exec tunlr sub remove main
+stdout 'Removed subscription "main"'
+! exists root/var/lib/tunlr/subscriptions/main.yaml
+
+# 更新：机场故障时保留上一次的内容，退出码 1，令牌不出现在错误中
+exec tunlr sub add other $PROVIDER/airport.yaml?token=secret-token
+cp root/var/lib/tunlr/subscriptions/other.yaml before.yaml
+cp down provider/.down
+exitcode 1 tunlr sub update
+stdout '^FAILED  backup: fetch http://127\.0\.0\.1:\d+/\.\.\.: HTTP 500 Internal Server Error \(keeping the last good copy\)$'
+stdout '^FAILED  other: '
+! stdout 'secret-token'
+! stderr .
+cmp root/var/lib/tunlr/subscriptions/other.yaml before.yaml
+exec tunlr sub list
+stdout 'other\s+2\s+\S+ \S+ \(last update failed\)'
+
+# --json 下部分失败只输出一份结果，不再追加错误
+exitcode 1 tunlr sub update other --json
+stdout '"ok": false'
+! stdout '"error": \{'
+
+# 机场恢复
+rm provider/.down
+exec tunlr sub update other
+stdout '^ok      other: 2 proxies, 1 groups, 2 rules$'
+exec tunlr sub list
+! stdout 'other.*last update failed'
+stdout 'backup.*last update failed'
+exitcode 1 tunlr sub update nope
+stderr 'subscription not found: nope'
+
+-- airport.yaml --
+port: 7890
+external-controller: 0.0.0.0:9090
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: b, type: ss, server: b.example.net, port: 2, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: g, type: select, proxies: [a, b]}
+rules:
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - MATCH,g
+-- airport.yaml.userinfo --
+upload=536870912; download=536870912; total=107374182400; expire=1798761600
+-- nodes.txt --
+c3M6Ly9ZV1Z6TFRJMU5pMW5ZMjA2QGV4YW1wbGUubmV0OjQ0Mw==
+-- down --

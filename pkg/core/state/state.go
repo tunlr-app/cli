@@ -27,6 +27,47 @@ type State struct {
 	// InstanceID 唯一标识这一次安装，生成后不再改变，将来管理多台服务器时用于识别。
 	InstanceID string    `json:"instance_id"`
 	CreatedAt  time.Time `json:"created_at"`
+
+	// Subscriptions 是已保存的订阅，按添加顺序排列。
+	Subscriptions []Subscription `json:"subscriptions,omitempty"`
+	// Active 是启用的订阅名称；同一时间只启用一个，没有订阅时为空。
+	Active string `json:"active,omitempty"`
+}
+
+// Subscription 是一个已保存的订阅。抓取到的内容单独存放在 paths.Layout.SubscriptionFile 中。
+type Subscription struct {
+	Name string `json:"name"`
+	// URL 通常带有机场的访问令牌，不能出现在输出和日志中。
+	URL string `json:"url"`
+	// UserAgent 为空时使用默认值。机场按 User-Agent 决定返回的格式。
+	UserAgent string    `json:"user_agent,omitempty"`
+	AddedAt   time.Time `json:"added_at"`
+
+	// FetchedAt 是最近一次成功抓取的时间。
+	FetchedAt time.Time `json:"fetched_at,omitzero"`
+	// UserInfo 来自最近一次成功抓取的 subscription-userinfo 响应头，机场没有提供时为空。
+	UserInfo *UserInfo `json:"userinfo,omitempty"`
+	// LastError 是最近一次抓取失败的原因，再次成功后清空。
+	LastError   string    `json:"last_error,omitempty"`
+	LastErrorAt time.Time `json:"last_error_at,omitzero"`
+}
+
+// UserInfo 是机场报告的流量与到期时间。
+type UserInfo struct {
+	Upload   int64     `json:"upload"`
+	Download int64     `json:"download"`
+	Total    int64     `json:"total"`
+	Expire   time.Time `json:"expire,omitzero"`
+}
+
+// Find 返回名为 name 的订阅，不存在时返回 nil。
+func (s *State) Find(name string) *Subscription {
+	for i := range s.Subscriptions {
+		if s.Subscriptions[i].Name == name {
+			return &s.Subscriptions[i]
+		}
+	}
+	return nil
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
@@ -45,8 +86,9 @@ func Load(path string) (*State, error) {
 	return s, nil
 }
 
-// LoadOrCreate 读取状态文件；不存在时生成新的实例 ID 并写入。created 报告是否为新建。
-func LoadOrCreate(path string, now time.Time) (s *State, created bool, err error) {
+// LoadOrNew 读取状态文件；不存在时返回带新实例 ID 的状态，但不写入磁盘，
+// 由调用方在操作成功后用 Save 保存，失败的操作因此不会留下状态文件。created 报告是否为新建。
+func LoadOrNew(path string, now time.Time) (s *State, created bool, err error) {
 	s, err = Load(path)
 	if err == nil || !errors.Is(err, fs.ErrNotExist) {
 		return s, false, err
@@ -55,11 +97,7 @@ func LoadOrCreate(path string, now time.Time) (s *State, created bool, err error
 	if err != nil {
 		return nil, false, err
 	}
-	s = &State{Version: Version, InstanceID: id, CreatedAt: now.UTC()}
-	if err := Save(path, s); err != nil {
-		return nil, false, err
-	}
-	return s, true, nil
+	return &State{Version: Version, InstanceID: id, CreatedAt: now.UTC()}, true, nil
 }
 
 // Save 原子地写入状态文件，必要时创建所在目录。

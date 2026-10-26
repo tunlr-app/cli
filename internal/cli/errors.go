@@ -24,6 +24,13 @@ type usageError struct{ err error }
 func (e usageError) Error() string { return e.err.Error() }
 func (e usageError) Unwrap() error { return e.err }
 
+// renderedError 表示命令已经输出了包含失败信息的结果（例如部分订阅更新失败），
+// 只需按内部错误设置退出码，不再重复报告。
+type renderedError struct{ err error }
+
+func (e renderedError) Error() string { return e.err.Error() }
+func (e renderedError) Unwrap() error { return e.err }
+
 func usageErrorf(format string, args ...any) error {
 	return usageError{fmt.Errorf(format, args...)}
 }
@@ -44,7 +51,7 @@ func exitCode(err error) int {
 	switch {
 	case err == nil:
 		return exitOK
-	case errors.As(err, &ue):
+	case errors.As(err, &ue), errors.Is(err, core.ErrInvalidArgument):
 		return exitUsage
 	case errors.Is(err, core.ErrCheckFailed):
 		return exitCheckFailed

@@ -34,6 +34,12 @@ func (l Layout) StateFile() string { return l.join("var", "lib", "tunlr", "state
 // SubscriptionsDir 存放每个订阅最近一次成功抓取的内容。
 func (l Layout) SubscriptionsDir() string { return l.join("var", "lib", "tunlr", "subscriptions") }
 
+// SubscriptionFile 是名为 name 的订阅最近一次成功抓取的内容。name 须先经过校验，
+// 不能包含路径分隔符。
+func (l Layout) SubscriptionFile(name string) string {
+	return l.join("var", "lib", "tunlr", "subscriptions", name+".yaml")
+}
+
 // HistoryDir 存放已发布配置的历史，用于回滚。
 func (l Layout) HistoryDir() string { return l.join("var", "lib", "tunlr", "history") }
 
