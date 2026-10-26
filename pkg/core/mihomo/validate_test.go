@@ -124,8 +124,8 @@ func TestValidateMissingBinary(t *testing.T) {
 	v := &Validator{Binary: filepath.Join(t.TempDir(), "no-mihomo")}
 	err := v.Validate(context.Background(), []byte("rules: []\n"))
 	var ce *CheckError
-	if err == nil || errors.As(err, &ce) {
-		t.Fatalf("err = %v, want a non-check error", err)
+	if !errors.Is(err, ErrNotInstalled) || errors.As(err, &ce) {
+		t.Fatalf("err = %v, want ErrNotInstalled", err)
 	}
 }
 

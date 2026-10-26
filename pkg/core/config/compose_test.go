@@ -17,7 +17,7 @@ import (
 var update = flag.Bool("update", false, "rewrite the want sections of golden files")
 
 // TestComposeGolden 读取 testdata/compose/*.txtar。每个文件包含输入
-// template.yaml（缺省时使用内置模板）、subscription.yaml、mixin.yaml、enforced.yaml，
+// template.yaml（缺省时使用内置模板）、defaults.yaml、subscription.yaml、mixin.yaml、enforced.yaml，
 // 以及期望输出 want.yaml 和 dropped（被丢弃的订阅键，每行一个）。
 // 用 go test ./pkg/core/config -update 重新生成期望输出。
 func TestComposeGolden(t *testing.T) {
@@ -40,6 +40,7 @@ func TestComposeGolden(t *testing.T) {
 			}
 			l := Layers{
 				Template:     sections["template.yaml"],
+				Defaults:     sections["defaults.yaml"],
 				Subscription: sections["subscription.yaml"],
 				Mixin:        sections["mixin.yaml"],
 				Enforced:     sections["enforced.yaml"],

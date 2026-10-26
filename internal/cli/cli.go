@@ -112,6 +112,9 @@ func (a *app) newRootCommand() *cobra.Command {
 	})
 
 	root.AddCommand(
+		a.newPlanCommand(),
+		a.newApplyCommand(),
+		a.newRollbackCommand(),
 		a.newSubCommand(),
 		a.newVersionCommand(),
 	)

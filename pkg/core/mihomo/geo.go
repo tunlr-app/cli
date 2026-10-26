@@ -41,6 +41,25 @@ var (
 	allGeoFiles = []GeoFile{GeoMMDB, GeoIPDat, GeoSite, GeoASN}
 )
 
+// URL 返回 f 在 GitHub 上的官方下载地址，与 mihomo 默认的 geox-url 相同。
+func (f GeoFile) URL() string {
+	return "https://github.com/" + geoRepo + "/releases/download/" + geoTag + "/" + f.Asset
+}
+
+// GeoxURL 返回配置中 geox-url 的各项（geoip、mmdb、asn、geosite），地址加上 mirror 前缀，
+// 让内核自己定时更新 geo 数据时也经过镜像。mirror 为空时返回 nil，使用内核的默认值。
+func GeoxURL(mirror string) map[string]string {
+	if mirror == "" {
+		return nil
+	}
+	return map[string]string{
+		"geoip":   download.MirrorURL(mirror, GeoIPDat.URL()),
+		"mmdb":    download.MirrorURL(mirror, GeoMMDB.URL()),
+		"asn":     download.MirrorURL(mirror, GeoASN.URL()),
+		"geosite": download.MirrorURL(mirror, GeoSite.URL()),
+	}
+}
+
 // GeoFilesFor 返回满足 needs 所需的 geo 文件。
 func GeoFilesFor(needs config.GeoNeeds) []GeoFile {
 	var files []GeoFile
@@ -70,7 +89,8 @@ func EnsureGeo(ctx context.Context, d *download.Client, home string, files []Geo
 		} else if p != "" {
 			continue
 		}
-		if err := os.MkdirAll(home, 0o755); err != nil {
+		// 工作目录中有内核的 API socket（0666、免 secret），只能由内核用户和 root 进入。
+		if err := os.MkdirAll(home, 0o750); err != nil {
 			return downloaded, err
 		}
 		if err := d.FetchAsset(ctx, geoRepo, geoTag, f.Asset, filepath.Join(home, f.Name), 0o644); err != nil {

@@ -29,6 +29,9 @@ var errNotMapping = errors.New("not a YAML mapping")
 type Layers struct {
 	// Template 是工具内置的基础配置（系统部分）。
 	Template []byte
+	// Defaults 是工具为这台服务器生成的默认值（如 API secret、按镜像设置改写的下载地址），
+	// 紧接模板写入，mixin 可以覆盖。
+	Defaults []byte
 	// Subscription 是机场提供的完整配置，只采用其中的路由部分。
 	Subscription []byte
 	// Mixin 是用户的覆盖，支持 prepend-<键> 与 append-<键>。
@@ -45,7 +48,7 @@ type Result struct {
 	Dropped []string
 }
 
-// Compose 按 模板 → 订阅 → mixin → 强制项 的顺序合成最终配置。
+// Compose 按 模板 → 默认值 → 订阅 → mixin → 强制项 的顺序合成最终配置。
 // 合并基于 yaml.Node，保留模板的键顺序与注释；模板中没有的键追加在末尾。
 func Compose(l Layers) (*Result, error) {
 	doc, err := parseDocument("template", l.Template)
@@ -57,6 +60,14 @@ func Compose(l Layers) (*Result, error) {
 	}
 	root := doc.Content[0]
 	res := &Result{}
+
+	defaults, err := parseDocument("defaults", l.Defaults)
+	if err != nil {
+		return nil, err
+	}
+	if defaults != nil {
+		mergeMapping(root, defaults.Content[0])
+	}
 
 	sub, err := parseDocument("subscription", l.Subscription)
 	if err != nil {

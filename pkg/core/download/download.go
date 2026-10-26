@@ -61,11 +61,7 @@ func (c *Client) FetchAsset(ctx context.Context, repo, tag, name, dst string, pe
 	if !ok || len(want) != sha256.Size*2 {
 		return fmt.Errorf("%s %s: GitHub provides no sha256 digest for %s; refusing to download unverified", repo, tag, name)
 	}
-	mirror := c.Mirror
-	if mirror != "" && !strings.HasSuffix(mirror, "/") {
-		mirror += "/"
-	}
-	data, err := c.get(ctx, mirror+asset.URL, asset.Size)
+	data, err := c.get(ctx, MirrorURL(c.Mirror, asset.URL), asset.Size)
 	if err != nil {
 		return fmt.Errorf("download %s: %w", name, err)
 	}
@@ -74,6 +70,15 @@ func (c *Client) FetchAsset(ctx context.Context, repo, tag, name, dst string, pe
 		return fmt.Errorf("download %s: %w (want %s, got %s)", name, ErrChecksumMismatch, want, got)
 	}
 	return fsutil.WriteFile(dst, data, perm)
+}
+
+// MirrorURL 返回经镜像下载 url（完整的 github.com 地址）的地址：镜像前缀后接 url。
+// mirror 为空时原样返回。
+func MirrorURL(mirror, url string) string {
+	if mirror == "" {
+		return url
+	}
+	return strings.TrimSuffix(mirror, "/") + "/" + url
 }
 
 // lookup 通过官方 API 查询资产的地址、大小和 sha256。

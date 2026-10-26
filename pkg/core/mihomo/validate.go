@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,9 +59,16 @@ func (e *CheckError) Unwrap() error {
 	return core.ErrCheckFailed
 }
 
+// ErrNotInstalled 表示用于校验的内核不存在。
+var ErrNotInstalled = errors.New("mihomo is not installed")
+
 // Validate 准备配置所需的 geo 数据，然后运行 mihomo -t。
-// 配置有误时返回 *CheckError；准备数据失败或无法运行内核时返回其他错误。
+// 配置有误时返回 *CheckError；内核不存在时返回 ErrNotInstalled；
+// 准备数据失败或无法运行内核时返回其他错误。
 func (v *Validator) Validate(ctx context.Context, cfg []byte) error {
+	if _, err := os.Stat(v.Binary); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w (expected at %s)", ErrNotInstalled, v.Binary)
+	}
 	if v.Download != nil {
 		// 解析失败的配置交给 mihomo -t 报告，这里不提前返回。
 		if needs, err := config.DetectGeo(cfg); err == nil {

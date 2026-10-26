@@ -49,11 +49,24 @@ func (l Layout) HistoryDir() string { return l.join("var", "lib", "tunlr", "hist
 // KernelsDir 存放已知可用的内核版本，每个版本一个子目录。
 func (l Layout) KernelsDir() string { return l.join("var", "lib", "tunlr", "kernels") }
 
+// BinDir 存放运行中的内核二进制。归运行内核的专用用户所有，面板触发的内核升级需要原地替换它。
+func (l Layout) BinDir() string { return l.join("var", "lib", "tunlr", "bin") }
+
+// CoreBinary 是运行中的内核，也是校验配置时使用的内核。
+func (l Layout) CoreBinary() string { return l.join("var", "lib", "tunlr", "bin", "mihomo") }
+
 // CoreDir 是 mihomo 的工作目录（-d），存放生效的配置、geo 数据、面板和缓存。
 func (l Layout) CoreDir() string { return l.join("var", "lib", "tunlr", "core") }
 
 // CoreConfig 是生效的 mihomo 配置文件。
 func (l Layout) CoreConfig() string { return l.join("var", "lib", "tunlr", "core", "config.yaml") }
+
+// CoreSocketName 是内核 API 的 Unix socket（external-controller-unix），相对于工作目录。
+// 内核以 0666 创建它且访问不需要 secret，访问控制依赖工作目录的权限。
+const CoreSocketName = "api.sock"
+
+// CoreSocket 是内核 API 的 Unix socket 的完整路径。
+func (l Layout) CoreSocket() string { return l.join("var", "lib", "tunlr", "core", CoreSocketName) }
 
 // LockFile 是所有会改动系统的操作共用的文件锁。放在 /run 下，未安装时也可用。
 func (l Layout) LockFile() string { return l.join("run", "lock", "tunlr.lock") }

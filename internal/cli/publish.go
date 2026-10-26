@@ -1,0 +1,320 @@
+package cli
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"charm.land/huh/v2"
+	"github.com/spf13/cobra"
+
+	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/pkg/core/config"
+	"github.com/tunlr-app/cli/pkg/core/mihomo"
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
+)
+
+// planView 是 pipeline.Plan 在 --json 输出中的形式。
+type planView struct {
+	Kind         string    `json:"kind"`
+	Changed      bool      `json:"changed"`
+	FirstPublish bool      `json:"first_publish"`
+	Subscription string    `json:"subscription,omitempty"`
+	Dropped      []string  `json:"dropped,omitempty"`
+	RollbackTo   int       `json:"rollback_to,omitempty"`
+	Diff         string    `json:"diff,omitempty"`
+	Config       string    `json:"config,omitempty"`
+	Check        checkView `json:"check"`
+}
+
+// checkView 是校验结果。Status 取值：
+// passed、failed（配置有误）、error（校验未能完成，如数据下载失败）、
+// not_installed（内核未安装，无法校验）、unchanged（没有变化，不需要校验）。
+type checkView struct {
+	Status   string   `json:"status"`
+	Messages []string `json:"messages,omitempty"`
+}
+
+type applyView struct {
+	Plan     planView         `json:"plan"`
+	Applied  bool             `json:"applied"`
+	Revision *config.Revision `json:"revision,omitempty"`
+}
+
+type revisionView struct {
+	config.Revision
+	Current bool `json:"current"`
+}
+
+func (a *app) pipeline() *pipeline.Pipeline {
+	return &pipeline.Pipeline{Layout: a.layout, Version: a.info.Version}
+}
+
+func newPlanView(p *pipeline.Plan, full bool) planView {
+	v := planView{
+		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
+		Subscription: p.Subscription, Dropped: p.Dropped, RollbackTo: p.RollbackTo, Diff: p.Diff,
+	}
+	if full {
+		v.Config = string(p.Config)
+	}
+	var ce *mihomo.CheckError
+	switch {
+	case !p.Changed():
+		v.Check.Status = "unchanged"
+	case p.Check == nil:
+		v.Check.Status = "passed"
+	case errors.Is(p.Check, mihomo.ErrNotInstalled):
+		v.Check = checkView{"not_installed", []string{p.Check.Error()}}
+	case errors.As(p.Check, &ce) && !ce.MissingData:
+		v.Check = checkView{"failed", ce.Messages}
+	default:
+		v.Check = checkView{"error", []string{p.Check.Error()}}
+	}
+	return v
+}
+
+// printPlan 以文本输出计划：来源、差异（或完整配置）、校验结果。
+func (a *app) printPlan(v planView) {
+	w := a.stdout
+	switch {
+	case v.Kind == pipeline.KindRollback:
+		fmt.Fprintf(w, "Rolling back to revision %d.\n", v.RollbackTo)
+	case v.Subscription == "":
+		fmt.Fprintln(w, "No active subscription: the configuration has no proxies (add one with: tunlr sub add).")
+	default:
+		fmt.Fprintf(w, "Subscription: %s\n", v.Subscription)
+	}
+	if len(v.Dropped) > 0 {
+		fmt.Fprintf(w, "Ignored from the subscription: %s\n", strings.Join(v.Dropped, ", "))
+	}
+	fmt.Fprintln(w)
+
+	switch {
+	case v.Config != "":
+		fmt.Fprint(w, v.Config)
+		fmt.Fprintln(w)
+	case !v.Changed:
+		fmt.Fprintln(w, "No changes: the published configuration is up to date.")
+		return
+	case v.FirstPublish:
+		fmt.Fprintln(w, "Nothing has been published yet; this will be the first configuration (show it with --full).")
+		fmt.Fprintln(w)
+	default:
+		fmt.Fprint(w, v.Diff)
+		fmt.Fprintln(w)
+	}
+
+	switch v.Check.Status {
+	case "passed":
+		fmt.Fprintln(w, "Check (mihomo -t): passed")
+	case "failed":
+		fmt.Fprintln(w, "Check (mihomo -t): FAILED")
+		for _, m := range v.Check.Messages {
+			fmt.Fprintf(w, "  %s\n", m)
+		}
+	case "not_installed":
+		fmt.Fprintf(w, "Check (mihomo -t): not run, %s\n", v.Check.Messages[0])
+	default:
+		fmt.Fprintf(w, "Check (mihomo -t): could not complete: %s\n", v.Check.Messages[0])
+	}
+}
+
+// checkExit 把校验结果转换为命令的错误：配置有误为“检查未通过”（退出码 3），
+// 其他未通过的情况为一般错误。结果已经输出，不再重复报告。
+func checkExit(p *pipeline.Plan, allowNotInstalled bool) error {
+	if p.Check == nil || (allowNotInstalled && errors.Is(p.Check, mihomo.ErrNotInstalled)) {
+		return nil
+	}
+	return renderedError{p.Check}
+}
+
+func (a *app) newPlanCommand() *cobra.Command {
+	var full bool
+	cmd := &cobra.Command{
+		Use:   "plan",
+		Short: "Preview the configuration that apply would publish",
+		Long: "Compose the configuration from the template, the active subscription and the mixin,\n" +
+			"show how it differs from the published one, and check it with mihomo -t.\n" +
+			"Nothing is changed, except that geo data the check needs may be downloaded.",
+		Args: usageArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			plan, err := a.pipeline().Plan(cmd.Context())
+			if err != nil {
+				return err
+			}
+			v := newPlanView(plan, full)
+			if err := a.render(v, func() error { a.printPlan(v); return nil }); err != nil {
+				return err
+			}
+			return checkExit(plan, true)
+		},
+	}
+	cmd.Flags().BoolVar(&full, "full", false, "print the whole configuration instead of the diff")
+	return cmd
+}
+
+func (a *app) newApplyCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "apply",
+		Short: "Check and publish the configuration",
+		Long: "Compose the configuration like plan, show the diff, and publish it after confirmation.\n" +
+			"The configuration must pass mihomo -t; the previous one is kept in the history\n" +
+			"(see tunlr rollback --list). Use --yes to skip the confirmation, --dry-run to only preview.",
+		Args: usageArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := a.requireConfirmation("apply"); err != nil {
+				return err
+			}
+			plan, err := a.pipeline().Plan(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return a.publish(cmd, plan, "Apply this configuration?")
+		},
+	}
+}
+
+func (a *app) newRollbackCommand() *cobra.Command {
+	var list bool
+	cmd := &cobra.Command{
+		Use:   "rollback [revision]",
+		Short: "Publish an earlier configuration again (--list shows the history)",
+		Long: "Publish a configuration from the history again. Without a revision, go back to the\n" +
+			"most recent one that differs from the published configuration, so running it twice\n" +
+			"switches back. The next apply composes from the subscription and mixin again.",
+		Args: usageArgs(cobra.MaximumNArgs(1)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if list {
+				if len(args) > 0 {
+					return usageErrorf("--list takes no revision")
+				}
+				return a.listRevisions()
+			}
+			n := 0
+			if len(args) == 1 {
+				var err error
+				if n, err = strconv.Atoi(args[0]); err != nil || n < 1 {
+					return usageErrorf("revision must be a positive number, got %q", args[0])
+				}
+			}
+			if err := a.requireConfirmation("rollback"); err != nil {
+				return err
+			}
+			plan, err := a.pipeline().PlanRollback(cmd.Context(), n)
+			if err != nil {
+				return err
+			}
+			return a.publish(cmd, plan, fmt.Sprintf("Roll back to revision %d?", plan.RollbackTo))
+		},
+	}
+	cmd.Flags().BoolVar(&list, "list", false, "list the configuration history")
+	return cmd
+}
+
+// requireConfirmation 在无法提问又没有 --yes 时，于开始工作前报告用法错误。
+func (a *app) requireConfirmation(command string) error {
+	if a.opts.Yes || a.opts.DryRun || a.interactive() {
+		return nil
+	}
+	return usageErrorf("%s needs confirmation; pass --yes to proceed without asking (or --dry-run to preview)", command)
+}
+
+// publish 输出计划，经确认后发布。校验未通过、--dry-run 或用户取消时不发布。
+func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) error {
+	v := applyView{Plan: newPlanView(plan, false)}
+	if !a.opts.JSON {
+		a.printPlan(v.Plan)
+	}
+	if err := checkExit(plan, false); err != nil || !plan.Changed() || a.opts.DryRun {
+		if a.opts.JSON {
+			if rerr := a.render(v, nil); rerr != nil {
+				return rerr
+			}
+		} else if err != nil {
+			fmt.Fprintln(a.stdout, "\nNot applied.")
+		} else if a.opts.DryRun && plan.Changed() {
+			fmt.Fprintln(a.stdout, "\nDry run: nothing applied.")
+		}
+		return err
+	}
+
+	if !a.opts.Yes {
+		ok := false
+		err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(question).Value(&ok))).
+			WithInput(a.stdin).WithOutput(a.stderr).RunWithContext(cmd.Context())
+		if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+			return err
+		}
+		if !ok {
+			fmt.Fprintln(a.stdout, "Not applied.")
+			return nil
+		}
+	}
+
+	rev, err := a.pipeline().Apply(cmd.Context(), plan)
+	if errors.Is(err, core.ErrRolledBack) {
+		return fmt.Errorf("%w; the previous configuration is back in place", err)
+	}
+	if err != nil {
+		return err
+	}
+	v.Applied, v.Revision = true, rev
+	return a.render(v, func() error {
+		_, err := fmt.Fprintf(a.stdout, "\nPublished revision %d to %s.\n", rev.Number, a.layout.CoreConfig())
+		return err
+	})
+}
+
+func (a *app) listRevisions() error {
+	revs, current, err := a.pipeline().Revisions()
+	if err != nil {
+		return err
+	}
+	views := make([]revisionView, 0, len(revs))
+	for _, r := range revs {
+		views = append(views, revisionView{r, r.Number == current})
+	}
+	return a.render(views, func() error {
+		if len(views) == 0 {
+			_, err := fmt.Fprintln(a.stdout, "No configuration has been published yet.")
+			return err
+		}
+		var buf bytes.Buffer
+		tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "\tREVISION\tCREATED\tSOURCE\tSUBSCRIPTION")
+		for _, v := range views {
+			mark := ""
+			if v.Current {
+				mark = "*"
+			}
+			sub := v.Subscription
+			if sub == "" {
+				sub = "-"
+			}
+			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", mark, v.Number, v.CreatedAt.Local().Format(time.DateTime), describeReason(v.Revision), sub)
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		if current == 0 {
+			buf.WriteString("\nThe published configuration matches no revision (edited by hand?); apply or rollback archives it first.\n")
+		}
+		_, err := a.stdout.Write(buf.Bytes())
+		return err
+	})
+}
+
+func describeReason(r config.Revision) string {
+	switch r.Reason {
+	case config.ReasonRollback:
+		return fmt.Sprintf("rollback to %d", r.RollbackOf)
+	case config.ReasonFound:
+		return "found on disk"
+	}
+	return r.Reason
+}

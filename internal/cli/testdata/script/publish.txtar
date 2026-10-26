@@ -1,0 +1,108 @@
+# 内核未安装：plan 可以预览但无法校验；apply 必须校验，因此拒绝
+exec tunlr plan
+stdout 'No active subscription'
+stdout 'Nothing has been published yet'
+stdout 'Check \(mihomo -t\): not run, mihomo is not installed'
+exitcode 1 tunlr apply --yes
+stdout 'Not applied'
+! exists root/var/lib/tunlr/core/config.yaml
+
+# 非交互模式下没有 --yes 时，在开始工作前报告用法错误
+exitcode 2 tunlr apply
+stderr 'apply needs confirmation; pass --yes'
+! stdout .
+
+# 安装（模拟的）内核后发布第一版
+install-mihomo
+exec tunlr plan
+stdout 'Check \(mihomo -t\): passed'
+exec tunlr apply --dry-run
+stdout 'Dry run: nothing applied'
+! exists root/var/lib/tunlr/core/config.yaml
+exec tunlr apply --yes
+stdout 'Published revision 1 to '
+grep '^external-controller-unix: api\.sock$' root/var/lib/tunlr/core/config.yaml
+grep '^secret: [0-9a-f]{32}$' root/var/lib/tunlr/core/config.yaml
+grep '"api_secret": "[0-9a-f]{32}"' root/var/lib/tunlr/state.json
+exec tunlr plan
+stdout 'No changes'
+exec tunlr apply --yes
+stdout 'No changes'
+! stdout 'Published'
+
+# 添加订阅后，diff 显示新增的节点，订阅中的系统键被忽略
+cp airport.yaml provider/airport.yaml
+exec tunlr sub add main $PROVIDER/airport.yaml
+exec tunlr plan
+stdout 'Subscription: main'
+stdout 'Ignored from the subscription: port, external-controller'
+stdout '^\+  - MATCH,g$'
+! stdout '^\+external-controller: 0'
+exec tunlr plan --full
+stdout '^mixed-port: 7890$'
+exec tunlr apply --yes --json
+stdout '"applied": true'
+stdout '"revision": 2'
+stdout '"subscription": "main"'
+
+# mixin 让配置无法通过 mihomo -t：退出码 3，不发布
+mkdir root/etc/tunlr
+cp bad-mixin.yaml root/etc/tunlr/mixin.yaml
+exitcode 3 tunlr plan
+stdout 'Check \(mihomo -t\): FAILED'
+stdout 'proxy \[NOPE\] not found'
+exitcode 3 tunlr apply --yes
+stdout 'Not applied'
+exitcode 3 tunlr apply --yes --json
+stdout '"status": "failed"'
+stdout '"applied": false'
+! stdout '"error"'
+rm root/etc/tunlr/mixin.yaml
+
+# 回滚：不指定修订时回到上一个不同的版本，连续回滚在两个版本间切换
+exec tunlr rollback --list
+stdout '^\*\s+2\s+\S+ \S+\s+apply\s+main$'
+stdout '^\s+1\s+\S+ \S+\s+apply\s+-$'
+exec tunlr rollback --yes
+stdout 'Rolling back to revision 1'
+stdout 'Published revision 3'
+! grep 'MATCH,g' root/var/lib/tunlr/core/config.yaml
+exec tunlr rollback --yes
+stdout 'Rolling back to revision 2'
+grep 'MATCH,g' root/var/lib/tunlr/core/config.yaml
+exec tunlr rollback 1 --yes
+stdout 'Published revision 5'
+exec tunlr rollback --list
+stdout '^\*\s+5\s+\S+ \S+\s+rollback to 1\s+-$'
+exitcode 2 tunlr rollback 99 --yes
+stderr 'revision not found: 99'
+exitcode 2 tunlr rollback abc
+stderr 'revision must be a positive number'
+
+# 手工改过的生效配置：列表中提示，下次发布前先存档
+cp edited.yaml root/var/lib/tunlr/core/config.yaml
+exec tunlr rollback --list
+stdout 'matches no revision'
+exec tunlr apply --yes
+stdout '^-edited: true$'
+stdout 'Published revision 7'
+exec tunlr rollback --list
+stdout '^\s+6\s+\S+ \S+\s+found on disk\s+-$'
+exec tunlr rollback 6 --yes --json
+stdout '"rollback_to": 6'
+cmp root/var/lib/tunlr/core/config.yaml edited.yaml
+
+-- airport.yaml --
+port: 7890
+external-controller: 0.0.0.0:9090
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: g, type: select, proxies: [a]}
+rules:
+  - MATCH,g
+-- bad-mixin.yaml --
+prepend-rules:
+  - MATCH,NOPE
+-- edited.yaml --
+edited: true

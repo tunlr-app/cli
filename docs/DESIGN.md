@@ -118,9 +118,10 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 | `/etc/tunlr/` | mixin（`mixin.yaml`）、工具设置（`settings.yaml`） | 用户可编辑，备份时最需要保留 |
 | `/var/lib/tunlr/state.json` | 状态文件：结构版本号、安装实例 ID | 工具维护，权限 0600 |
 | `/var/lib/tunlr/subscriptions/` | 每个订阅最近一次成功抓取的内容 | 含机场凭据 |
-| `/var/lib/tunlr/history/` | 已发布配置的历史 | 用于回滚 |
+| `/var/lib/tunlr/history/` | 已发布配置的历史：每个修订一份配置（`<号>.yaml`）和一份记录（`<号>.json`） | 用于回滚，保留最近 10 个，权限 0600 |
 | `/var/lib/tunlr/kernels/<版本>/` | 已知可用的内核 | 见第 7 节 |
-| `/var/lib/tunlr/core/` | mihomo 工作目录（`-d`）：生效的配置、geo 数据、面板、缓存 | 归运行内核的专用用户所有 |
+| `/var/lib/tunlr/bin/mihomo` | 运行中的内核，也用于校验配置 | 归运行内核的专用用户所有，面板升级时原地替换 |
+| `/var/lib/tunlr/core/` | mihomo 工作目录（`-d`）：生效的配置、API socket（`api.sock`）、geo 数据、面板、缓存 | 归运行内核的专用用户所有，权限 0750（保护 API socket） |
 | `/run/lock/tunlr.lock` | 文件锁 | 放在 `/run` 下，安装前也可用 |
 
 - 所有路径由 `pkg/core/paths.Layout` 统一给出，测试时设置 `Root` 把整套布局放进临时目录。
@@ -160,9 +161,10 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 只含节点的订阅（走 proxy-providers、由模板提供策略组和规则）留作将来的第二种来源，与完整配置共用同一条流水线。
 - **分层合成，各层职责固定**（`pkg/core/config.Compose`）：
   1. 模板：工具内置的系统部分，如端口、DNS、geo 更新、面板、profile。
-  2. 订阅：**只取路由部分**，即 `proxies`、`proxy-groups`、`rules`、`proxy-providers`、`rule-providers`、`sub-rules`，其余键一律丢弃并在 `plan` 中列出。订阅是不可信输入，不能让机场配置打开端口、改监听地址或设置 API。
-  3. mixin：用户的覆盖，可以改任何键。
-  4. 工具强制项：工具运行所依赖的键（如 `external-controller-unix` 路径、TUN 开关），最后写入，mixin 无法覆盖。
+  2. 默认值：工具为这台服务器生成的值，mixin 可以覆盖。包括 HTTP API 的 `secret`（第一次发布时随机生成，存在状态文件中），以及配置了 `github-mirror` 时经镜像的面板地址（`external-ui-url`）和 geo 数据地址（`geox-url`）。
+  3. 订阅：**只取路由部分**，即 `proxies`、`proxy-groups`、`rules`、`proxy-providers`、`rule-providers`、`sub-rules`，其余键一律丢弃并在 `plan` 中列出。订阅是不可信输入，不能让机场配置打开端口、改监听地址或设置 API。
+  4. mixin：用户的覆盖，可以改任何键。
+  5. 工具强制项：工具运行所依赖的键（目前是 `external-controller-unix`，将来还有 TUN 开关），最后写入，mixin 无法覆盖。
 - **mixin 只支持少数明确的合并语义**，保证结果可预测：
   - 普通键：映射逐层合并，标量和列表整体替换。例如只写 `dns.nameserver` 不会清掉 `dns` 下的其他字段。
   - `prepend-<键>` / `append-<键>`：在顶层列表前插入或后追加，如 `prepend-rules` 插入自定义规则。命名沿用 Clash Verge 的 Merge 语法，降低迁移成本。
@@ -173,14 +175,22 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - `-t` 在临时工作目录中运行，内核工作目录中的 geo 文件以符号链接提供：`-t` 可能写入缓存，直接用内核的工作目录会与运行中的内核冲突。
   - 校验失败时区分“配置错误”和“依赖下载失败”：mihomo 的错误消息含 `can't download` 时属于后者，不报告为配置问题（不映射到退出码 3）。
   - 实测 `-t` 不会抓取远程的 proxy-providers 和 rule-providers，它们暂时不可达不影响校验。
-  - 内核自己的 geo 定时更新（`geox-url`）同样受网络影响，其地址由工具按镜像设置写入强制项。
+  - 内核自己的 geo 定时更新（`geox-url`）同样受网络影响，其地址由工具按镜像设置写入默认值层。用户在 mixin 中自己指定的地址优先，因此不放在强制项中。
 - **充分利用内核已有能力**，由工具写入模板默认开启：
   - `geo-auto-update` / `geo-update-interval`：geo 数据定时更新
   - `external-ui` / `external-ui-url` / `external-ui-name`：内核自行下载面板
   - proxy-providers / rule-providers 的 `interval`：订阅与规则集热更新
   - `profile.store-selected` / `store-fake-ip`：保存面板选择的节点和 fake-ip 映射
   - `ntp`：时间同步（或交给系统的 timesyncd）
-- 模板默认通过 `external-controller-unix` 提供本地 API（本地访问免 secret），供工具调用。
+- 工具经 `external-controller-unix` 访问内核 API，路径以强制项写为相对路径 `api.sock`。内核相对于工作目录解析它，所以在临时目录中运行的 `-t` 不受影响。实测内核以 0666 创建这个 socket，访问也不需要 secret，因此只能靠工作目录的权限（0750）阻止其他本地用户。每次发布都会把工作目录的权限收紧到 0750。面板走 `external-controller`（HTTP，只监听本机），由 secret 保护：实测不带 secret 时返回 401。
+- **发布分两步：预览（plan）与发布（apply）**（`pkg/core/pipeline`）：
+  - plan：合成配置，与生效的配置比较，生成统一格式的 diff，并用 `mihomo -t` 校验。plan 不改动状态，只可能补齐校验需要的 geo 数据。内核未安装时 plan 仍可预览，但标明未校验；apply 则拒绝发布。
+  - apply 先输出 plan 的结果，经确认后在文件锁内发布：原子写入 → 通知内核加载 → 记录历史。
+    - 确认等待期间不持有锁，避免阻塞 timer 触发的任务。代价是加锁后要核对生效的配置与预览时一致，否则拒绝发布并要求重新预览，不覆盖用户没看过的变化。
+    - 非交互模式下必须带 `--yes`，否则在开始工作前报用法错误。`--dry-run` 只预览。
+  - 退出码：校验未通过为 3。内核加载失败时恢复原配置、让内核重新加载并返回 4，失败的配置不进历史。
+  - 生效的配置被手工改过（与最新修订不一致）时，发布前先把它存为一个来源为 found 的修订，以便找回。
+- **回滚**：`rollback` 不带修订号时，回到最近一个与生效配置不同的修订，所以连续执行两次会在两个版本间来回切换（与 `helm rollback` 相同）。`rollback <号>` 恢复指定修订，`--list` 列出历史。回滚同样经过 `-t` 校验和确认，并记为新修订（来源为 rollback）。修订号递增、不复用。回滚只恢复配置文件，下一次 apply（包括订阅更新）会按当前的订阅和 mixin 重新合成。
 
 ## 7. 内核管理与救援
 

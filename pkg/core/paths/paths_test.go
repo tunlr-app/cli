@@ -12,6 +12,8 @@ func TestLayout(t *testing.T) {
 		{l.MixinFile(), filepath.Join(root, "etc", "tunlr", "mixin.yaml")},
 		{l.StateFile(), filepath.Join(root, "var", "lib", "tunlr", "state.json")},
 		{l.CoreConfig(), filepath.Join(root, "var", "lib", "tunlr", "core", "config.yaml")},
+		{l.CoreSocket(), filepath.Join(l.CoreDir(), CoreSocketName)},
+		{l.CoreBinary(), filepath.Join(l.BinDir(), "mihomo")},
 		{l.LockFile(), filepath.Join(root, "run", "lock", "tunlr.lock")},
 		{Layout{}.StateFile(), filepath.FromSlash("/var/lib/tunlr/state.json")},
 	}

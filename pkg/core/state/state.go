@@ -32,6 +32,9 @@ type State struct {
 	Subscriptions []Subscription `json:"subscriptions,omitempty"`
 	// Active 是启用的订阅名称；同一时间只启用一个，没有订阅时为空。
 	Active string `json:"active,omitempty"`
+
+	// APISecret 是内核 HTTP API（面板经它访问）的 secret，第一次发布配置时生成。
+	APISecret string `json:"api_secret,omitempty"`
 }
 
 // Subscription 是一个已保存的订阅。抓取到的内容单独存放在 paths.Layout.SubscriptionFile 中。
