@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -34,8 +35,8 @@ type Layers struct {
 	Defaults []byte
 	// Subscription 是机场提供的完整配置，只采用其中的路由部分。
 	Subscription []byte
-	// Mixin 是用户的覆盖，支持 prepend-<键> 与 append-<键>。
-	Mixin []byte
+	// Mixins 是用户的 mixin 文件，按顺序逐个应用，语义见 Mixin。
+	Mixins []Mixin
 	// Enforced 是工具运行所依赖的键，最后写入，mixin 无法覆盖。
 	Enforced []byte
 }
@@ -46,10 +47,15 @@ type Result struct {
 	Config []byte
 	// Dropped 是订阅中被丢弃的顶层键，按出现顺序排列。
 	Dropped []string
+	// Warnings 是不阻止发布的问题，例如 patch 没有匹配的项、mixin 写了强制项、有风险的设置。
+	Warnings []Warning
+	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键。
+	Overrides []Override
 }
 
 // Compose 按 模板 → 默认值 → 订阅 → mixin → 强制项 的顺序合成最终配置。
 // 合并基于 yaml.Node，保留模板的键顺序与注释；模板中没有的键追加在末尾。
+// mixin 有错时返回 *MixinError。
 func Compose(l Layers) (*Result, error) {
 	doc, err := parseDocument("template", l.Template)
 	if err != nil {
@@ -73,26 +79,18 @@ func Compose(l Layers) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w (only full mihomo configs are supported as subscriptions)", err)
 	}
+	m := &mixer{root: root, subKeys: map[string]bool{}, setBy: map[string]string{}}
 	if sub != nil {
-		m := sub.Content[0]
-		for i := 0; i < len(m.Content); i += 2 {
-			k, v := m.Content[i].Value, m.Content[i+1]
+		s := sub.Content[0]
+		for i := 0; i < len(s.Content); i += 2 {
+			k, v := s.Content[i].Value, s.Content[i+1]
 			if !routingKeys[k] {
 				res.Dropped = append(res.Dropped, k)
 				continue
 			}
 			// 用新的键节点，不带入订阅里附在键上的注释。
-			setPair(root, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: k}, v)
-		}
-	}
-
-	mixin, err := parseDocument("mixin", l.Mixin)
-	if err != nil {
-		return nil, err
-	}
-	if mixin != nil {
-		if err := applyMixin(root, mixin.Content[0]); err != nil {
-			return nil, fmt.Errorf("mixin: %w", err)
+			setValue(root, k, v)
+			m.subKeys[k] = true
 		}
 	}
 
@@ -100,9 +98,45 @@ func Compose(l Layers) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	var enforcedPaths [][]string
+	if enforced != nil {
+		enforcedPaths = leafPaths(enforced.Content[0], nil)
+	}
+
+	for _, mx := range l.Mixins {
+		doc, err := parseNode(mx.Data)
+		if err != nil {
+			return nil, &MixinError{File: mx.Name, Err: err}
+		}
+		if doc == nil {
+			continue
+		}
+		src := doc.Content[0]
+		stripComments(src)
+		before := make([]*yaml.Node, len(enforcedPaths))
+		for i, p := range enforcedPaths {
+			if n := lookup(root, p); n != nil {
+				before[i] = clone(n)
+			}
+		}
+		m.file = mx.Name
+		first := len(m.warnings)
+		if err := m.apply(root, src, ""); err != nil {
+			return nil, err
+		}
+		for i, p := range enforcedPaths {
+			if !sameNode(before[i], lookup(root, p)) {
+				m.warnf(keyLine(src, p), "%s is managed by tunlr; the value in the mixin is ignored", strings.Join(p, "."))
+			}
+		}
+		slices.SortStableFunc(m.warnings[first:], func(a, b Warning) int { return a.Line - b.Line })
+	}
+	res.Warnings, res.Overrides = m.warnings, m.overrides
+
 	if enforced != nil {
 		mergeMapping(root, enforced.Content[0])
 	}
+	res.Warnings = append(res.Warnings, lint(root)...)
 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
@@ -145,20 +179,29 @@ func spaceSections(out []byte) []byte {
 // parseDocument 解析一层输入并展开其中的别名。内容为空时返回 nil；
 // 非空时保证返回的文档节点只有一个子节点，且为映射。
 func parseDocument(name string, data []byte) (*yaml.Node, error) {
+	doc, err := parseNode(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return doc, nil
+}
+
+// parseNode 同 parseDocument，错误信息不带输入的名称。
+func parseNode(data []byte) (*yaml.Node, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return nil, err
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || isNull(doc.Content[0]) {
 		return nil, nil
 	}
 	if doc.Content[0].Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("%s: %w", name, errNotMapping)
+		return nil, errNotMapping
 	}
 	budget := maxNodes
 	root, err := expandAliases(doc.Content[0], &budget)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return nil, err
 	}
 	doc.Content[0] = root
 	return &doc, nil
@@ -228,57 +271,6 @@ func inlineMerge(m *yaml.Node) error {
 		}
 	}
 	m.Content = append(append(append([]*yaml.Node{}, m.Content[:at]...), merged...), m.Content[at+2:]...)
-	return nil
-}
-
-// applyMixin 先按 mergeMapping 的语义合并普通键，再处理 prepend-<键> 与 append-<键>。
-func applyMixin(root, mixin *yaml.Node) error {
-	type listOp struct {
-		key     string
-		prepend bool
-		items   *yaml.Node
-	}
-	var ops []listOp
-	plain := &yaml.Node{Kind: yaml.MappingNode}
-	for i := 0; i < len(mixin.Content); i += 2 {
-		k, v := mixin.Content[i], mixin.Content[i+1]
-		if key, ok := strings.CutPrefix(k.Value, "prepend-"); ok {
-			ops = append(ops, listOp{key, true, v})
-		} else if key, ok := strings.CutPrefix(k.Value, "append-"); ok {
-			ops = append(ops, listOp{key, false, v})
-		} else {
-			plain.Content = append(plain.Content, k, v)
-		}
-	}
-	mergeMapping(root, plain)
-
-	for _, op := range ops {
-		name := "append-" + op.key
-		if op.prepend {
-			name = "prepend-" + op.key
-		}
-		if isNull(op.items) {
-			continue
-		}
-		if op.items.Kind != yaml.SequenceNode {
-			return fmt.Errorf("%s: value must be a list", name)
-		}
-		i := valueIndex(root, op.key)
-		if i < 0 {
-			setPair(root, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: op.key},
-				&yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
-			i = valueIndex(root, op.key)
-		}
-		target := root.Content[i]
-		if target.Kind != yaml.SequenceNode {
-			return fmt.Errorf("%s: %q is not a list", name, op.key)
-		}
-		if op.prepend {
-			target.Content = append(append([]*yaml.Node{}, op.items.Content...), target.Content...)
-		} else {
-			target.Content = append(target.Content, op.items.Content...)
-		}
-	}
 	return nil
 }
 

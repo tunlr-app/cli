@@ -181,10 +181,22 @@ func TestApplySubscriptionAndMixin(t *testing.T) {
 	mustApply(t, p, mustPlan(t, p))
 
 	useSubscription(t, p.Layout, "main", "port: 1234\n"+subscriptionV1)
-	writeFile(t, p.Layout.MixinFile(), "log-level: debug\nexternal-controller-unix: /tmp/x.sock\n")
+	dir := p.Layout.MixinDir()
+	writeFile(t, filepath.Join(dir, "20-b.yaml"), "log-level: debug\n")
+	writeFile(t, filepath.Join(dir, "10-a.yaml"), "log-level: warning\nexternal-controller-unix: /tmp/x.sock\n")
+	writeFile(t, filepath.Join(dir, "notes.txt"), "log-level: error\n")
 	plan := mustPlan(t, p)
 	if plan.Subscription != "main" || len(plan.Dropped) != 1 || plan.Dropped[0] != "port" {
 		t.Fatalf("plan = %+v", plan)
+	}
+	if strings.Join(plan.Mixins, ",") != "10-a.yaml,20-b.yaml" {
+		t.Errorf("mixins = %v", plan.Mixins)
+	}
+	if len(plan.Overrides) != 1 || plan.Overrides[0] != (config.Override{Path: "log-level", File: "20-b.yaml", Previous: "10-a.yaml"}) {
+		t.Errorf("overrides = %+v", plan.Overrides)
+	}
+	if len(plan.Warnings) != 1 || plan.Warnings[0].String() != "10-a.yaml:2: external-controller-unix is managed by tunlr; the value in the mixin is ignored" {
+		t.Errorf("warnings = %+v", plan.Warnings)
 	}
 	for _, want := range []string{"-log-level: info", "+log-level: debug", "+  - MATCH,a"} {
 		if !strings.Contains(plan.Diff, want+"\n") {
@@ -196,6 +208,41 @@ func TestApplySubscriptionAndMixin(t *testing.T) {
 	}
 	if rev := mustApply(t, p, plan); rev.Number != 2 || rev.Subscription != "main" {
 		t.Errorf("revision = %+v", rev)
+	}
+}
+
+// TestPlanWithMixin 验证编辑中的 mixin 代替磁盘上的同名文件，新文件按文件名顺序加入。
+func TestPlanWithMixin(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	dir := p.Layout.MixinDir()
+	writeFile(t, filepath.Join(dir, "10-a.yaml"), "log-level: warning\n")
+	writeFile(t, filepath.Join(dir, "30-c.yaml"), "mode: global\n")
+
+	plan, err := p.PlanWithMixin(context.Background(), config.Mixin{Name: "10-a.yaml", Data: []byte("log-level: debug\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Config), "\nlog-level: debug\n") || strings.Join(plan.Mixins, ",") != "10-a.yaml,30-c.yaml" {
+		t.Errorf("replace: mixins %v\n%s", plan.Mixins, plan.Config)
+	}
+
+	plan, err = p.PlanWithMixin(context.Background(), config.Mixin{Name: "20-b.yaml", Data: []byte("mode: direct\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Config), "\nmode: global\n") || strings.Join(plan.Mixins, ",") != "10-a.yaml,20-b.yaml,30-c.yaml" {
+		t.Errorf("insert: mixins %v\n%s", plan.Mixins, plan.Config)
+	}
+}
+
+// TestMixinErrorIsCheckFailure 验证有错的 mixin 不能发布，按“检查未通过”报告并指出文件。
+func TestMixinErrorIsCheckFailure(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "50-rules.yaml"), "rules: x\nprepend-rules: [MATCH,DIRECT]\n")
+	_, err := p.Plan(context.Background())
+	var me *config.MixinError
+	if !errors.As(err, &me) || !errors.Is(err, core.ErrCheckFailed) || err.Error() != "mixin 50-rules.yaml:2: prepend-rules: rules is not a list" {
+		t.Fatalf("err = %v", err)
 	}
 }
 

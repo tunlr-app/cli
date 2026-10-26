@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tunlr-app/cli/pkg/core/paths"
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
 )
 
 // rootEnv 把整套磁盘布局移到给定目录下，仅供测试使用。
@@ -43,6 +44,16 @@ type app struct {
 	stdout io.Writer
 	stderr io.Writer
 	log    *slog.Logger
+
+	// 以下供测试替换，为空时使用默认实现。
+	validator pipeline.Validator
+	reloader  pipeline.Reloader
+	// terminal 报告标准输入是否为终端。
+	terminal func() bool
+	// editor 让用户编辑文件，默认运行 $VISUAL 或 $EDITOR。
+	editor func(path string) error
+	// prompt 向用户提问，默认使用 huh。
+	prompt prompter
 }
 
 // Main 执行命令并返回进程退出码。收到 SIGINT 或 SIGTERM 时取消命令的 context。
@@ -55,8 +66,19 @@ func Main(info BuildInfo, args []string) int {
 		stderr: os.Stderr,
 		log:    slog.New(slog.DiscardHandler),
 	}
+	a.terminal = func() bool {
+		fi, err := a.stdin.Stat()
+		return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	}
+	a.editor = a.runEditor
+	a.prompt = huhPrompter{a}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	return a.execute(ctx, args)
+}
+
+// execute 执行命令并返回进程退出码。
+func (a *app) execute(ctx context.Context, args []string) int {
 	root := a.newRootCommand()
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)
@@ -115,6 +137,7 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.newPlanCommand(),
 		a.newApplyCommand(),
 		a.newRollbackCommand(),
+		a.newEditCommand(),
 		a.newSubCommand(),
 		a.newVersionCommand(),
 	)
@@ -124,9 +147,5 @@ func (a *app) newRootCommand() *cobra.Command {
 // interactive 报告能否向用户提问。标准输入不是终端，或要求 JSON 输出时，
 // 进入非交互模式：问答必须全部由参数给出，否则报错退出。
 func (a *app) interactive() bool {
-	if a.opts.JSON {
-		return false
-	}
-	fi, err := a.stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return !a.opts.JSON && a.terminal()
 }

@@ -1,0 +1,81 @@
+mixin 的普通键：映射逐层合并，标量和列表整体替换，null 删除键；前缀操作可用在任何一层，
+包括 mixin 新建的映射；mixin 的注释和顶层 x- 键不进入配置，锚点照常可用；
+写了强制项的被忽略并给出警告。
+
+-- template.yaml --
+# 键上的注释应保留。
+mixed-port: 7890 # 附在值上的注释描述的是旧值，值被覆盖时一并去掉
+
+# 键上方的注释应保留。
+dns:
+  enable: true
+  ipv6: true
+  nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+
+profile:
+  store-selected: true
+
+hosts:
+  a.example: 10.0.0.1
+-- mixin.d/10-test.yaml --
+# 这段注释不应出现在配置中。
+x-dns: &dns
+  - 1.1.1.1
+mixed-port: 7891 # 行尾注释同样去掉
+dns:
+  ipv6: false
+  prepend-nameserver: *dns
+  fallback-filter:
+    geoip-code: US
+    geoip: null
+profile: null
+tun:
+  enable: true
+sniffer:
+  enable: true
+  sniff:
+    HTTP:
+      ports: [80]
+      override-destination: null
+  append-skip-domain:
+    - Mijia Cloud
+external-controller-unix: /tmp/mixin.sock
+-- enforced.yaml --
+external-controller-unix: api.sock
+-- want.yaml --
+# 键上的注释应保留。
+mixed-port: 7891
+
+# 键上方的注释应保留。
+dns:
+  enable: true
+  ipv6: false
+  nameserver:
+    - 1.1.1.1
+    - 223.5.5.5
+    - 119.29.29.29
+  fallback-filter:
+    geoip-code: US
+
+hosts:
+  a.example: 10.0.0.1
+
+tun:
+  enable: true
+
+sniffer:
+  enable: true
+  sniff:
+    HTTP:
+      ports: [80]
+  skip-domain:
+    - Mijia Cloud
+
+external-controller-unix: api.sock
+-- warnings --
+10-test.yaml:22: external-controller-unix is managed by tunlr; the value in the mixin is ignored

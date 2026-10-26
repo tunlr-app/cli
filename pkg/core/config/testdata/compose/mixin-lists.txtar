@@ -1,0 +1,61 @@
+prepend 插在列表前面；append 追加在后面，但 rules 和 sub-rules 中的规则列表追加在末尾的 MATCH 之前；
+不存在的列表会被创建，值为空的操作不做任何事。同一层中按 替换 → 删除 → 修改 → 插入 的顺序执行，
+与键在文件中的顺序无关：先删掉订阅的 MATCH 再追加自己的 MATCH，追加的就是最后一条。
+
+-- template.yaml --
+mixed-port: 7890
+-- subscription.yaml --
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: g, type: select, proxies: [a]}
+rules:
+  - DOMAIN-SUFFIX,a.example,g
+  - SUB-RULE,(NETWORK,udp),udp
+  - MATCH,g
+sub-rules:
+  udp:
+    - DST-PORT,443,REJECT
+    - MATCH,g
+-- mixin.d/10-test.yaml --
+append-rules:
+  - GEOIP,LAN,DIRECT
+  - MATCH,DIRECT
+prepend-rules:
+  - DOMAIN-SUFFIX,first.example,DIRECT
+delete-rules:
+  - /^MATCH,/
+sub-rules:
+  append-udp:
+    - DST-PORT,53,DIRECT
+  prepend-tcp:
+    - MATCH,DIRECT
+append-listeners:
+  - {name: in, type: socks, port: 10808}
+prepend-proxy-groups:
+-- want.yaml --
+mixed-port: 7890
+
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+
+proxy-groups:
+  - {name: g, type: select, proxies: [a]}
+
+rules:
+  - DOMAIN-SUFFIX,first.example,DIRECT
+  - DOMAIN-SUFFIX,a.example,g
+  - SUB-RULE,(NETWORK,udp),udp
+  - GEOIP,LAN,DIRECT
+  - MATCH,DIRECT
+
+sub-rules:
+  udp:
+    - DST-PORT,443,REJECT
+    - DST-PORT,53,DIRECT
+    - MATCH,g
+  tcp:
+    - MATCH,DIRECT
+
+listeners:
+  - {name: in, type: socks, port: 10808}

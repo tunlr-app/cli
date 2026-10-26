@@ -20,15 +20,18 @@ import (
 
 // planView 是 pipeline.Plan 在 --json 输出中的形式。
 type planView struct {
-	Kind         string    `json:"kind"`
-	Changed      bool      `json:"changed"`
-	FirstPublish bool      `json:"first_publish"`
-	Subscription string    `json:"subscription,omitempty"`
-	Dropped      []string  `json:"dropped,omitempty"`
-	RollbackTo   int       `json:"rollback_to,omitempty"`
-	Diff         string    `json:"diff,omitempty"`
-	Config       string    `json:"config,omitempty"`
-	Check        checkView `json:"check"`
+	Kind         string            `json:"kind"`
+	Changed      bool              `json:"changed"`
+	FirstPublish bool              `json:"first_publish"`
+	Subscription string            `json:"subscription,omitempty"`
+	Dropped      []string          `json:"dropped,omitempty"`
+	Mixins       []string          `json:"mixins,omitempty"`
+	Overrides    []config.Override `json:"overrides,omitempty"`
+	Warnings     []config.Warning  `json:"warnings,omitempty"`
+	RollbackTo   int               `json:"rollback_to,omitempty"`
+	Diff         string            `json:"diff,omitempty"`
+	Config       string            `json:"config,omitempty"`
+	Check        checkView         `json:"check"`
 }
 
 // checkView 是校验结果。Status 取值：
@@ -53,13 +56,14 @@ type revisionView struct {
 }
 
 func (a *app) pipeline() *pipeline.Pipeline {
-	return &pipeline.Pipeline{Layout: a.layout, Version: a.info.Version}
+	return &pipeline.Pipeline{Layout: a.layout, Version: a.info.Version, Validator: a.validator, Reloader: a.reloader}
 }
 
 func newPlanView(p *pipeline.Plan, full bool) planView {
 	v := planView{
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
-		Subscription: p.Subscription, Dropped: p.Dropped, RollbackTo: p.RollbackTo, Diff: p.Diff,
+		Subscription: p.Subscription, Dropped: p.Dropped, Mixins: p.Mixins,
+		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Diff: p.Diff,
 	}
 	if full {
 		v.Config = string(p.Config)
@@ -93,6 +97,18 @@ func (a *app) printPlan(v planView) {
 	}
 	if len(v.Dropped) > 0 {
 		fmt.Fprintf(w, "Ignored from the subscription: %s\n", strings.Join(v.Dropped, ", "))
+	}
+	if len(v.Mixins) > 0 {
+		fmt.Fprintf(w, "Mixins (in order): %s\n", strings.Join(v.Mixins, ", "))
+	}
+	for _, o := range v.Overrides {
+		fmt.Fprintf(w, "  %s: %s overrides %s\n", o.Path, o.File, o.Previous)
+	}
+	if len(v.Warnings) > 0 {
+		fmt.Fprintln(w, "Warnings:")
+		for _, wn := range v.Warnings {
+			fmt.Fprintf(w, "  %s\n", wn)
+		}
 	}
 	fmt.Fprintln(w)
 
@@ -140,8 +156,9 @@ func (a *app) newPlanCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plan",
 		Short: "Preview the configuration that apply would publish",
-		Long: "Compose the configuration from the template, the active subscription and the mixin,\n" +
-			"show how it differs from the published one, and check it with mihomo -t.\n" +
+		Long: "Compose the configuration from the template, the active subscription and the mixin\n" +
+			"files in /etc/tunlr/mixin.d, show how it differs from the published one, and check it\n" +
+			"with mihomo -t. A mistake in a mixin file fails the check (exit code 3).\n" +
 			"Nothing is changed, except that geo data the check needs may be downloaded.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -188,7 +205,7 @@ func (a *app) newRollbackCommand() *cobra.Command {
 		Short: "Publish an earlier configuration again (--list shows the history)",
 		Long: "Publish a configuration from the history again. Without a revision, go back to the\n" +
 			"most recent one that differs from the published configuration, so running it twice\n" +
-			"switches back. The next apply composes from the subscription and mixin again.",
+			"switches back. The next apply composes from the subscription and mixins again.",
 		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if list {

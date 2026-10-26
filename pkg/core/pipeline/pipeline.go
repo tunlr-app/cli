@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v3"
@@ -91,6 +93,12 @@ type Plan struct {
 	Subscription string
 	// Dropped 是订阅中被丢弃的顶层键（仅 KindApply）。
 	Dropped []string
+	// Mixins 是按应用顺序排列的 mixin 文件名（仅 KindApply）。
+	Mixins []string
+	// Warnings 是合成时发现、不阻止发布的问题（仅 KindApply）。
+	Warnings []config.Warning
+	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键（仅 KindApply）。
+	Overrides []config.Override
 	// RollbackTo 是回滚的目标修订（仅 KindRollback）。
 	RollbackTo int
 	// Check 是校验结果，nil 表示通过；没有变化时不校验，也为 nil。
@@ -107,7 +115,18 @@ func (p *Plan) Changed() bool {
 }
 
 // Plan 用启用的订阅、mixin 和工具设置合成新配置，与生效的配置比较并校验。
+// mixin 有错时返回 *config.MixinError。
 func (p *Pipeline) Plan(ctx context.Context) (*Plan, error) {
+	return p.plan(ctx, nil)
+}
+
+// PlanWithMixin 同 Plan，但用 m 代替磁盘上的同名 mixin 文件（不存在时按文件名顺序加入），
+// 用于在保存编辑结果之前检查它。
+func (p *Pipeline) PlanWithMixin(ctx context.Context, m config.Mixin) (*Plan, error) {
+	return p.plan(ctx, &m)
+}
+
+func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin) (*Plan, error) {
 	set, err := settings.Load(p.Layout.SettingsFile())
 	if err != nil {
 		return nil, err
@@ -140,22 +159,36 @@ func (p *Pipeline) Plan(ctx context.Context) (*Plan, error) {
 			return nil, err
 		}
 	}
-	mixin, err := os.ReadFile(p.Layout.MixinFile())
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	mixins, err := config.LoadMixins(p.Layout.MixinDir())
+	if err != nil {
 		return nil, err
+	}
+	if edited != nil {
+		i, found := slices.BinarySearchFunc(mixins, edited.Name, func(m config.Mixin, name string) int {
+			return strings.Compare(m.Name, name)
+		})
+		if found {
+			mixins[i] = *edited
+		} else {
+			mixins = slices.Insert(mixins, i, *edited)
+		}
+	}
+	for _, m := range mixins {
+		plan.Mixins = append(plan.Mixins, m.Name)
 	}
 
 	res, err := config.Compose(config.Layers{
 		Template:     templates.Config,
 		Defaults:     defaults,
 		Subscription: sub,
-		Mixin:        mixin,
+		Mixins:       mixins,
 		Enforced:     enforcedLayer(),
 	})
 	if err != nil {
 		return nil, err
 	}
 	plan.Config, plan.Dropped = res.Config, res.Dropped
+	plan.Warnings, plan.Overrides = res.Warnings, res.Overrides
 	if err := p.finish(ctx, plan); err != nil {
 		return nil, err
 	}

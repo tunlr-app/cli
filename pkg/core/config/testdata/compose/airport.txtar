@@ -1,6 +1,8 @@
 内置模板 + 机场完整配置（结构仿照真实订阅，节点信息为假值）+ 常见 mixin。
 订阅中的端口、API、DNS 等系统设置被丢弃，只采用路由部分。
 
+-- defaults.yaml --
+secret: generated
 -- subscription.yaml --
 # Example Airport
 # Generated for clash-verge
@@ -92,7 +94,7 @@ rules:
 - GEOIP,CN,DIRECT
 - GEOIP,PRIVATE,DIRECT
 - MATCH,Default Proxy
--- mixin.yaml --
+-- mixin.d/50-custom.yaml --
 # 自己的规则放在机场规则之前。
 prepend-rules:
   - DOMAIN-SUFFIX,internal.example.org,DIRECT
@@ -124,7 +126,7 @@ find-process-mode: "off"
 # tunlr 自己经工作目录中的 Unix socket 访问 API。
 external-controller: 127.0.0.1:9090
 external-controller-unix: api.sock
-secret: ""
+secret: generated
 external-ui: ui
 external-ui-name: zashboard
 external-ui-url: https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip

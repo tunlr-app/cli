@@ -7,3 +7,8 @@ import _ "embed"
 //
 //go:embed config.yaml
 var Config []byte
+
+// Mixin 是新建 mixin 文件时的内容：用法说明和注释掉的示例。
+//
+//go:embed mixin.yaml
+var Mixin []byte

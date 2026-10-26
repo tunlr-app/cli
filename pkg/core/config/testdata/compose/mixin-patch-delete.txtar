@@ -1,0 +1,81 @@
+patch 按 name 修改列表中的项（/正则/ 匹配多项），项里同样可以用普通键和前缀操作；
+delete 按 name 删除，顶层删除节点或策略组时从所有策略组中移除；映射按键删除。
+没有匹配的 patch 和 delete 给出警告，不报错（机场改名很常见）。
+
+-- template.yaml --
+mixed-port: 7890
+-- subscription.yaml --
+proxies:
+  - {name: 剩余流量：10GB, type: ss, server: x.example.net, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: 官网 example.net, type: ss, server: x.example.net, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: 香港 01, type: ss, server: hk1.example.net, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: 香港 02, type: ss, server: hk2.example.net, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: 日本 01, type: ss, server: jp1.example.net, port: 1, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - name: 节点选择
+    type: select
+    proxies: [自动选择, 广告拦截, 剩余流量：10GB, 官网 example.net, 香港 01, 香港 02, 日本 01]
+  - name: 自动选择
+    type: url-test
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    proxies: [香港 01, 香港 02, 日本 01]
+  - name: 广告拦截
+    type: select
+    proxies: [REJECT, DIRECT]
+rule-providers:
+  ads: {type: http, behavior: domain, url: https://example.net/ads.yaml, path: ./ads.yaml, interval: 86400}
+  cn: {type: http, behavior: domain, url: https://example.net/cn.yaml, path: ./cn.yaml, interval: 86400}
+rules:
+  - RULE-SET,cn,DIRECT
+  - MATCH,节点选择
+-- mixin.d/10-test.yaml --
+append-proxies:
+  - {name: 家宽, type: socks5, server: 203.0.113.1, port: 1080}
+patch-proxies:
+  - name: /^香港/
+    udp: true
+    dialer-proxy: 家宽
+patch-proxy-groups:
+  - name: 节点选择
+    prepend-proxies: [家宽]
+    delete-proxies: [日本 01]
+  - name: 自动选择
+    interval: 600
+    url: null
+  - name: 不存在的组
+    interval: 600
+delete-proxies:
+  - /剩余流量|官网/
+  - 套餐到期
+delete-proxy-groups:
+  - 广告拦截
+delete-rule-providers:
+  - ads
+-- want.yaml --
+mixed-port: 7890
+
+proxies:
+  - {name: 香港 01, type: ss, server: hk1.example.net, port: 1, cipher: aes-128-gcm, password: p, udp: true, dialer-proxy: 家宽}
+  - {name: 香港 02, type: ss, server: hk2.example.net, port: 1, cipher: aes-128-gcm, password: p, udp: true, dialer-proxy: 家宽}
+  - {name: 日本 01, type: ss, server: jp1.example.net, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: 家宽, type: socks5, server: 203.0.113.1, port: 1080}
+
+proxy-groups:
+  - name: 节点选择
+    type: select
+    proxies: [家宽, 自动选择, 香港 01, 香港 02]
+  - name: 自动选择
+    type: url-test
+    interval: 600
+    proxies: [香港 01, 香港 02, 日本 01]
+
+rule-providers:
+  cn: {type: http, behavior: domain, url: 'https://example.net/cn.yaml', path: ./cn.yaml, interval: 86400}
+
+rules:
+  - RULE-SET,cn,DIRECT
+  - MATCH,节点选择
+-- warnings --
+10-test.yaml:14: patch-proxy-groups: no item named 不存在的组; nothing changed
+10-test.yaml:18: delete-proxies: nothing matches 套餐到期

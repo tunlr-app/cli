@@ -17,9 +17,9 @@ import (
 var update = flag.Bool("update", false, "rewrite the want sections of golden files")
 
 // TestComposeGolden 读取 testdata/compose/*.txtar。每个文件包含输入
-// template.yaml（缺省时使用内置模板）、defaults.yaml、subscription.yaml、mixin.yaml、enforced.yaml，
-// 以及期望输出 want.yaml 和 dropped（被丢弃的订阅键，每行一个）。
-// 用 go test ./pkg/core/config -update 重新生成期望输出。
+// template.yaml（缺省时使用内置模板）、defaults.yaml、subscription.yaml、enforced.yaml
+// 和 mixin.d/<文件名>（按出现顺序应用），以及期望输出 want.yaml、dropped（被丢弃的订阅键）、
+// warnings 和 overrides（每行一条）。用 go test ./pkg/core/config -update 重新生成期望输出。
 func TestComposeGolden(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("testdata", "compose", "*.txtar"))
 	if err != nil {
@@ -35,14 +35,18 @@ func TestComposeGolden(t *testing.T) {
 				t.Fatal(err)
 			}
 			sections := map[string][]byte{}
+			var mixins []Mixin
 			for _, f := range ar.Files {
 				sections[f.Name] = f.Data
+				if name, ok := strings.CutPrefix(f.Name, "mixin.d/"); ok {
+					mixins = append(mixins, Mixin{Name: name, Data: f.Data})
+				}
 			}
 			l := Layers{
 				Template:     sections["template.yaml"],
 				Defaults:     sections["defaults.yaml"],
 				Subscription: sections["subscription.yaml"],
-				Mixin:        sections["mixin.yaml"],
+				Mixins:       mixins,
 				Enforced:     sections["enforced.yaml"],
 			}
 			if _, ok := sections["template.yaml"]; !ok {
@@ -52,14 +56,30 @@ func TestComposeGolden(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var dropped []byte
-			if len(res.Dropped) > 0 {
-				dropped = []byte(strings.Join(res.Dropped, "\n") + "\n")
+			lines := func(items []string) []byte {
+				if len(items) == 0 {
+					return nil
+				}
+				return []byte(strings.Join(items, "\n") + "\n")
+			}
+			var warnings, overrides []string
+			for _, w := range res.Warnings {
+				warnings = append(warnings, w.String())
+			}
+			for _, o := range res.Overrides {
+				overrides = append(overrides, fmt.Sprintf("%s: %s overrides %s", o.Path, o.File, o.Previous))
+			}
+			got := map[string][]byte{
+				"want.yaml": res.Config,
+				"dropped":   lines(res.Dropped),
+				"warnings":  lines(warnings),
+				"overrides": lines(overrides),
 			}
 
 			if *update {
-				setSection(ar, "want.yaml", res.Config)
-				setSection(ar, "dropped", dropped)
+				for _, name := range []string{"want.yaml", "dropped", "warnings", "overrides"} {
+					setSection(ar, name, got[name])
+				}
 				if err := os.WriteFile(file, txtar.Format(ar), 0o644); err != nil {
 					t.Fatal(err)
 				}
@@ -68,8 +88,10 @@ func TestComposeGolden(t *testing.T) {
 			if want := sections["want.yaml"]; !bytes.Equal(res.Config, want) {
 				t.Errorf("config mismatch (run with -update to accept)\n--- got ---\n%s\n--- want ---\n%s", res.Config, want)
 			}
-			if want := sections["dropped"]; !bytes.Equal(dropped, want) {
-				t.Errorf("dropped = %q, want %q", dropped, want)
+			for _, name := range []string{"dropped", "warnings", "overrides"} {
+				if want := sections[name]; !bytes.Equal(got[name], want) {
+					t.Errorf("%s mismatch\n--- got ---\n%s--- want ---\n%s", name, got[name], want)
+				}
 			}
 		})
 	}
@@ -118,19 +140,64 @@ func TestComposeErrors(t *testing.T) {
 			want: "subscription: not a YAML mapping (only full mihomo configs are supported as subscriptions)",
 		},
 		{
-			name: "invalid yaml",
-			l:    Layers{Template: []byte("a: 1\n"), Mixin: []byte("a: [\n")},
-			want: "mixin: yaml:",
+			name: "invalid mixin yaml",
+			l:    mixinLayers("a: 1\n", "a: [\n"),
+			want: "mixin 10-test.yaml: yaml: line 1:",
+		},
+		{
+			name: "mixin not a mapping",
+			l:    mixinLayers("a: 1\n", "- a\n"),
+			want: "mixin 10-test.yaml: not a YAML mapping",
 		},
 		{
 			name: "prepend to non-list",
-			l:    Layers{Template: []byte("dns:\n  enable: true\n"), Mixin: []byte("prepend-dns:\n  - x\n")},
-			want: `mixin: prepend-dns: "dns" is not a list`,
+			l:    mixinLayers("dns:\n  enable: true\n", "x: 1\nprepend-dns:\n  - x\n"),
+			want: "mixin 10-test.yaml:2: prepend-dns: dns is not a list",
+		},
+		{
+			name: "nested append to non-list",
+			l:    mixinLayers("dns:\n  enable: true\n", "dns:\n  append-enable: [x]\n"),
+			want: "mixin 10-test.yaml:2: append-enable: dns.enable is not a list",
 		},
 		{
 			name: "append non-list value",
-			l:    Layers{Template: []byte("rules: []\n"), Mixin: []byte("append-rules: MATCH,DIRECT\n")},
-			want: "mixin: append-rules: value must be a list",
+			l:    mixinLayers("rules: []\n", "append-rules: MATCH,DIRECT\n"),
+			want: "mixin 10-test.yaml:1: append-rules: value must be a list",
+		},
+		{
+			name: "operation without key",
+			l:    mixinLayers("a: 1\n", "delete-: [a]\n"),
+			want: "mixin 10-test.yaml:1: delete-: missing the key to operate on",
+		},
+		{
+			name: "patch item without name",
+			l:    mixinLayers("proxies: []\n", "patch-proxies:\n  - udp: true\n"),
+			want: "mixin 10-test.yaml:2: patch-proxies: each item must be a mapping with a name",
+		},
+		{
+			name: "patch non-list",
+			l:    mixinLayers("dns:\n  enable: true\n", "patch-dns:\n  - name: x\n"),
+			want: "mixin 10-test.yaml:1: patch-dns: dns is not a list",
+		},
+		{
+			name: "delete scalar",
+			l:    mixinLayers("mode: rule\n", "delete-mode: [rule]\n"),
+			want: "mixin 10-test.yaml:1: delete-mode: mode is neither a list nor a mapping",
+		},
+		{
+			name: "invalid regexp",
+			l:    mixinLayers("proxies: []\n", "delete-proxies:\n  - /(/\n"),
+			want: "mixin 10-test.yaml:2: delete-proxies: invalid regular expression /(/:",
+		},
+		{
+			name: "delete with mapping matcher",
+			l:    mixinLayers("proxies: []\n", "delete-proxies:\n  - {name: a}\n"),
+			want: "mixin 10-test.yaml:2: delete-proxies: expected a name or /regular expression/",
+		},
+		{
+			name: "error inside patch",
+			l:    mixinLayers("proxy-groups:\n  - {name: g, proxies: [a]}\n", "patch-proxy-groups:\n  - name: g\n    prepend-proxies: a\n"),
+			want: "mixin 10-test.yaml:3: prepend-proxies: value must be a list",
 		},
 		{
 			name: "alias bomb",
@@ -146,6 +213,11 @@ func TestComposeErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// mixinLayers 返回以 template 为模板、带一份 mixin 文件 10-test.yaml 的输入。
+func mixinLayers(template, mixin string) Layers {
+	return Layers{Template: []byte(template), Mixins: []Mixin{{Name: "10-test.yaml", Data: []byte(mixin)}}}
 }
 
 // aliasBomb 生成每层引用上一层 10 次的别名链，展开后约 10^9 个节点。

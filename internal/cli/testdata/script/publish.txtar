@@ -48,9 +48,10 @@ stdout '"revision": 2'
 stdout '"subscription": "main"'
 
 # mixin 让配置无法通过 mihomo -t：退出码 3，不发布
-mkdir root/etc/tunlr
-cp bad-mixin.yaml root/etc/tunlr/mixin.yaml
+mkdir root/etc/tunlr/mixin.d
+cp bad-mixin.yaml root/etc/tunlr/mixin.d/50-rules.yaml
 exitcode 3 tunlr plan
+stdout 'Mixins \(in order\): 50-rules.yaml'
 stdout 'Check \(mihomo -t\): FAILED'
 stdout 'proxy \[NOPE\] not found'
 exitcode 3 tunlr apply --yes
@@ -59,7 +60,33 @@ exitcode 3 tunlr apply --yes --json
 stdout '"status": "failed"'
 stdout '"applied": false'
 ! stdout '"error"'
-rm root/etc/tunlr/mixin.yaml
+
+# mixin 本身有错：指出文件和行，退出码 3
+cp broken-mixin.yaml root/etc/tunlr/mixin.d/50-rules.yaml
+exitcode 3 tunlr plan
+stderr 'mixin 50-rules.yaml:2: append-rules: value must be a list'
+exitcode 3 tunlr apply --yes --json
+stdout '"code": 3'
+
+# 多个 mixin 按文件名顺序应用：plan 列出覆盖和警告；其他扩展名的文件被忽略
+cp patch-mixin.yaml root/etc/tunlr/mixin.d/50-rules.yaml
+cp level-mixin.yaml root/etc/tunlr/mixin.d/10-level.yaml
+cp level-mixin.yaml root/etc/tunlr/mixin.d/90-ignored.yml
+exec tunlr plan
+stdout 'Mixins \(in order\): 10-level.yaml, 50-rules.yaml$'
+stdout '  log-level: 50-rules.yaml overrides 10-level.yaml'
+stdout '  50-rules.yaml:4: patch-proxy-groups: no item named missing; nothing changed'
+stdout '^\+log-level: error$'
+stdout '^\+  - \{name: g, type: select, proxies: \[DIRECT, a\]\}$'
+exec tunlr plan --json
+stdout '"mixins": \['
+stdout '"path": "log-level"'
+stdout '"line": 4'
+rm root/etc/tunlr/mixin.d/50-rules.yaml root/etc/tunlr/mixin.d/10-level.yaml root/etc/tunlr/mixin.d/90-ignored.yml
+
+# edit 需要终端
+exitcode 2 tunlr edit 20-home
+stderr 'edit needs a terminal'
 
 # 回滚：不指定修订时回到上一个不同的版本，连续回滚在两个版本间切换
 exec tunlr rollback --list
@@ -106,5 +133,15 @@ rules:
 -- bad-mixin.yaml --
 prepend-rules:
   - MATCH,NOPE
+-- broken-mixin.yaml --
+log-level: info
+append-rules: MATCH,DIRECT
+-- patch-mixin.yaml --
+log-level: error
+patch-proxy-groups:
+  - {name: g, prepend-proxies: [DIRECT]}
+  - {name: missing, interval: 60}
+-- level-mixin.yaml --
+log-level: warning
 -- edited.yaml --
 edited: true

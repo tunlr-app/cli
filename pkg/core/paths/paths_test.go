@@ -9,7 +9,7 @@ func TestLayout(t *testing.T) {
 	root := t.TempDir()
 	l := Layout{Root: root}
 	tests := []struct{ got, want string }{
-		{l.MixinFile(), filepath.Join(root, "etc", "tunlr", "mixin.yaml")},
+		{l.MixinDir(), filepath.Join(root, "etc", "tunlr", "mixin.d")},
 		{l.StateFile(), filepath.Join(root, "var", "lib", "tunlr", "state.json")},
 		{l.CoreConfig(), filepath.Join(root, "var", "lib", "tunlr", "core", "config.yaml")},
 		{l.CoreSocket(), filepath.Join(l.CoreDir(), CoreSocketName)},
