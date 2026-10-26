@@ -1,0 +1,229 @@
+内置模板 + 机场完整配置（结构仿照真实订阅，节点信息为假值）+ 常见 mixin。
+订阅中的端口、API、DNS 等系统设置被丢弃，只采用路由部分。
+
+-- subscription.yaml --
+# Example Airport
+# Generated for clash-verge
+# port of HTTP
+port: 7890
+
+# port of SOCKS5
+socks-port: 7891
+
+allow-lan: false
+mode: rule
+log-level: info
+
+# A RESTful API for clash
+external-controller: 127.0.0.1:9090
+secret: ""
+
+dns:
+  enable: true
+  listen: 0.0.0.0:23453
+  enhanced-mode: fake-ip
+  nameserver:
+    - 114.114.114.114
+
+proxies:
+  - name: Fast-HK-1
+    type: ss
+    server: hk1.example.net
+    port: 2377
+    udp: true
+    udp-over-tcp: true
+    cipher: chacha20-ietf-poly1305
+    password: "example-password"
+    plugin: obfs
+    plugin-opts:
+      mode: tls
+      host: cdn.example.com
+  - name: Fast-US-1
+    type: ss
+    server: us1.example.net
+    port: 2378
+    udp: true
+    cipher: chacha20-ietf-poly1305
+    password: "example-password"
+  - name: AnyTLS-JP-1
+    type: anytls
+    server: jp1.example.net
+    port: 443
+    password: "example-password"
+    client-fingerprint: chrome
+    sni: jp1.example.net
+    alpn:
+      - h2
+      - http/1.1
+    skip-cert-verify: false
+    idle-session-check-interval: 30
+    idle-session-timeout: 30
+    min-idle-session: 0
+
+proxy-groups:
+  - name: Default Proxy
+    type: "select"
+    proxies:
+      - Auto
+      - Fast-HK-1
+      - Fast-US-1
+      - AnyTLS-JP-1
+  - name: Auto
+    type: "url-test"
+    url: "http://www.gstatic.com/generate_204"
+    interval: 180
+    tolerance: 100
+    proxies:
+      - Fast-HK-1
+      - Fast-US-1
+      - AnyTLS-JP-1
+  - name: US Fixed IP
+    type: "fallback"
+    url: "http://www.gstatic.com/generate_204"
+    interval: 120
+    proxies:
+      - Fast-US-1
+
+rules:
+- DOMAIN-SUFFIX,cn,DIRECT
+- DOMAIN-KEYWORD,google,Default Proxy
+- DOMAIN-SUFFIX,example-bank.com,US Fixed IP
+- DST-PORT,22,DIRECT
+- GEOIP,CN,DIRECT
+- GEOIP,PRIVATE,DIRECT
+- MATCH,Default Proxy
+-- mixin.yaml --
+# 自己的规则放在机场规则之前。
+prepend-rules:
+  - DOMAIN-SUFFIX,internal.example.org,DIRECT
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+
+log-level: warning
+
+# 只替换 nameserver，dns 的其他字段保留模板的值。
+dns:
+  nameserver:
+    - https://1.1.1.1/dns-query
+-- want.yaml --
+# 本文件由 tunlr 生成，直接修改会在下次 apply 时被覆盖。
+# 自定义设置请写在 mixin 中（tunlr edit）。
+
+# 代理端口只监听本机；允许局域网访问时必须设置认证。
+mixed-port: 7890
+allow-lan: false
+
+# 内核运行参数。
+mode: rule
+log-level: warning
+ipv6: true
+unified-delay: true
+tcp-concurrent: true
+find-process-mode: "off"
+
+# 面板通过 SSH 隧道访问，API 只监听本机。
+external-controller: 127.0.0.1:9090
+external-ui: ui
+external-ui-name: zashboard
+external-ui-url: https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
+
+# 保存面板选择的节点和 fake-ip 映射。
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+geo-auto-update: true
+geo-update-interval: 24
+
+dns:
+  enable: true
+  listen: 127.0.0.1:1053
+  ipv6: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://1.1.1.1/dns-query
+
+proxies:
+  - name: Fast-HK-1
+    type: ss
+    server: hk1.example.net
+    port: 2377
+    udp: true
+    udp-over-tcp: true
+    cipher: chacha20-ietf-poly1305
+    password: "example-password"
+    plugin: obfs
+    plugin-opts:
+      mode: tls
+      host: cdn.example.com
+  - name: Fast-US-1
+    type: ss
+    server: us1.example.net
+    port: 2378
+    udp: true
+    cipher: chacha20-ietf-poly1305
+    password: "example-password"
+  - name: AnyTLS-JP-1
+    type: anytls
+    server: jp1.example.net
+    port: 443
+    password: "example-password"
+    client-fingerprint: chrome
+    sni: jp1.example.net
+    alpn:
+      - h2
+      - http/1.1
+    skip-cert-verify: false
+    idle-session-check-interval: 30
+    idle-session-timeout: 30
+    min-idle-session: 0
+
+proxy-groups:
+  - name: Default Proxy
+    type: "select"
+    proxies:
+      - Auto
+      - Fast-HK-1
+      - Fast-US-1
+      - AnyTLS-JP-1
+  - name: Auto
+    type: "url-test"
+    url: "http://www.gstatic.com/generate_204"
+    interval: 180
+    tolerance: 100
+    proxies:
+      - Fast-HK-1
+      - Fast-US-1
+      - AnyTLS-JP-1
+  - name: US Fixed IP
+    type: "fallback"
+    url: "http://www.gstatic.com/generate_204"
+    interval: 120
+    proxies:
+      - Fast-US-1
+
+rules:
+  - DOMAIN-SUFFIX,internal.example.org,DIRECT
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - DOMAIN-KEYWORD,google,Default Proxy
+  - DOMAIN-SUFFIX,example-bank.com,US Fixed IP
+  - DST-PORT,22,DIRECT
+  - GEOIP,CN,DIRECT
+  - GEOIP,PRIVATE,DIRECT
+  - MATCH,Default Proxy
+-- dropped --
+port
+socks-port
+allow-lan
+mode
+log-level
+external-controller
+secret
+dns

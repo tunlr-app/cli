@@ -1,0 +1,78 @@
+订阅中的锚点定义在被丢弃的键里，别名必须展开，否则输出会引用不存在的锚点。
+合并键（<<）展开为普通键，放在合并键的位置；显式写出的键优先（b 的 udp）。
+
+-- template.yaml --
+mixed-port: 7890
+-- subscription.yaml --
+x-common: &common
+  udp: true
+  cipher: aes-128-gcm
+x-members: &members
+  - a
+  - b
+
+proxies:
+  - name: a
+    type: ss
+    server: a.example.net
+    port: 1
+    password: p
+    <<: *common
+  - name: b
+    type: ss
+    server: b.example.net
+    port: 2
+    <<: *common
+    password: p
+    udp: false
+
+proxy-groups:
+  - name: g1
+    type: select
+    proxies: *members
+  - name: g2
+    type: url-test
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    proxies: *members
+
+rules:
+  - MATCH,g1
+-- want.yaml --
+mixed-port: 7890
+
+proxies:
+  - name: a
+    type: ss
+    server: a.example.net
+    port: 1
+    password: p
+    udp: true
+    cipher: aes-128-gcm
+  - name: b
+    type: ss
+    server: b.example.net
+    port: 2
+    cipher: aes-128-gcm
+    password: p
+    udp: false
+
+proxy-groups:
+  - name: g1
+    type: select
+    proxies:
+      - a
+      - b
+  - name: g2
+    type: url-test
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    proxies:
+      - a
+      - b
+
+rules:
+  - MATCH,g1
+-- dropped --
+x-common
+x-members

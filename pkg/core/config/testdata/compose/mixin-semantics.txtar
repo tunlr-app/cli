@@ -1,0 +1,83 @@
+mixin 的合并语义：映射逐层合并，标量和列表整体替换，prepend/append 作用于顶层列表，
+不存在的列表会被创建，值为空的 prepend 不做任何事；最后写入的强制项覆盖 mixin。
+
+-- template.yaml --
+# 键上的注释应保留。
+mixed-port: 7890 # 附在值上的注释描述的是旧值，值被覆盖时一并去掉
+
+# 键上方的注释应保留。
+dns:
+  enable: true
+  ipv6: true
+  nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+
+profile:
+  store-selected: true
+-- subscription.yaml --
+rules:
+  - DOMAIN-SUFFIX,a.example,DIRECT
+  - MATCH,DIRECT
+-- mixin.yaml --
+mixed-port: 7891
+dns:
+  ipv6: false
+  nameserver:
+    - 1.1.1.1
+  fallback-filter:
+    geoip-code: US
+# 映射整体替换为标量。
+profile: null
+prepend-rules:
+  - DOMAIN-SUFFIX,first.example,DIRECT
+append-rules:
+  - DOMAIN-SUFFIX,unreachable.example,DIRECT
+append-proxies:
+  - name: extra
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+prepend-proxy-groups:
+external-controller-unix: /tmp/mixin.sock
+tun:
+  enable: true
+-- enforced.yaml --
+external-controller-unix: /run/tunlr/mihomo.sock
+tun:
+  enable: false
+-- want.yaml --
+# 键上的注释应保留。
+mixed-port: 7891
+
+# 键上方的注释应保留。
+dns:
+  enable: true
+  ipv6: false
+  nameserver:
+    - 1.1.1.1
+  fallback-filter:
+    geoip: true
+    geoip-code: US
+
+profile: null
+
+rules:
+  - DOMAIN-SUFFIX,first.example,DIRECT
+  - DOMAIN-SUFFIX,a.example,DIRECT
+  - MATCH,DIRECT
+  - DOMAIN-SUFFIX,unreachable.example,DIRECT
+
+external-controller-unix: /run/tunlr/mihomo.sock
+
+tun:
+  enable: false
+
+proxies:
+  - name: extra
+    type: socks5
+    server: 127.0.0.1
+    port: 1080

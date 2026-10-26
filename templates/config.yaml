@@ -1,0 +1,44 @@
+# 本文件由 tunlr 生成，直接修改会在下次 apply 时被覆盖。
+# 自定义设置请写在 mixin 中（tunlr edit）。
+
+# 代理端口只监听本机；允许局域网访问时必须设置认证。
+mixed-port: 7890
+allow-lan: false
+
+# 内核运行参数。
+mode: rule
+log-level: info
+ipv6: true
+unified-delay: true
+tcp-concurrent: true
+find-process-mode: "off"
+
+# 面板通过 SSH 隧道访问，API 只监听本机。
+external-controller: 127.0.0.1:9090
+external-ui: ui
+external-ui-name: zashboard
+external-ui-url: https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
+
+# 保存面板选择的节点和 fake-ip 映射。
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+geo-auto-update: true
+geo-update-interval: 24
+
+dns:
+  enable: true
+  listen: 127.0.0.1:1053
+  ipv6: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
