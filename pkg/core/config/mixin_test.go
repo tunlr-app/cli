@@ -38,7 +38,7 @@ proxy-groups:
 rules:
   - MATCH,节点选择
 `)
-	base := Layers{Template: templates.Config, Defaults: []byte("secret: s\n"), Subscription: sub}
+	base := Layers{Template: templates.Config, Subscription: sub, Generated: []byte("secret: s\n")}
 	want, err := Compose(base)
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +86,24 @@ func TestMixinFileName(t *testing.T) {
 		if _, err := MixinFileName(in); err == nil {
 			t.Errorf("MixinFileName(%q) accepted", in)
 		}
+	}
+}
+
+func TestOrderWarnings(t *testing.T) {
+	var mixins []Mixin
+	for _, name := range []string{"010-x.yaml", "10-a.yaml", "20-b.yaml", "9-c.yaml", "dns.yaml"} {
+		mixins = append(mixins, Mixin{Name: name})
+	}
+	var got []string
+	for _, w := range orderWarnings(mixins) {
+		got = append(got, w.String())
+	}
+	want := []string{"9-c.yaml: applied after 010-x.yaml because names sort character by character; to apply it before, rename it to 009-c.yaml"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("warnings:\n%s", strings.Join(got, "\n"))
+	}
+	if compareNumbers("0010", "9") <= 0 || compareNumbers("007", "7") != 0 || compareNumbers("123456789012345678901234567890", "2") <= 0 {
+		t.Error("compareNumbers")
 	}
 }
 

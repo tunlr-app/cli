@@ -2,6 +2,9 @@
 #
 # /etc/tunlr/mixin.d/ 下的 *.yaml 按文件名顺序逐个应用，后面的文件优先。
 # 可以按用途分文件，用数字前缀排序，例如 10-dns.yaml、20-nodes.yaml、50-rules.yaml。
+# 文件名逐字符比较，前缀请用相同的位数：9-a.yaml 会排在 10-b.yaml 之后。
+# tunlr 自己生成的设置（API secret、经 GitHub 镜像的下载地址和直连规则）在所有文件之前应用，
+# 可以在这里覆盖；tunlr plan 会列出它们。
 # 用 tunlr edit 编辑会在保存时自动检查；直接改文件的，用 tunlr plan 预览、tunlr apply 发布。
 #
 # 写法与 mihomo 配置相同，另有几种前缀操作：

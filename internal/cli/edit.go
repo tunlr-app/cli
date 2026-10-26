@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"charm.land/huh/v2"
@@ -25,8 +26,8 @@ import (
 type prompter interface {
 	// Choose 让用户从 options 中选一项，返回其下标。
 	Choose(ctx context.Context, title string, options []string) (int, error)
-	// Input 让用户输入一行文字，validate 不通过时要求重新输入。
-	Input(ctx context.Context, title string, validate func(string) error) (string, error)
+	// Input 让用户输入一行文字，description 是标题下的说明，validate 不通过时要求重新输入。
+	Input(ctx context.Context, title, description string, validate func(string) error) (string, error)
 }
 
 type huhPrompter struct{ a *app }
@@ -41,9 +42,9 @@ func (p huhPrompter) Choose(ctx context.Context, title string, options []string)
 	return v, err
 }
 
-func (p huhPrompter) Input(ctx context.Context, title string, validate func(string) error) (string, error) {
+func (p huhPrompter) Input(ctx context.Context, title, description string, validate func(string) error) (string, error) {
 	var v string
-	err := p.run(ctx, huh.NewInput().Title(title).Validate(validate).Value(&v))
+	err := p.run(ctx, huh.NewInput().Title(title).Description(description).Validate(validate).Value(&v))
 	return v, err
 }
 
@@ -90,26 +91,31 @@ func (a *app) newEditCommand() *cobra.Command {
 	}
 }
 
-// chooseMixin 让用户选择已有的 mixin 文件，或输入新文件的名称。
+// chooseMixin 让用户选择已有的 mixin 文件，或输入新文件的名称。输入名称时列出已有文件的
+// 应用顺序，方便选择数字前缀。
 func (a *app) chooseMixin(ctx context.Context) (string, error) {
 	mixins, err := config.LoadMixins(a.layout.MixinDir())
 	if err != nil {
 		return "", err
 	}
-	if len(mixins) > 0 {
-		options := make([]string, 0, len(mixins)+1)
-		for _, m := range mixins {
-			options = append(options, m.Name)
-		}
-		i, err := a.prompt.Choose(ctx, "Which mixin file?", append(options, "New file..."))
+	names := make([]string, 0, len(mixins))
+	for _, m := range mixins {
+		names = append(names, m.Name)
+	}
+	if len(names) > 0 {
+		i, err := a.prompt.Choose(ctx, "Which mixin file?", append(slices.Clone(names), "New file..."))
 		if err != nil {
 			return "", err
 		}
-		if i < len(mixins) {
-			return mixins[i].Name, nil
+		if i < len(names) {
+			return names[i], nil
 		}
 	}
-	name, err := a.prompt.Input(ctx, "Name of the new mixin file (e.g. 20-rules)", func(s string) error {
+	desc := "Files are applied in name order and later files win; start the name with a number to place it."
+	if len(names) > 0 {
+		desc += "\nCurrent order: " + strings.Join(names, " → ")
+	}
+	name, err := a.prompt.Input(ctx, "Name of the new mixin file (e.g. 20-rules)", desc, func(s string) error {
 		_, err := config.MixinFileName(s)
 		return err
 	})

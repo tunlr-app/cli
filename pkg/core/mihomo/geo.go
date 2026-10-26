@@ -47,7 +47,7 @@ func (f GeoFile) URL() string {
 }
 
 // GeoxURL 返回配置中 geox-url 的各项（geoip、mmdb、asn、geosite），地址加上 mirror 前缀，
-// 让内核自己定时更新 geo 数据时也经过镜像。mirror 为空时返回 nil，使用内核的默认值。
+// 让内核自己定时更新 geo 数据时也经过镜像。mirror 为空时返回 nil，使用配置模板中的官方地址。
 func GeoxURL(mirror string) map[string]string {
 	if mirror == "" {
 		return nil

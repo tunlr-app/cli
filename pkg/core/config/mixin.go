@@ -120,6 +120,41 @@ func LoadMixins(dir string) ([]Mixin, error) {
 	return mixins, nil
 }
 
+var numberPrefix = regexp.MustCompile(`^[0-9]+`)
+
+// orderWarnings 提醒数字前缀位数不同导致的意外顺序：文件名逐字符排序，
+// 9-a.yaml 排在 10-b.yaml 之后。mixins 已按文件名排序。
+func orderWarnings(mixins []Mixin) []Warning {
+	var ws []Warning
+	for i, b := range mixins {
+		pb := numberPrefix.FindString(b.Name)
+		if pb == "" {
+			continue
+		}
+		for _, a := range mixins[:i] {
+			pa := numberPrefix.FindString(a.Name)
+			if pa == "" || compareNumbers(pa, pb) <= 0 {
+				continue
+			}
+			pad := strings.Repeat("0", max(len(pa)-len(pb), 0))
+			ws = append(ws, Warning{File: b.Name, Message: fmt.Sprintf(
+				"applied after %s because names sort character by character; to apply it before, rename it to %s",
+				a.Name, pad+b.Name)})
+			break
+		}
+	}
+	return ws
+}
+
+// compareNumbers 比较两个十进制数字串的数值，不受长度限制。
+func compareNumbers(a, b string) int {
+	a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+	if len(a) != len(b) {
+		return len(a) - len(b)
+	}
+	return strings.Compare(a, b)
+}
+
 // ErrMixinChanged 表示 mixin 文件在编辑期间被别人改动过。
 var ErrMixinChanged = errors.New("the mixin file was changed by someone else while you were editing it")
 

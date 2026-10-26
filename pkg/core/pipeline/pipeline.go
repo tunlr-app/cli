@@ -103,8 +103,8 @@ type Plan struct {
 	Warnings []config.Warning
 	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键（仅 KindApply）。
 	Overrides []config.Override
-	// GeneratedRules 是工具插在订阅规则前面的规则（仅 KindApply），目前是让 GitHub 镜像直连的规则。
-	GeneratedRules []string
+	// Generated 是工具为这台服务器生成的调整（仅 KindApply）。
+	Generated *Generated
 	// RollbackTo 是回滚的目标修订（仅 KindRollback）。
 	RollbackTo int
 	// Check 是校验结果，nil 表示通过；没有变化时不校验，也为 nil。
@@ -113,6 +113,19 @@ type Plan struct {
 
 	// newSecret 是本次生成、尚未保存的 API secret。
 	newSecret string
+}
+
+// Generated 是工具为这台服务器生成的调整。它以 mixin 的语义应用在订阅之后、用户的 mixin 之前，
+// 不写入磁盘；用户可以在 mixin 中覆盖这些键，规则用 delete-rules 去掉。
+type Generated struct {
+	// Secret 是 API secret，第一次发布时生成并保存在状态文件中。
+	Secret string `yaml:"secret" json:"secret"`
+	// ExternalUIURL 是配置了 GitHub 镜像时经镜像的面板下载地址。
+	ExternalUIURL string `yaml:"external-ui-url,omitempty" json:"external-ui-url,omitempty"`
+	// GeoxURL 是配置了 GitHub 镜像时经镜像的 geo 数据下载地址。
+	GeoxURL map[string]string `yaml:"geox-url,omitempty" json:"geox-url,omitempty"`
+	// PrependRules 是插在订阅规则前面的规则，目前是让 GitHub 镜像直连的规则。
+	PrependRules []string `yaml:"prepend-rules,omitempty" json:"prepend-rules,omitempty"`
 }
 
 // Changed 报告 Config 与生效的配置是否不同。
@@ -150,12 +163,8 @@ func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin) (*Plan, error
 		}
 		plan.newSecret = secret
 	}
-	defaults, err := defaultsLayer(secret, set.GitHubMirror)
-	if err != nil {
-		return nil, err
-	}
-	plan.GeneratedRules = mirrorRules(set.GitHubMirror)
-	generated, err := generatedLayer(plan.GeneratedRules)
+	plan.Generated = generate(secret, set.GitHubMirror)
+	generated, err := yaml.Marshal(plan.Generated)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +199,6 @@ func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin) (*Plan, error
 
 	res, err := config.Compose(config.Layers{
 		Template:     templates.Config,
-		Defaults:     defaults,
 		Subscription: sub,
 		Generated:    generated,
 		Mixins:       mixins,
@@ -503,17 +511,14 @@ func (p *Pipeline) now() time.Time {
 	return time.Now()
 }
 
-// defaultsLayer 生成默认值层：API secret，以及配置了 GitHub 镜像时经镜像的面板和 geo 数据地址。
-func defaultsLayer(secret, mirror string) ([]byte, error) {
-	d := struct {
-		Secret        string            `yaml:"secret"`
-		ExternalUIURL string            `yaml:"external-ui-url,omitempty"`
-		GeoxURL       map[string]string `yaml:"geox-url,omitempty"`
-	}{Secret: secret, GeoxURL: mihomo.GeoxURL(mirror)}
+// generate 生成工具的调整：API secret，以及配置了 GitHub 镜像时经镜像的面板和 geo 数据地址、
+// 让镜像直连的规则。
+func generate(secret, mirror string) *Generated {
+	g := &Generated{Secret: secret, GeoxURL: mihomo.GeoxURL(mirror), PrependRules: mirrorRules(mirror)}
 	if mirror != "" {
-		d.ExternalUIURL = download.MirrorURL(mirror, mihomo.ZashboardURL)
+		g.ExternalUIURL = download.MirrorURL(mirror, mihomo.ZashboardURL)
 	}
-	return yaml.Marshal(d)
+	return g
 }
 
 // mirrorRules 返回让 GitHub 镜像直连的规则。内核自己的下载（面板、geo 数据）同样按规则分流，
@@ -534,14 +539,6 @@ func mirrorRules(mirror string) []string {
 		return []string{"IP-CIDR6," + ip.String() + "/128,DIRECT,no-resolve"}
 	}
 	return []string{"DOMAIN," + host + ",DIRECT"}
-}
-
-// generatedLayer 把工具生成的规则写成 mixin，插在订阅规则的前面。
-func generatedLayer(rules []string) ([]byte, error) {
-	if len(rules) == 0 {
-		return nil, nil
-	}
-	return yaml.Marshal(map[string][]string{"prepend-rules": rules})
 }
 
 // enforcedLayer 生成强制项：工具运行所依赖、mixin 不能覆盖的键。

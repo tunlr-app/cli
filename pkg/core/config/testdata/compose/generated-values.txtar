@@ -1,7 +1,7 @@
-默认值层紧接模板写入：替换模板中已有键的值并保留其位置和注释，模板中没有的键追加在末尾；
-mixin 可以覆盖默认值，强制项不能被覆盖。
+工具生成的值（secret、经镜像的下载地址）替换模板中已有键的值，保留其位置和注释；
+订阅中的同名键被丢弃，用户的 mixin 可以覆盖，覆盖记为 tunlr；强制项不能被覆盖。
 
--- defaults.yaml --
+-- generated.yaml --
 secret: generated-secret
 external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
 geox-url:
@@ -13,6 +13,7 @@ proxies:
 rules:
   - MATCH,a
 -- mixin.d/50-custom.yaml --
+external-ui-url: https://example.net/ui.zip
 geox-url:
   geosite: https://example.net/geosite.dat
 -- enforced.yaml --
@@ -34,13 +35,14 @@ tcp-concurrent: true
 find-process-mode: "off"
 
 # 面板通过 SSH 隧道访问，HTTP API 只监听本机，secret 由 tunlr 为每台服务器生成。
-# tunlr 自己经工作目录中的 Unix socket 访问 API。
+# tunlr 自己经工作目录中的 Unix socket 访问 API。设置了 github-mirror 时，
+# 面板的下载地址由 tunlr 改为经镜像下载。
 external-controller: 127.0.0.1:9090
 external-controller-unix: api.sock
 secret: generated-secret
 external-ui: ui
 external-ui-name: zashboard
-external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
+external-ui-url: https://example.net/ui.zip
 
 # 保存面板选择的节点和 fake-ip 映射。
 profile:
@@ -49,6 +51,13 @@ profile:
 
 geo-auto-update: true
 geo-update-interval: 24
+
+# geo 数据的下载地址。设置了 github-mirror 时由 tunlr 改为经镜像下载。
+geox-url:
+  geoip: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat
+  geosite: https://example.net/geosite.dat
+  mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
+  asn: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb
 
 dns:
   enable: true
@@ -66,10 +75,6 @@ dns:
     - https://dns.alidns.com/dns-query
     - https://doh.pub/dns-query
 
-geox-url:
-  mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
-  geosite: https://example.net/geosite.dat
-
 proxies:
   - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
 
@@ -77,3 +82,5 @@ rules:
   - MATCH,a
 -- dropped --
 secret
+-- overrides --
+external-ui-url: 50-custom.yaml overrides tunlr

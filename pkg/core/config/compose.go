@@ -30,13 +30,11 @@ var errNotMapping = errors.New("not a YAML mapping")
 type Layers struct {
 	// Template 是工具内置的基础配置（系统部分）。
 	Template []byte
-	// Defaults 是工具为这台服务器生成的默认值（如 API secret、按镜像设置改写的下载地址），
-	// 紧接模板写入，mixin 可以覆盖。
-	Defaults []byte
 	// Subscription 是机场提供的完整配置，只采用其中的路由部分。
 	Subscription []byte
-	// Generated 是工具按设置生成的调整（如让 GitHub 镜像直连的规则），以 mixin 的语义
-	// 应用在订阅之后、用户的 mixin 之前，用户可以在 mixin 中去掉或覆盖。
+	// Generated 是工具为这台服务器生成的调整（如 API secret、经 GitHub 镜像的下载地址、
+	// 让镜像直连的规则），以 mixin 的语义应用在订阅之后、用户的 mixin 之前，用户可以在
+	// mixin 中覆盖或去掉。
 	Generated []byte
 	// Mixins 是用户的 mixin 文件，按顺序逐个应用，语义见 Mixin。
 	Mixins []Mixin
@@ -59,7 +57,7 @@ type Result struct {
 	Overrides []Override
 }
 
-// Compose 按 模板 → 默认值 → 订阅 → mixin → 强制项 的顺序合成最终配置。
+// Compose 按 模板 → 订阅 → 工具生成的调整 → 用户的 mixin → 强制项 的顺序合成最终配置。
 // 合并基于 yaml.Node，保留模板的键顺序与注释；模板中没有的键追加在末尾。
 // mixin 有错时返回 *MixinError。
 func Compose(l Layers) (*Result, error) {
@@ -72,14 +70,6 @@ func Compose(l Layers) (*Result, error) {
 	}
 	root := doc.Content[0]
 	res := &Result{}
-
-	defaults, err := parseDocument("defaults", l.Defaults)
-	if err != nil {
-		return nil, err
-	}
-	if defaults != nil {
-		mergeMapping(root, defaults.Content[0])
-	}
 
 	sub, err := parseDocument("subscription", l.Subscription)
 	if err != nil {
@@ -141,7 +131,8 @@ func Compose(l Layers) (*Result, error) {
 		}
 		slices.SortStableFunc(m.warnings[first:], func(a, b Warning) int { return a.Line - b.Line })
 	}
-	res.Warnings, res.Overrides = m.warnings, m.overrides
+	res.Warnings = append(orderWarnings(l.Mixins), m.warnings...)
+	res.Overrides = m.overrides
 
 	if enforced != nil {
 		mergeMapping(root, enforced.Content[0])

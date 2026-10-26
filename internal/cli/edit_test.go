@@ -48,6 +48,8 @@ type scriptedPrompt struct {
 	choices []int
 	inputs  []string
 	asked   [][]string
+	// described 记录输入时的说明。
+	described []string
 }
 
 func (p *scriptedPrompt) Choose(_ context.Context, _ string, options []string) (int, error) {
@@ -60,7 +62,8 @@ func (p *scriptedPrompt) Choose(_ context.Context, _ string, options []string) (
 	return c, nil
 }
 
-func (p *scriptedPrompt) Input(_ context.Context, _ string, validate func(string) error) (string, error) {
+func (p *scriptedPrompt) Input(_ context.Context, _, description string, validate func(string) error) (string, error) {
+	p.described = append(p.described, description)
 	if len(p.inputs) == 0 {
 		p.t.Fatal("unexpected input request")
 	}
@@ -247,11 +250,15 @@ func TestEditDryRun(t *testing.T) {
 func TestEditChooseNewFile(t *testing.T) {
 	et := newEditTest(t, "mode: global\n")
 	writeMixin(t, et.a.layout, "10-a.yaml", "log-level: info\n")
-	et.prompt.choices = []int{1}
+	writeMixin(t, et.a.layout, "20-b.yaml", "log-level: info\n")
+	et.prompt.choices = []int{2}
 	et.prompt.inputs = []string{"30-new"}
 	et.run(0, "edit", "--yes")
-	if strings.Join(et.prompt.asked[0], "|") != "10-a.yaml|New file..." {
+	if strings.Join(et.prompt.asked[0], "|") != "10-a.yaml|20-b.yaml|New file..." {
 		t.Errorf("choices = %v", et.prompt.asked)
+	}
+	if len(et.prompt.described) != 1 || !strings.Contains(et.prompt.described[0], "Current order: 10-a.yaml → 20-b.yaml") {
+		t.Errorf("name prompt description = %q", et.prompt.described)
 	}
 	if got := et.mixin("30-new.yaml"); got != "mode: global\n" {
 		t.Errorf("saved = %q", got)

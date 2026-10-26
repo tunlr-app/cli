@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -441,12 +442,30 @@ func TestMirrorDefaults(t *testing.T) {
 			t.Errorf("config lacks %q", want)
 		}
 	}
+
+	// 工具生成的调整应用在用户的 mixin 之前，用户可以覆盖，覆盖记录在计划中。
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "secret: mine\nexternal-ui-url: https://example.com/ui.zip\n")
+	plan := mustPlan(t, p)
+	if cfg := string(plan.Config); !strings.Contains(cfg, "\nsecret: mine\n") || !strings.Contains(cfg, "\nexternal-ui-url: https://example.com/ui.zip\n") {
+		t.Errorf("mixin did not override the generated values:\n%s", cfg)
+	}
+	if fmt.Sprint(plan.Overrides) != "[{secret 10-a.yaml tunlr} {external-ui-url 10-a.yaml tunlr}]" {
+		t.Errorf("overrides = %v", plan.Overrides)
+	}
 }
 
-// TestTemplateUIURL 确认镜像改写的面板地址与模板中的一致。
-func TestTemplateUIURL(t *testing.T) {
+// TestTemplateURLs 确认镜像改写的面板和 geo 数据地址与模板中的一致。
+func TestTemplateURLs(t *testing.T) {
 	if !bytes.Contains(templates.Config, []byte("\nexternal-ui-url: "+mihomo.ZashboardURL+"\n")) {
 		t.Errorf("template external-ui-url differs from %s", mihomo.ZashboardURL)
+	}
+	for _, f := range []mihomo.GeoFile{mihomo.GeoIPDat, mihomo.GeoSite, mihomo.GeoMMDB, mihomo.GeoASN} {
+		if !bytes.Contains(templates.Config, []byte(": "+f.URL()+"\n")) {
+			t.Errorf("template geox-url lacks %s", f.URL())
+		}
+	}
+	if len(mihomo.GeoxURL("https://m.example/")) != 4 {
+		t.Error("GeoxURL does not cover the four geo files in the template")
 	}
 }
 
@@ -456,8 +475,8 @@ func TestMirrorRules(t *testing.T) {
 	useSubscription(t, p.Layout, "main", subscriptionV1)
 	writeFile(t, p.Layout.SettingsFile(), "github-mirror: https://gh-proxy.com/\n")
 	plan := mustPlan(t, p)
-	if strings.Join(plan.GeneratedRules, ",") != "DOMAIN,gh-proxy.com,DIRECT" {
-		t.Errorf("generated rules = %v", plan.GeneratedRules)
+	if strings.Join(plan.Generated.PrependRules, ",") != "DOMAIN,gh-proxy.com,DIRECT" {
+		t.Errorf("generated rules = %v", plan.Generated.PrependRules)
 	}
 	if !strings.Contains(string(plan.Config), "\nrules:\n  - DOMAIN,gh-proxy.com,DIRECT\n  - MATCH,a\n") {
 		t.Errorf("config:\n%s", plan.Config)
