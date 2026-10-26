@@ -175,7 +175,7 @@ func TestUpdateKeepsLastGood(t *testing.T) {
 	}
 
 	p.broken.Store(true)
-	results, err := m.Update(ctx, nil)
+	results, err := m.Update(ctx, nil, UpdateOptions{})
 	if err == nil || len(results) != 1 || results[0].Err == nil {
 		t.Fatalf("update while broken: results=%+v err=%v", results, err)
 	}
@@ -192,7 +192,7 @@ func TestUpdateKeepsLastGood(t *testing.T) {
 	}
 
 	p.broken.Store(false)
-	if _, err := m.Update(ctx, []string{"a"}); err != nil {
+	if _, err := m.Update(ctx, []string{"a"}, UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	st, err = state.Load(m.Layout.StateFile())
@@ -203,8 +203,74 @@ func TestUpdateKeepsLastGood(t *testing.T) {
 		t.Errorf("error not cleared after success: %+v", s)
 	}
 
-	if _, err := m.Update(ctx, []string{"nope"}); !errors.Is(err, ErrNotFound) {
+	if _, err := m.Update(ctx, []string{"nope"}, UpdateOptions{}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("update unknown: err = %v", err)
+	}
+}
+
+// TestUserAgent 验证 User-Agent 的优先级（订阅 > 工具设置 > 内置默认），
+// 以及修改已有订阅的 User-Agent 只在抓取成功时保存。
+func TestUserAgent(t *testing.T) {
+	p := newProvider(t)
+	m := newManager(t)
+	ctx := context.Background()
+	lastUA := func() string { ua, _ := p.userAgent.Load().(string); return ua }
+	update := func(ua *string) error {
+		_, err := m.Update(ctx, []string{"a"}, UpdateOptions{UserAgent: ua})
+		return err
+	}
+	savedUA := func() string {
+		st, err := state.Load(m.Layout.StateFile())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Find("a").UserAgent
+	}
+
+	if _, err := m.Add(ctx, "a", p.URL+"/ok", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(m.Layout.ConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.Layout.SettingsFile(), []byte("user-agent: global/2.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := update(nil); err != nil || lastUA() != "global/2.0" {
+		t.Fatalf("settings default: UA %q, err %v", lastUA(), err)
+	}
+
+	ua := "own/3.0"
+	if err := update(&ua); err != nil || lastUA() != "own/3.0" || savedUA() != "own/3.0" {
+		t.Fatalf("own UA: sent %q, saved %q, err %v", lastUA(), savedUA(), err)
+	}
+	if err := update(nil); err != nil || lastUA() != "own/3.0" {
+		t.Fatalf("own UA should win over settings: sent %q, err %v", lastUA(), err)
+	}
+
+	// 抓取失败时不保存新的 User-Agent。
+	p.broken.Store(true)
+	bad := "broken/1.0"
+	if err := update(&bad); err == nil || savedUA() != "own/3.0" {
+		t.Fatalf("failed fetch: saved %q, err %v", savedUA(), err)
+	}
+	p.broken.Store(false)
+
+	// 空字符串恢复默认。
+	empty := ""
+	if err := update(&empty); err != nil || savedUA() != "" || lastUA() != "global/2.0" {
+		t.Fatalf("reset: sent %q, saved %q, err %v", lastUA(), savedUA(), err)
+	}
+
+	if _, err := m.Update(ctx, nil, UpdateOptions{UserAgent: &ua}); !errors.Is(err, core.ErrInvalidArgument) {
+		t.Errorf("UA without names: err = %v", err)
+	}
+	injected := "a\r\nX: 1"
+	if err := update(&injected); !errors.Is(err, core.ErrInvalidArgument) {
+		t.Errorf("control characters: err = %v", err)
+	}
+	if _, err := m.Add(ctx, "b", p.URL+"/ok", injected); !errors.Is(err, core.ErrInvalidArgument) {
+		t.Errorf("add with control characters: err = %v", err)
 	}
 }
 
@@ -253,7 +319,7 @@ func TestNotInstalled(t *testing.T) {
 	if entries, err := m.List(); err != nil || entries != nil {
 		t.Errorf("List = %v, %v", entries, err)
 	}
-	if _, err := m.Update(context.Background(), nil); !errors.Is(err, ErrNotFound) {
+	if _, err := m.Update(context.Background(), nil, UpdateOptions{}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Update: err = %v", err)
 	}
 }

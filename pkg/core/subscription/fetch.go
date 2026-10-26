@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
@@ -37,9 +38,9 @@ func (m *Manager) fetch(ctx context.Context, s *state.Subscription) ([]byte, *st
 	if err != nil {
 		return nil, nil, errors.New("invalid subscription URL")
 	}
-	ua := s.UserAgent
-	if ua == "" {
-		ua = DefaultUserAgent(m.Version)
+	ua, err := m.userAgent(s)
+	if err != nil {
+		return nil, nil, err
 	}
 	req.Header.Set("User-Agent", ua)
 
@@ -63,6 +64,22 @@ func (m *Manager) fetch(ctx context.Context, s *state.Subscription) ([]byte, *st
 		return nil, nil, fmt.Errorf("fetch %s: response larger than %d MB", Redact(s.URL), maxBody>>20)
 	}
 	return data, parseUserInfo(resp.Header.Get("Subscription-Userinfo")), nil
+}
+
+// userAgent 决定抓取 s 时使用的 User-Agent：订阅自己的设置优先，其次是工具设置中的
+// user-agent，最后是内置默认值。
+func (m *Manager) userAgent(s *state.Subscription) (string, error) {
+	if s.UserAgent != "" {
+		return s.UserAgent, nil
+	}
+	st, err := settings.Load(m.Layout.SettingsFile())
+	if err != nil {
+		return "", err
+	}
+	if st.UserAgent != "" {
+		return st.UserAgent, nil
+	}
+	return DefaultUserAgent(m.Version), nil
 }
 
 // stripURL 去掉 net/http 错误中附带的完整 URL，只保留底层原因。

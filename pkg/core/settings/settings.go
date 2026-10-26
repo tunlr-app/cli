@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 
@@ -25,6 +26,9 @@ type Settings struct {
 	// GitHubMirror 是 GitHub 下载镜像的前缀，例如 "https://gh-proxy.com/"，用于下载内核、
 	// geo 数据和面板。为空时直连。无论经哪个镜像下载，都按官方 sha256 校验。
 	GitHubMirror string `yaml:"github-mirror,omitempty"`
+	// UserAgent 是抓取订阅时默认使用的 User-Agent，单个订阅设置了自己的 User-Agent 时以订阅为准。
+	// 为空时使用内置默认值。
+	UserAgent string `yaml:"user-agent,omitempty"`
 }
 
 // Load 读取设置文件。文件不存在时返回默认设置；未知的键视为错误，避免拼写错误被静默忽略。
@@ -62,6 +66,23 @@ func (s *Settings) validate() error {
 		u, err := url.Parse(s.GitHubMirror)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return fmt.Errorf("%w: github-mirror must be an http or https URL", core.ErrInvalidArgument)
+		}
+	}
+	if err := ValidateUserAgent(s.UserAgent); err != nil {
+		return fmt.Errorf("user-agent: %w", err)
+	}
+	return nil
+}
+
+// ValidateUserAgent 检查 User-Agent 能否作为 HTTP 头发送：不能含控制字符（包括换行）。
+// 空字符串表示使用默认值，是合法的。
+func ValidateUserAgent(ua string) error {
+	if strings.TrimSpace(ua) != ua {
+		return fmt.Errorf("%w: User-Agent must not start or end with whitespace", core.ErrInvalidArgument)
+	}
+	for _, r := range ua {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%w: User-Agent must not contain control characters", core.ErrInvalidArgument)
 		}
 	}
 	return nil

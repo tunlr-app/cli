@@ -127,7 +127,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 - 文件一律经 `pkg/core/fsutil.WriteFile` 原子写入：同目录临时文件 → 刷盘 → `os.Rename` → 刷新目录。
 - 锁被占用时重试到期限为止，超时报告“另一个 tunlr 操作正在进行”。锁文件不删除，否则并发的获取者会锁住不同的文件。
 - 状态文件读取时检查版本：比当前工具新则拒绝并提示升级，比当前旧则按迁移链逐级升级。
-- 工具设置（`pkg/core/settings`）由用户编辑，文件不存在时用默认值；未知的键视为错误，避免拼写错误被静默忽略。目前的设置项：`github-mirror`（GitHub 下载镜像前缀）。
+- 工具设置（`pkg/core/settings`）由用户编辑，文件不存在时用默认值；未知的键视为错误，避免拼写错误被静默忽略。目前的设置项：`github-mirror`（GitHub 下载镜像前缀）、`user-agent`（抓取订阅的默认 User-Agent）。
 
 ## 6. 配置流水线
 
@@ -148,7 +148,11 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - mixin 对所有订阅共用。它可能引用某个机场特有的策略组，切换后若 `mihomo -t` 不通过，按失败回滚处理并提示原因。
   - 不能删除正在启用的订阅，需先切换到其他订阅。
 - **订阅抓取**（`pkg/core/subscription`）：
-  - 机场按 User-Agent 决定返回的格式。默认 `clash.meta mihomo tunlr/<版本>`，同时命中面板常见的 `clash.meta` 与 `mihomo` 子串判断；个别机场需要时用 `sub add --user-agent` 为单个订阅指定。返回 base64 节点列表时，报错提示更换 User-Agent。
+  - 机场按 User-Agent 决定返回的格式。默认 `clash.meta mihomo tunlr/<版本>`，同时命中面板常见的 `clash.meta` 与 `mihomo` 子串判断；返回 base64 节点列表时，报错提示更换 User-Agent。可以自定义，优先级从高到低：
+    - 单个订阅自己的 User-Agent：`sub add --user-agent` 指定，已有订阅用 `sub update <name> --user-agent` 修改（只在抓取成功时保存，试错不会丢掉原来可用的值；`--user-agent ""` 恢复默认）。
+    - `settings.yaml` 中的 `user-agent`，作用于所有没有自己 User-Agent 的订阅。
+    - 内置默认值。
+  - User-Agent 不能含控制字符或首尾空白，避免 HTTP 头注入。
   - 内容必须是 YAML 映射且带有节点（`proxies` 或 `proxy-providers`），否则视为抓取失败。响应限制 32 MB、60 秒。
   - 读取 `subscription-userinfo` 响应头，记录流量与到期时间，供 `sub list` 显示和将来的到期提醒。
   - 订阅 URL 通常带有访问令牌：输出、日志和错误信息中只出现 `scheme://host/...`，net/http 错误中附带的完整 URL 会被去掉。

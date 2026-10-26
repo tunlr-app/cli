@@ -19,6 +19,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/fsutil"
 	"github.com/tunlr-app/cli/pkg/core/lock"
 	"github.com/tunlr-app/cli/pkg/core/paths"
+	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
@@ -68,13 +69,23 @@ type UpdateResult struct {
 	Err     error
 }
 
+// UpdateOptions 调整 Update 的行为。
+type UpdateOptions struct {
+	// UserAgent 非空时改用它作为这些订阅的 User-Agent，指向空字符串表示恢复默认。
+	// 只有抓取成功时才保存，用错的 User-Agent 不会覆盖原来可用的设置。
+	UserAgent *string
+}
+
 // Add 抓取并保存一个新订阅。抓取或检查失败时什么都不保存。
-// 这是第一个订阅时自动启用它。userAgent 为空时使用默认值。
+// 这是第一个订阅时自动启用它。userAgent 为空时使用默认值（见 userAgent）。
 func (m *Manager) Add(ctx context.Context, name, rawURL, userAgent string) (*Fetched, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
 	if err := validateURL(rawURL); err != nil {
+		return nil, err
+	}
+	if err := settings.ValidateUserAgent(userAgent); err != nil {
 		return nil, err
 	}
 	l, err := m.lock(ctx)
@@ -163,7 +174,15 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 
 // Update 重新抓取给定的订阅，names 为空时抓取全部。单个订阅失败时保留它上一次的内容并记录原因，
 // 其余订阅照常更新；有任何失败时返回错误，结果中仍包含每个订阅的情况。
-func (m *Manager) Update(ctx context.Context, names []string) ([]UpdateResult, error) {
+func (m *Manager) Update(ctx context.Context, names []string, opts UpdateOptions) ([]UpdateResult, error) {
+	if opts.UserAgent != nil {
+		if len(names) == 0 {
+			return nil, fmt.Errorf("%w: name the subscriptions whose User-Agent should change", core.ErrInvalidArgument)
+		}
+		if err := settings.ValidateUserAgent(*opts.UserAgent); err != nil {
+			return nil, err
+		}
+	}
 	l, err := m.lock(ctx)
 	if err != nil {
 		return nil, err
@@ -191,8 +210,13 @@ func (m *Manager) Update(ctx context.Context, names []string) ([]UpdateResult, e
 	results := make([]UpdateResult, 0, len(targets))
 	failed := 0
 	for _, s := range targets {
+		old := s.UserAgent
+		if opts.UserAgent != nil {
+			s.UserAgent = *opts.UserAgent
+		}
 		sum, err := m.fetchAndStore(ctx, s)
 		if err != nil {
+			s.UserAgent = old
 			failed++
 			s.LastError = err.Error()
 			s.LastErrorAt = m.now().UTC()

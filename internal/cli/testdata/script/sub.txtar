@@ -84,6 +84,35 @@ stdout 'backup.*last update failed'
 exitcode 1 tunlr sub update nope
 stderr 'subscription not found: nope'
 
+# User-Agent：工具设置中的默认值作用于没有自己 User-Agent 的订阅
+mkdir root/etc/tunlr
+cp settings.yaml root/etc/tunlr/settings.yaml
+exec tunlr sub update other
+grep '^global/2\.0$' provider/.last-ua
+exec tunlr sub update backup
+grep '^custom/1\.0$' provider/.last-ua
+
+# 修改已有订阅的 User-Agent：抓取失败时不保存
+cp down provider/.down
+exitcode 1 tunlr sub update other --user-agent broken/1.0
+rm provider/.down
+exec tunlr sub update other
+grep '^global/2\.0$' provider/.last-ua
+exec tunlr sub update other --user-agent own/3.0
+grep '^own/3\.0$' provider/.last-ua
+exec tunlr sub list --json
+stdout '"user_agent": "own/3\.0"'
+exec tunlr sub update other
+grep '^own/3\.0$' provider/.last-ua
+
+# 空字符串恢复默认；不指定订阅或含控制字符时是用法错误
+exec tunlr sub update other --user-agent ''
+grep '^global/2\.0$' provider/.last-ua
+exitcode 2 tunlr sub update --user-agent x/1.0
+stderr 'name the subscriptions'
+exitcode 2 tunlr sub add bad $PROVIDER/airport.yaml --user-agent ' padded'
+stderr 'whitespace'
+
 -- airport.yaml --
 port: 7890
 external-controller: 0.0.0.0:9090
@@ -100,3 +129,5 @@ upload=536870912; download=536870912; total=107374182400; expire=1798761600
 -- nodes.txt --
 c3M6Ly9ZV1Z6TFRJMU5pMW5ZMjA2QGV4YW1wbGUubmV0OjQ0Mw==
 -- down --
+-- settings.yaml --
+user-agent: global/2.0

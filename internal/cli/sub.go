@@ -84,7 +84,8 @@ func (a *app) newSubAddCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&userAgent, "user-agent", "",
-		"User-Agent sent when fetching (default "+fmt.Sprintf("%q", subscription.DefaultUserAgent(a.info.Version))+")")
+		"User-Agent sent when fetching (default: user-agent in "+a.layout.SettingsFile()+", or "+
+			fmt.Sprintf("%q", subscription.DefaultUserAgent(a.info.Version))+")")
 	return cmd
 }
 
@@ -149,14 +150,22 @@ func (a *app) newSubRemoveCommand() *cobra.Command {
 }
 
 func (a *app) newSubUpdateCommand() *cobra.Command {
-	return &cobra.Command{
+	var userAgent string
+	cmd := &cobra.Command{
 		Use:   "update [name...]",
 		Short: "Fetch subscriptions again (all of them by default)",
 		Long: "Fetch subscriptions again (all of them by default). A subscription that fails\n" +
-			"to update keeps its last good copy.",
+			"to update keeps its last good copy.\n\n" +
+			"--user-agent changes the User-Agent of the named subscriptions; it is saved only\n" +
+			"if the fetch succeeds. --user-agent \"\" goes back to the default, which is the\n" +
+			"user-agent in " + a.layout.SettingsFile() + " if set, or the built-in one.",
 		Args: usageArgs(cobra.ArbitraryArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			results, err := a.subscriptions().Update(cmd.Context(), args)
+			var opts subscription.UpdateOptions
+			if cmd.Flags().Changed("user-agent") {
+				opts.UserAgent = &userAgent
+			}
+			results, err := a.subscriptions().Update(cmd.Context(), args, opts)
 			if results == nil {
 				return err
 			}
@@ -184,6 +193,8 @@ func (a *app) newSubUpdateCommand() *cobra.Command {
 			return rerr
 		},
 	}
+	cmd.Flags().StringVar(&userAgent, "user-agent", "", "change the User-Agent of the named subscriptions (\"\" restores the default)")
+	return cmd
 }
 
 func (a *app) newSubUseCommand() *cobra.Command {
