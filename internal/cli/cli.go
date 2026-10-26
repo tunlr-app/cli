@@ -1,0 +1,116 @@
+// Package cli 定义 tunlr 的 cobra 命令。这里只做参数解析、调用 pkg/core、渲染输出，
+// 不放任何业务逻辑。
+package cli
+
+import (
+	"io"
+	"log/slog"
+	"os"
+	"strings"
+
+	"github.com/spf13/cobra"
+)
+
+// BuildInfo 是构建时注入的版本信息。
+type BuildInfo struct {
+	Version string
+	Commit  string
+	Date    string
+}
+
+// globalOptions 对应所有命令共享的全局参数。
+type globalOptions struct {
+	JSON    bool
+	Yes     bool
+	DryRun  bool
+	Verbose bool
+}
+
+// app 保存一次命令执行所需的上下文，各子命令通过闭包访问。
+type app struct {
+	info   BuildInfo
+	opts   globalOptions
+	stdin  *os.File
+	stdout io.Writer
+	stderr io.Writer
+	log    *slog.Logger
+}
+
+// Main 执行命令并返回进程退出码。
+func Main(info BuildInfo, args []string) int {
+	a := &app{
+		info:   info,
+		stdin:  os.Stdin,
+		stdout: os.Stdout,
+		stderr: os.Stderr,
+		log:    slog.New(slog.DiscardHandler),
+	}
+	root := a.newRootCommand()
+	root.SetArgs(args)
+	err := root.Execute()
+	if err == nil {
+		return exitOK
+	}
+	code := exitCode(err)
+	a.printError(err, code)
+	return code
+}
+
+func (a *app) newRootCommand() *cobra.Command {
+	root := &cobra.Command{
+		Use:   "tunlr",
+		Short: "Operate mihomo on Linux servers",
+		Long: "tunlr manages mihomo on Linux servers: kernel, systemd service, config pipeline\n" +
+			"and transparent proxy. Runtime interaction is left to the web panel (zashboard).",
+		// 根命令接收任意参数，以便把未知子命令报告为用法错误（退出码 2）。
+		Args: cobra.ArbitraryArgs,
+		// cobra 只在自己报告未知命令时设置默认值，这里由 RunE 报告，需要显式设置。
+		SuggestionsMinimumDistance: 2,
+		SilenceErrors:              true,
+		SilenceUsage:               true,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			level := slog.LevelInfo
+			if a.opts.Verbose {
+				level = slog.LevelDebug
+			}
+			a.log = slog.New(slog.NewTextHandler(a.stderr, &slog.HandlerOptions{Level: level}))
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			hint := ""
+			if s := cmd.SuggestionsFor(args[0]); len(s) > 0 {
+				hint = "; did you mean " + strings.Join(s, ", ") + "?"
+			}
+			return usageErrorf("unknown command %q%s", args[0], hint)
+		},
+	}
+
+	pf := root.PersistentFlags()
+	pf.BoolVar(&a.opts.JSON, "json", false, "output machine-readable JSON")
+	pf.BoolVarP(&a.opts.Yes, "yes", "y", false, "assume yes for all confirmations")
+	pf.BoolVar(&a.opts.DryRun, "dry-run", false, "show what would change without changing anything")
+	pf.BoolVarP(&a.opts.Verbose, "verbose", "v", false, "enable debug logging")
+
+	root.SetOut(a.stdout)
+	root.SetErr(a.stderr)
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return usageError{err}
+	})
+
+	root.AddCommand(
+		a.newVersionCommand(),
+	)
+	return root
+}
+
+// interactive 报告能否向用户提问。标准输入不是终端，或要求 JSON 输出时，
+// 进入非交互模式：问答必须全部由参数给出，否则报错退出。
+func (a *app) interactive() bool {
+	if a.opts.JSON {
+		return false
+	}
+	fi, err := a.stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}

@@ -1,0 +1,5 @@
+/dist/
+/tunlr
+*.exe
+*.test
+*.out

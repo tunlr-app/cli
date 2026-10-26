@@ -1,0 +1,22 @@
+# 无参数时打印帮助
+exec tunlr
+stdout 'Usage:'
+
+# 内部命令不出现在帮助中
+! stdout '_check|_rescue|_update'
+
+# 未知命令：退出码 2，并给出建议
+exitcode 2 tunlr verison
+stderr 'unknown command "verison"; did you mean version\?'
+stderr 'Run ''tunlr --help'' for usage.'
+
+# 未知参数：退出码 2
+exitcode 2 tunlr version --nope
+stderr 'unknown flag: --nope'
+
+# --json 时错误也以 envelope 写到标准输出
+exitcode 2 tunlr nosuch --json
+stdout '"version": 1,'
+stdout '"code": 2,'
+stdout '"message": "unknown command \\"nosuch\\""'
+! stderr .
