@@ -419,3 +419,17 @@ func TestManagerKeepsRecentKernels(t *testing.T) {
 		t.Fatalf("pruned kernel still present: %v", err)
 	}
 }
+
+func TestFileChecksum(t *testing.T) {
+	data := bytes.Repeat([]byte("mihomo"), 100_000)
+	path := filepath.Join(t.TempDir(), "mihomo")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if sum, err := FileChecksum(path); err != nil || sum != Checksum(data) {
+		t.Fatalf("FileChecksum = %q, %v; want %q", sum, err, Checksum(data))
+	}
+	if _, err := FileChecksum(path + ".missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file: %v", err)
+	}
+}

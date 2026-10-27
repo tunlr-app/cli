@@ -132,11 +132,11 @@ func VerifyGeo(ctx context.Context, d *download.Client, home string, files []Geo
 		if err != nil {
 			return replaced, err
 		}
-		have, err := os.ReadFile(path)
+		have, err := FileChecksum(path)
 		if err != nil {
 			return replaced, err
 		}
-		if Checksum(have) == want {
+		if have == want {
 			continue
 		}
 		data, err := d.Get(ctx, asset)

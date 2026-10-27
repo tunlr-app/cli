@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestStylesOffIsPlain(t *testing.T) {
@@ -50,7 +52,7 @@ func TestPrintCheck(t *testing.T) {
 
 func TestProgress(t *testing.T) {
 	var buf bytes.Buffer
-	p := newProgress(&buf, styles{})
+	p := newProgress(&buf, styles{}, 0)
 	p.Step("one")
 	p.Step("two")
 	p.Done(nil)
@@ -59,7 +61,7 @@ func TestProgress(t *testing.T) {
 	}
 
 	buf.Reset()
-	p = newProgress(&buf, styles{on: true})
+	p = newProgress(&buf, styles{on: true}, 0)
 	p.Step("fetch")
 	time.Sleep(3 * spinnerInterval)
 	p.Write([]byte("a log line\n"))
@@ -82,4 +84,33 @@ func TestProgress(t *testing.T) {
 	if !strings.HasSuffix(out, "\n") {
 		t.Errorf("spinner drew after the last step: %q", out)
 	}
+}
+
+func TestProgressDownload(t *testing.T) {
+	var buf bytes.Buffer
+	p := newProgress(&buf, styles{on: true}, 60)
+	p.Step("Installing mihomo for linux/amd64")
+	p.Download("mihomo.gz", 5<<20, 20<<20)
+	p.mu.Lock()
+	detail := p.downloadDetail()
+	buf.Reset()
+	p.drawLocked()
+	line := strings.TrimPrefix(buf.String(), "\r\x1b[K")
+	p.mu.Unlock()
+	p.Done(nil)
+	if plain := ansi.Strip(detail); !strings.Contains(plain, " 25% 5.0/20.0 MB") {
+		t.Errorf("detail = %q", plain)
+	}
+	// 超出终端宽度的行被截断，否则 \r 回不到行首。
+	if w := ansi.StringWidth(line); w != 59 || !strings.HasSuffix(ansi.Strip(line), "…") {
+		t.Errorf("line width %d: %q", w, ansi.Strip(line))
+	}
+	// 步骤结束后进度清空。
+	p.Step("next")
+	p.mu.Lock()
+	if d := p.downloadDetail(); d != "" {
+		t.Errorf("detail after the step = %q", d)
+	}
+	p.mu.Unlock()
+	p.Done(nil)
 }

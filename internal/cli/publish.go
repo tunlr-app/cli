@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strconv"
@@ -107,9 +108,14 @@ func newPlanView(p *pipeline.Plan, full bool) planView {
 	return v
 }
 
-// printPlan 以文本输出计划：来源、差异（或完整配置）、校验结果。
+// printPlan 以文本输出计划：来源、差异（或完整配置）、校验结果。在终端里超过一屏时交给分页器。
 func (a *app) printPlan(v planView) {
-	w := a.stdout
+	var b strings.Builder
+	a.writePlan(&b, v)
+	a.page(b.String(), false)
+}
+
+func (a *app) writePlan(w io.Writer, v planView) {
 	switch {
 	case v.Kind == pipeline.KindRollback:
 		fmt.Fprintf(w, "Rolling back to revision %d.\n", v.RollbackTo)
@@ -364,14 +370,13 @@ func (a *app) requireConfirmation(command string) error {
 	return usageErrorf("%s needs confirmation; pass --yes to proceed without asking (or --dry-run to preview)", command)
 }
 
-// confirm 向用户确认；--yes 时直接同意。调用前须用 requireConfirmation 排除无法提问的情况。
-func (a *app) confirm(ctx context.Context, question string) (bool, error) {
+// confirm 向用户确认，description 是问题下的说明（可以为空）；--yes 时直接同意。调用前须用
+// requireConfirmation 排除无法提问的情况。用户取消算作回答“否”。
+func (a *app) confirm(ctx context.Context, question, description string) (bool, error) {
 	if a.opts.Yes {
 		return true, nil
 	}
-	ok := false
-	err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title(question).Value(&ok))).
-		WithInput(a.stdin).WithOutput(a.stderr).RunWithContext(ctx)
+	ok, err := a.prompt.Confirm(ctx, question, description)
 	if err != nil && !errors.Is(err, huh.ErrUserAborted) {
 		return false, err
 	}
@@ -397,7 +402,14 @@ func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) 
 		return err
 	}
 
-	if ok, err := a.confirm(cmd.Context(), question); err != nil || !ok {
+	// 问题下方给出节点变化的摘要，不必回头翻 diff。
+	summary := ""
+	if v.Plan.Proxies != nil && !v.Plan.FirstPublish {
+		if s := describeProxies(v.Plan.Proxies); s != "" {
+			summary = "Proxies: " + s
+		}
+	}
+	if ok, err := a.confirm(cmd.Context(), question, summary); err != nil || !ok {
 		if err == nil {
 			fmt.Fprintln(a.stdout, "Not applied.")
 		}

@@ -88,6 +88,26 @@ func TestFetchAsset(t *testing.T) {
 	}
 }
 
+func TestFetchProgress(t *testing.T) {
+	g := newFakeGitHub(t)
+	var last [2]int64
+	calls := 0
+	ctx := WithProgress(context.Background(), func(name string, done, total int64) {
+		if name != "geoip.metadb" {
+			t.Errorf("name = %q", name)
+		}
+		calls++
+		last = [2]int64{done, total}
+	})
+	if _, err := (&Client{APIBase: g.URL}).Fetch(ctx, "o/r", "v1", "geoip.metadb"); err != nil {
+		t.Fatal(err)
+	}
+	size := int64(len("mmdb-content"))
+	if calls < 2 || last != [2]int64{size, size} {
+		t.Errorf("calls = %d, last = %v", calls, last)
+	}
+}
+
 func TestFetchAssetRejectsTampered(t *testing.T) {
 	g := newFakeGitHub(t)
 	g.tampered.Store(true)

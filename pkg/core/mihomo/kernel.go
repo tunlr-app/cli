@@ -128,6 +128,21 @@ func Checksum(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// FileChecksum 返回文件的 sha256（十六进制）。边读边算，不把整个文件读进内存：内核二进制有几十 MB，
+// 菜单每次刷新状态都要算一次。文件不存在时返回的错误满足 errors.Is(err, fs.ErrNotExist)。
+func FileChecksum(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // FetchKernel 下载 version 的内核（为空时为最新的正式发布），按官方 sha256 校验后解压。
 func FetchKernel(ctx context.Context, d *download.Client, arch Arch, version string) (*Kernel, error) {
 	rel, err := d.Release(ctx, kernelRepo, version)

@@ -353,7 +353,7 @@ func (a *app) newSubUseCommand() *cobra.Command {
 					_, err := fmt.Fprintln(a.stdout, "Publish the new configuration with: tunlr apply")
 					return err
 				}
-				if apply, err = a.confirm(cmd.Context(), "Publish the new configuration now?"); err != nil || !apply {
+				if apply, err = a.confirm(cmd.Context(), "Publish the new configuration now?", ""); err != nil || !apply {
 					if err == nil {
 						fmt.Fprintln(a.stdout, "Not published; run tunlr apply when ready.")
 					}

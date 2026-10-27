@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 
 	"github.com/tunlr-app/cli/pkg/core/download"
@@ -58,6 +59,38 @@ type scriptedPrompt struct {
 	initials []int
 	// described 记录输入时的说明。
 	described []string
+	// confirms 是是非题的回答；confirmed 记录问过的问题和说明。
+	confirms  []bool
+	confirmed []string
+	// paused 记录结果页的标题。
+	paused []string
+}
+
+func (p *scriptedPrompt) Inputs(ctx context.Context, fields []inputField) ([]string, error) {
+	v := make([]string, len(fields))
+	for i, f := range fields {
+		s, err := p.Input(ctx, f.title, f.description, f.validate)
+		if err != nil {
+			return nil, err
+		}
+		v[i] = s
+	}
+	return v, nil
+}
+
+func (p *scriptedPrompt) Confirm(_ context.Context, title, description string) (bool, error) {
+	p.confirmed = append(p.confirmed, title+"|"+description)
+	if len(p.confirms) == 0 {
+		p.t.Fatalf("unexpected confirmation: %s", title)
+	}
+	ok := p.confirms[0]
+	p.confirms = p.confirms[1:]
+	return ok, nil
+}
+
+func (p *scriptedPrompt) Pause(_ context.Context, title, _ string) error {
+	p.paused = append(p.paused, title)
+	return nil
 }
 
 func (p *scriptedPrompt) Choose(_ context.Context, _ string, options []string, initial int) (int, error) {
@@ -328,6 +361,21 @@ func TestEditUsage(t *testing.T) {
 	et.run(2, "edit", "20-home")
 	if !strings.Contains(et.stdout.String(), "edit needs a terminal") {
 		t.Errorf("output:\n%s", et.stdout)
+	}
+}
+
+func TestQuitOnCancel(t *testing.T) {
+	f := huh.NewForm(huh.NewGroup(huh.NewNote()))
+	filter := quitOnCancel(f)
+	if _, ok := filter(nil, tea.InterruptMsg{}).(tea.InterruptMsg); !ok {
+		t.Error("an interrupt the user did not ask for must stay an interrupt")
+	}
+	f.State = huh.StateAborted
+	if _, ok := filter(nil, tea.InterruptMsg{}).(tea.QuitMsg); !ok {
+		t.Error("a cancelled form must quit normally")
+	}
+	if _, ok := filter(nil, tea.KeyPressMsg{Code: 'q'}).(tea.KeyPressMsg); !ok {
+		t.Error("other messages must pass through")
 	}
 }
 

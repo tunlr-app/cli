@@ -238,7 +238,15 @@ func (a *app) newLogsCommand() *cobra.Command {
 				return usageErrorf("--lines must not be negative")
 			}
 			sd := &service.Systemd{Layout: a.layout}
-			return sd.Logs(cmd.Context(), lines, follow, a.stdout, a.stderr)
+			if follow || a.rows() == 0 {
+				return sd.Logs(cmd.Context(), lines, follow, a.stdout, a.stderr)
+			}
+			// 在终端里先收集起来，超过一屏时交给分页器，从最新的一条开始显示。
+			var buf strings.Builder
+			if err := sd.Logs(cmd.Context(), lines, false, &buf, a.stderr); err != nil {
+				return err
+			}
+			return a.page(buf.String(), true)
 		},
 	}
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "keep printing new entries")
@@ -332,7 +340,7 @@ func (a *app) newUninstallCommand() *cobra.Command {
 			if purge {
 				question = "Uninstall tunlr and delete all settings, subscriptions and history?"
 			}
-			if ok, err := a.confirm(cmd.Context(), question); err != nil || !ok {
+			if ok, err := a.confirm(cmd.Context(), question, ""); err != nil || !ok {
 				if err == nil {
 					fmt.Fprintln(a.stdout, "Not uninstalled.")
 				}

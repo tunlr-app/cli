@@ -506,14 +506,14 @@ func (m *Manager) confirm(version string) error {
 	if err != nil || cur == "" {
 		return err
 	}
-	stored, err := os.ReadFile(m.Layout.KernelBinary(version))
+	stored, err := FileChecksum(m.Layout.KernelBinary(version))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if Checksum(stored) != cur {
+	if stored != cur {
 		return nil
 	}
 	st, err := m.loadState()
@@ -565,7 +565,7 @@ func (m *Manager) prune(st *state.State) error {
 // stage 把下载校验过的内核存到 kernels/<版本>/（root 所有，内核用户可以执行，用于 -t）。
 func (m *Manager) stage(k *Kernel) error {
 	path := m.Layout.KernelBinary(k.Version)
-	if have, err := os.ReadFile(path); err == nil && bytes.Equal(have, k.Binary) {
+	if have, err := FileChecksum(path); err == nil && have == k.SHA256() {
 		return nil
 	}
 	for _, dir := range []string{m.Layout.KernelsDir(), filepath.Dir(path)} {
@@ -630,14 +630,11 @@ func (m *Manager) running(ctx context.Context) (bool, error) {
 
 // currentSum 返回 bin/mihomo 的 sha256，不存在时为空。
 func (m *Manager) currentSum() (string, error) {
-	data, err := os.ReadFile(m.Layout.CoreBinary())
+	sum, err := FileChecksum(m.Layout.CoreBinary())
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
-	if err != nil {
-		return "", err
-	}
-	return Checksum(data), nil
+	return sum, err
 }
 
 func (m *Manager) loadState() (*state.State, error) {

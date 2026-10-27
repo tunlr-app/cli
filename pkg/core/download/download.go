@@ -30,6 +30,34 @@ const (
 // ErrChecksumMismatch 表示下载内容与官方 sha256 不一致。
 var ErrChecksumMismatch = errors.New("checksum mismatch")
 
+// ProgressFunc 报告一个资产的下载进度：已收到 done 字节，共 total 字节。
+type ProgressFunc func(name string, done, total int64)
+
+type progressKey struct{}
+
+// WithProgress 返回带进度回调的 context：经它下载资产时，每收到一块数据调用一次 fn。
+// 进度由界面层显示，经 context 传入，下载的调用方不必层层转交。
+func WithProgress(ctx context.Context, fn ProgressFunc) context.Context {
+	return context.WithValue(ctx, progressKey{}, fn)
+}
+
+// progressReader 在读取时报告进度。
+type progressReader struct {
+	r           io.Reader
+	name        string
+	done, total int64
+	fn          ProgressFunc
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.done += int64(n)
+		p.fn(p.name, p.done, p.total)
+	}
+	return n, err
+}
+
 // Client 下载 GitHub release 资产。零值可用：直连 GitHub。
 type Client struct {
 	// HTTP 为空时使用 http.DefaultClient（遵循 HTTPS_PROXY 等环境变量）。
@@ -108,7 +136,7 @@ func (c *Client) Get(ctx context.Context, asset *Asset) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := c.get(ctx, MirrorURL(c.Mirror, asset.URL), asset.Size)
+	data, err := c.get(ctx, asset.Name, MirrorURL(c.Mirror, asset.URL), asset.Size)
 	if err != nil {
 		return nil, fmt.Errorf("download %s: %w", asset.Name, err)
 	}
@@ -168,7 +196,7 @@ func (c *Client) Release(ctx context.Context, repo, tag string) (*Release, error
 	return rel, nil
 }
 
-func (c *Client) get(ctx context.Context, url string, size int64) ([]byte, error) {
+func (c *Client) get(ctx context.Context, name, url string, size int64) ([]byte, error) {
 	if size <= 0 || size > maxAssetSize {
 		return nil, fmt.Errorf("unexpected asset size %d", size)
 	}
@@ -186,7 +214,12 @@ func (c *Client) get(ctx context.Context, url string, size int64) ([]byte, error
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %s", resp.Status)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, size+1))
+	var body io.Reader = resp.Body
+	if fn, ok := ctx.Value(progressKey{}).(ProgressFunc); ok && fn != nil {
+		fn(name, 0, size)
+		body = &progressReader{r: body, name: name, total: size, fn: fn}
+	}
+	data, err := io.ReadAll(io.LimitReader(body, size+1))
 	if err != nil {
 		return nil, err
 	}

@@ -51,6 +51,11 @@ type app struct {
 	style, errStyle styles
 	// live 是正在显示 spinner 的进度，日志经由它输出。
 	live atomic.Pointer[progress]
+	// session 是不随 Ctrl-C 取消的 context（只随 SIGTERM），主菜单在其中循环，
+	// Ctrl-C 只中断菜单里正在执行的那条命令。
+	session context.Context
+	// aborted 表示用户在命令开头的提问中取消了，什么都没做（见 cancelled）。
+	aborted bool
 
 	// 以下供测试替换，为空时使用默认实现。
 	validator pipeline.Validator
@@ -62,6 +67,8 @@ type app struct {
 	editor func(path string) error
 	// prompt 向用户提问，默认使用 huh。
 	prompt prompter
+	// screenSize 返回标准输出所在终端的列数和行数，不是终端时为 0（不清屏、不分页）。
+	screenSize func() (cols, rows int)
 }
 
 // Main 执行命令并返回进程退出码。收到 SIGINT 或 SIGTERM 时取消命令的 context。
@@ -79,22 +86,46 @@ func Main(info BuildInfo, args []string) int {
 	a.style, a.errStyle = detectStyles(os.Stdout), detectStyles(os.Stderr)
 	a.editor = a.runEditor
 	a.prompt = huhPrompter{a}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	a.screenSize = func() (int, int) {
+		if !term.IsTerminal(os.Stdout.Fd()) {
+			return 0, 0
+		}
+		cols, rows, err := term.GetSize(os.Stdout.Fd())
+		if err != nil {
+			return 0, 0
+		}
+		return cols, rows
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
 	return a.execute(ctx, args)
 }
 
 // execute 执行命令并返回进程退出码。
 func (a *app) execute(ctx context.Context, args []string) int {
+	code, _ := a.run(ctx, args)
+	return code
+}
+
+// run 执行一条命令，返回退出码，以及命令是否被 Ctrl-C（SIGINT）中断。Ctrl-C 取消的只是这条
+// 命令的 context，ctx 本身不受影响。
+func (a *app) run(ctx context.Context, args []string) (code int, interrupted bool) {
+	if a.session == nil {
+		a.session = ctx
+	}
+	a.aborted = false
+	cctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
 	root := a.newRootCommand()
 	root.SetArgs(args)
-	err := root.ExecuteContext(ctx)
+	err := root.ExecuteContext(cctx)
+	interrupted = cctx.Err() != nil && ctx.Err() == nil
 	if err == nil {
-		return exitOK
+		return exitOK, interrupted
 	}
-	code := exitCode(err)
+	code = exitCode(err)
 	a.printError(err, code)
-	return code
+	return code, interrupted
 }
 
 func (a *app) newRootCommand() *cobra.Command {
@@ -115,6 +146,7 @@ func (a *app) newRootCommand() *cobra.Command {
 				level = slog.LevelDebug
 			}
 			a.log = slog.New(slog.NewTextHandler(logWriter{a}, &slog.HandlerOptions{Level: level}))
+			cmd.SetContext(download.WithProgress(cmd.Context(), a.downloadProgress))
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

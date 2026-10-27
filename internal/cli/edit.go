@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
 
@@ -31,6 +32,18 @@ type prompter interface {
 	ChooseMany(ctx context.Context, title string, options []string) ([]int, error)
 	// Input 让用户输入一行文字，description 是标题下的说明，validate 不通过时要求重新输入。
 	Input(ctx context.Context, title, description string, validate func(string) error) (string, error)
+	// Inputs 在同一个表单中依次询问 fields，用户可以用 Shift-Tab 回到前一项修改。
+	Inputs(ctx context.Context, fields []inputField) ([]string, error)
+	// Confirm 问一个是非题，description 是问题下的说明，可以为空。
+	Confirm(ctx context.Context, title, description string) (bool, error)
+	// Pause 显示 title 和按钮 button，等用户按回车（或 Esc）后返回。
+	Pause(ctx context.Context, title, button string) error
+}
+
+// inputField 是 Inputs 中的一项。
+type inputField struct {
+	title, description string
+	validate           func(string) error
 }
 
 type huhPrompter struct{ a *app }
@@ -56,7 +69,7 @@ func (p huhPrompter) Choose(ctx context.Context, title string, options []string,
 	v := initial
 	s := huh.NewSelect[int]().Title(title).Options(intOptions(options)...).Value(&v).
 		Height(listHeight(options, 1))
-	err := p.run(ctx, s)
+	err := p.runList(ctx, s)
 	return v, err
 }
 
@@ -65,7 +78,7 @@ func (p huhPrompter) ChooseMany(ctx context.Context, title string, options []str
 	// 按键（x 或空格勾选、ctrl+a 全选）显示在底部的帮助行中。
 	s := huh.NewMultiSelect[int]().Title(title).Options(intOptions(options)...).Value(&v).
 		Height(listHeight(options, 1))
-	err := p.run(ctx, s)
+	err := p.runList(ctx, s)
 	slices.Sort(v)
 	return v, err
 }
@@ -76,16 +89,65 @@ func (p huhPrompter) Input(ctx context.Context, title, description string, valid
 	return v, err
 }
 
-func (p huhPrompter) run(ctx context.Context, f huh.Field) error {
-	return huh.NewForm(huh.NewGroup(f)).WithKeyMap(promptKeys()).
-		WithInput(p.a.stdin).WithOutput(p.a.stderr).RunWithContext(ctx)
+func (p huhPrompter) Inputs(ctx context.Context, fields []inputField) ([]string, error) {
+	v := make([]string, len(fields))
+	hf := make([]huh.Field, len(fields))
+	for i, f := range fields {
+		hf[i] = huh.NewInput().Title(f.title).Description(f.description).Validate(f.validate).Value(&v[i])
+	}
+	err := p.run(ctx, hf...)
+	return v, err
 }
 
-// promptKeys 让 Esc 与 Ctrl-C 一样取消提问（huh 默认只认 Ctrl-C）。过滤模式里 Esc 另有用途，
-// 而列表都不长，所以去掉按 / 过滤：没有按键的绑定既不匹配，也不显示在帮助行中。
-func promptKeys() *huh.KeyMap {
+func (p huhPrompter) Confirm(ctx context.Context, title, description string) (bool, error) {
+	ok := false
+	err := p.run(ctx, huh.NewConfirm().Title(title).Description(description).Value(&ok))
+	return ok, err
+}
+
+func (p huhPrompter) Pause(ctx context.Context, title, button string) error {
+	err := p.runList(ctx, huh.NewNote().Title(title).Next(true).NextLabel(button))
+	if errors.Is(err, huh.ErrUserAborted) {
+		return nil
+	}
+	return err
+}
+
+// run 运行只有一组字段的表单。用 ThemeBase16：跟随终端的 16 色，与其余输出一致。
+func (p huhPrompter) run(ctx context.Context, fields ...huh.Field) error {
+	return p.runKeys(ctx, promptKeys(), fields...)
+}
+
+// runList 运行不需要输入文字的表单（列表、结果页），q 也能取消。
+func (p huhPrompter) runList(ctx context.Context, fields ...huh.Field) error {
+	return p.runKeys(ctx, promptKeys("q"), fields...)
+}
+
+func (p huhPrompter) runKeys(ctx context.Context, km *huh.KeyMap, fields ...huh.Field) error {
+	f := huh.NewForm(huh.NewGroup(fields...)).WithKeyMap(km).WithTheme(huh.ThemeFunc(huh.ThemeBase16)).
+		WithInput(p.a.stdin).WithOutput(p.a.stderr)
+	return f.WithProgramOptions(tea.WithFilter(quitOnCancel(f))).RunWithContext(ctx)
+}
+
+// quitOnCancel 让用户取消（按 Esc、q、Ctrl-C）的表单像提交一样正常退出。huh 取消时发送
+// tea.Interrupt，Bubble Tea 把它当作被杀死，不等读取输入的协程退出就返回；紧接着运行的下一个
+// 表单会与这个残留的协程争抢输入，用户的按键时而丢失。表单的 aborted 标记仍在，Run 照样返回
+// huh.ErrUserAborted。不是用户取消的中断（如外部发来的 SIGINT）保持原样。
+func quitOnCancel(f *huh.Form) func(tea.Model, tea.Msg) tea.Msg {
+	return func(_ tea.Model, msg tea.Msg) tea.Msg {
+		if _, ok := msg.(tea.InterruptMsg); ok && f.State == huh.StateAborted {
+			return tea.QuitMsg{}
+		}
+		return msg
+	}
+}
+
+// promptKeys 让 Esc 与 Ctrl-C 一样取消提问（huh 默认只认 Ctrl-C），extra 是另外的取消键
+// （不输入文字的地方加上 q，与 less 一致）。过滤模式里 Esc 另有用途，而列表都不长，所以去掉
+// 按 / 过滤：没有按键的绑定既不匹配，也不显示在帮助行中。
+func promptKeys(extra ...string) *huh.KeyMap {
 	km := huh.NewDefaultKeyMap()
-	km.Quit = key.NewBinding(key.WithKeys("ctrl+c", "esc"))
+	km.Quit = key.NewBinding(key.WithKeys(append([]string{"ctrl+c", "esc"}, extra...)...))
 	km.Select.Filter = key.Binding{}
 	km.MultiSelect.Filter = key.Binding{}
 	return km
@@ -102,11 +164,12 @@ func (a *app) newEditCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "edit [name]",
 		Short: "Edit a mixin file, check it, then apply",
-		Long: "Edit a mixin file in /etc/tunlr/mixin.d with $VISUAL or $EDITOR; a new file starts\n" +
-			"from a commented example that explains the syntax. After you save, the configuration\n" +
-			"is composed and checked with mihomo -t. A mistake takes you back to the editor, and\n" +
-			"nothing is saved until the check passes. Then the diff is shown and the configuration\n" +
-			"is applied after confirmation. Without a name, choose a file or create a new one.",
+		Long: "Edit a mixin file in /etc/tunlr/mixin.d with $VISUAL, $EDITOR, or else vim, nano or vi.\n" +
+			"A new file starts from a commented example that explains the syntax. After you save,\n" +
+			"the configuration is composed and checked with mihomo -t. A mistake takes you back to\n" +
+			"the editor, and nothing is saved until the check passes. Then the diff is shown and the\n" +
+			"configuration is applied after confirmation. Without a name, choose a file or create a\n" +
+			"new one.",
 		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !a.interactive() {
@@ -119,10 +182,7 @@ func (a *app) newEditCommand() *cobra.Command {
 			} else {
 				name, err = a.chooseMixin(cmd.Context())
 			}
-			if errors.Is(err, huh.ErrUserAborted) {
-				return nil
-			}
-			if err != nil {
+			if _, err := a.cancelled(err); err != nil || a.aborted {
 				return err
 			}
 			return a.editMixin(cmd, name)
@@ -198,6 +258,8 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 		return err
 	}
 
+	fmt.Fprintln(a.stdout, a.style.dim("After you save and quit, the mixin is checked and the changes are shown;\n"+
+		"nothing is applied until you confirm. Quit without saving to change nothing."))
 	for {
 		if err := a.editor(tmp.Name()); err != nil {
 			return err
@@ -278,12 +340,13 @@ func (a *app) saveMixin(m config.Mixin, original []byte, existed bool, keep *boo
 	return err
 }
 
-// runEditor 用 $VISUAL、$EDITOR，或系统中找到的编辑器打开文件。编辑器的值可以带参数（如 "code -w"）。
+// runEditor 用 $VISUAL、$EDITOR，或系统中找到的编辑器（优先 vim）打开文件。编辑器的值可以带参数
+// （如 "code -w"）。不经 Debian 的 editor 替代项：它常指向 nano，有 vim 时不该用它。
 // 不随命令的 context 结束编辑器：终端里的 Ctrl-C 同时发给编辑器，由它自己处理。
 func (a *app) runEditor(path string) error {
 	editor := cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR"))
 	if editor == "" {
-		for _, e := range []string{"editor", "nano", "vi"} {
+		for _, e := range []string{"vim", "nano", "vi"} {
 			if _, err := exec.LookPath(e); err == nil {
 				editor = e
 				break

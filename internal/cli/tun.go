@@ -135,7 +135,7 @@ func (a *app) newTunOnCommand() *cobra.Command {
 				}
 				return err
 			}
-			if ok, err := a.confirm(ctx, "Turn the transparent proxy (TUN) on?"); err != nil || !ok {
+			if ok, err := a.confirm(ctx, "Turn the transparent proxy (TUN) on?", ""); err != nil || !ok {
 				if err == nil {
 					fmt.Fprintln(a.stdout, "TUN not turned on.")
 				}
@@ -249,7 +249,7 @@ func (a *app) newTunOffCommand() *cobra.Command {
 				}
 				return err
 			}
-			if ok, err := a.confirm(ctx, "Turn the transparent proxy (TUN) off?"); err != nil || !ok {
+			if ok, err := a.confirm(ctx, "Turn the transparent proxy (TUN) off?", ""); err != nil || !ok {
 				if err == nil {
 					fmt.Fprintln(a.stdout, "TUN not turned off.")
 				}
