@@ -55,6 +55,8 @@ type Result struct {
 	Warnings []Warning
 	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键。
 	Overrides []Override
+	// Facts 是从 Config 中提取的信息，与 Inspect(Config) 的结果相同。
+	Facts *Facts
 }
 
 // Compose 按 模板 → 订阅 → 工具生成的调整 → 用户的 mixin → 强制项 的顺序合成最终配置。
@@ -142,52 +144,54 @@ func Compose(l Layers) (*Result, error) {
 		mergeMapping(root, enforced.Content[0])
 	}
 	res.Warnings = append(res.Warnings, lint(root)...)
+	res.Facts = factsOf(root)
 
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(doc); err != nil {
-		return nil, fmt.Errorf("encode config: %w", err)
+	out, err := encode(doc)
+	if err != nil {
+		return nil, err
 	}
-	if err := enc.Close(); err != nil {
-		return nil, fmt.Errorf("encode config: %w", err)
-	}
-	res.Config = spaceSections(buf.Bytes())
+	res.Config = spaceSections(out)
 	return res, nil
 }
 
 // Enforce 把强制项写入已经合成好的配置 cfg（例如回滚到的历史修订），其余内容不变。
-func Enforce(cfg, enforced []byte) ([]byte, error) {
+func Enforce(cfg, enforced []byte) ([]byte, *Facts, error) {
 	res, err := Compose(Layers{Template: cfg, Enforced: enforced})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return res.Config, nil
+	return res.Config, res.Facts, nil
 }
 
 // spaceSections 在顶层段落之间补回空行（yaml.v3 编码时会丢弃键之间的空行）。
 // 规则固定，保证输出可预测：顶层键带头部注释，或它自己、前一个键的值是多行块时，前面空一行。
 // 编码时缩进为 2 且列表也缩进，所以第 0 列的行只可能是顶层键或顶层注释。
+// 直接在字节上逐行处理，不拆成行的切片，大配置时少一份拷贝。
 func spaceSections(out []byte) []byte {
-	lines := strings.Split(string(out), "\n")
-	indented := func(i int) bool {
-		return i >= 0 && i < len(lines) && strings.HasPrefix(lines[i], " ")
-	}
-	var b strings.Builder
-	for i, line := range lines {
-		if i > 0 && line != "" && !indented(i) {
-			prev := lines[i-1]
-			comment := strings.HasPrefix(line, "#")
-			if prev != "" && !strings.HasPrefix(prev, "#") && (comment || indented(i-1) || indented(i+1)) {
-				b.WriteString("\n")
+	b := make([]byte, 0, len(out)+256)
+	// prev 是上一行，line 是当前行（不含换行符），next 从 rest 中取。
+	var prev []byte
+	rest := out
+	for i := 0; ; i++ {
+		line, after, more := bytes.Cut(rest, []byte("\n"))
+		if i > 0 && len(line) > 0 && line[0] != ' ' {
+			next, _, _ := bytes.Cut(after, []byte("\n"))
+			indented := func(l []byte) bool { return len(l) > 0 && l[0] == ' ' }
+			// next 在 rest 已是最后一行时为空，与原来越界视为不缩进一致。
+			if !more {
+				next = nil
+			}
+			if len(prev) > 0 && prev[0] != '#' && (line[0] == '#' || indented(prev) || indented(next)) {
+				b = append(b, '\n')
 			}
 		}
-		b.WriteString(line)
-		if i < len(lines)-1 {
-			b.WriteString("\n")
+		b = append(b, line...)
+		if !more {
+			return b
 		}
+		b = append(b, '\n')
+		prev, rest = line, after
 	}
-	return []byte(b.String())
 }
 
 // parseDocument 解析一层输入并展开其中的别名。内容为空时返回 nil；
@@ -212,6 +216,10 @@ func parseNode(data []byte) (*yaml.Node, error) {
 	if doc.Content[0].Kind != yaml.MappingNode {
 		return nil, errNotMapping
 	}
+	// 常见的订阅没有别名和合并键，只需原地去掉锚点；有的才整棵复制展开，免得大订阅多占一份内存。
+	if dropAnchors(doc.Content[0]) {
+		return &doc, nil
+	}
 	budget := maxNodes
 	root, err := expandAliases(doc.Content[0], &budget)
 	if err != nil {
@@ -219,6 +227,20 @@ func parseNode(data []byte) (*yaml.Node, error) {
 	}
 	doc.Content[0] = root
 	return &doc, nil
+}
+
+// dropAnchors 去掉 n 中所有节点的锚点，报告其中是否没有别名和合并键（即不需要 expandAliases）。
+// 有别名时锚点被去掉也无妨：expandAliases 按 Alias 指针找到所引用的节点。
+func dropAnchors(n *yaml.Node) bool {
+	if n.Kind == yaml.AliasNode || n.Tag == "!!merge" {
+		return false
+	}
+	n.Anchor = ""
+	plain := true
+	for _, c := range n.Content {
+		plain = dropAnchors(c) && plain
+	}
+	return plain
 }
 
 // expandAliases 返回 n 的深拷贝，其中的别名替换为所引用节点的拷贝，锚点被去除。

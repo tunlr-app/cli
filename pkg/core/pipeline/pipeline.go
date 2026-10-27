@@ -52,9 +52,9 @@ var (
 	ErrNothingToRollBack = errors.New("no earlier revision to roll back to")
 )
 
-// Validator 校验配置，通常是 *mihomo.Validator。
+// Validator 校验配置，通常是 *mihomo.Validator。geo 是配置需要的 geo 数据，为 nil 时由 Validator 自己判断。
 type Validator interface {
-	Validate(ctx context.Context, cfg []byte) error
+	Validate(ctx context.Context, cfg []byte, geo *config.GeoNeeds) error
 }
 
 // Reloader 让运行中的内核加载已写入磁盘的配置。
@@ -107,6 +107,8 @@ type Plan struct {
 	Current []byte
 	// Diff 是 Current 到 Config 的统一格式差异；尚未发布过或没有变化时为空。
 	Diff string
+	// DiffSections 按顶层键汇总 Diff 增删的行数。
+	DiffSections []config.DiffSection
 	// Subscription 是配置所用的订阅，没有启用的订阅时为空。
 	Subscription string
 	// Dropped 是订阅中被丢弃的顶层键（仅 KindApply）。
@@ -131,6 +133,8 @@ type Plan struct {
 
 	// newSecret 是本次生成、尚未保存的 API secret。
 	newSecret string
+	// facts 是从 Config 中提取的信息。
+	facts *config.Facts
 }
 
 // Generated 是工具为这台服务器生成的调整。它以 mixin 的语义应用在订阅之后、用户的 mixin 之前，
@@ -235,7 +239,7 @@ func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin, tun *bool) (*
 	if err != nil {
 		return nil, err
 	}
-	plan.Config, plan.Dropped = res.Config, res.Dropped
+	plan.Config, plan.Dropped, plan.facts = res.Config, res.Dropped, res.Facts
 	plan.Warnings, plan.Overrides = res.Warnings, res.Overrides
 	if err := p.finish(ctx, plan); err != nil {
 		return nil, err
@@ -255,7 +259,7 @@ func (p *Pipeline) PlanEnforce(ctx context.Context) (*Plan, error) {
 		return nil, err
 	}
 	plan := &Plan{Kind: KindApply, Subscription: st.Active}
-	if plan.Config, err = config.Enforce(current, enforcedLayer(st.TunEnabled())); err != nil {
+	if plan.Config, plan.facts, err = config.Enforce(current, enforcedLayer(st.TunEnabled())); err != nil {
 		return nil, fmt.Errorf("the published configuration: %w", err)
 	}
 	if err := p.finish(ctx, plan); err != nil {
@@ -299,10 +303,11 @@ func (p *Pipeline) PlanRollback(ctx context.Context, n int) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	if data, err = config.Enforce(data, enforcedLayer(st.TunEnabled())); err != nil {
+	data, facts, err := config.Enforce(data, enforcedLayer(st.TunEnabled()))
+	if err != nil {
 		return nil, fmt.Errorf("revision %d: %w", n, err)
 	}
-	plan := &Plan{Kind: KindRollback, Config: data, Subscription: rev.Subscription, RollbackTo: n}
+	plan := &Plan{Kind: KindRollback, Config: data, Subscription: rev.Subscription, RollbackTo: n, facts: facts}
 	if err := p.finish(ctx, plan); err != nil {
 		return nil, err
 	}
@@ -320,10 +325,11 @@ func (p *Pipeline) finish(ctx context.Context, plan *Plan) error {
 		return nil
 	}
 	if current != nil {
-		plan.Diff = config.Diff("current", "new", current, plan.Config)
-		// 解析失败的配置交给 mihomo -t 报告。
-		plan.Restart, _ = config.RestartKeys(current, plan.Config)
-		if c := config.DiffProxies(current, plan.Config); c != nil && !c.Empty() {
+		plan.Diff, plan.DiffSections = config.Diff("current", "new", current, plan.Config)
+		// 无法解析的生效配置（facts 为 nil）交给 mihomo -t 报告。
+		facts, _ := config.Inspect(current)
+		plan.Restart = config.RestartKeys(facts, plan.facts)
+		if c := config.DiffProxies(facts, plan.facts); c != nil && !c.Empty() {
 			plan.Proxies = c
 		}
 	}
@@ -331,7 +337,7 @@ func (p *Pipeline) finish(ctx context.Context, plan *Plan) error {
 	if err != nil {
 		return err
 	}
-	plan.Check = v.Validate(ctx, plan.Config)
+	plan.Check = v.Validate(ctx, plan.Config, &plan.facts.Geo)
 	return nil
 }
 
@@ -364,7 +370,7 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) 
 		return nil, nil
 	}
 	// 面板下载可能较慢，在加锁之前进行，不阻塞定时任务；安装是原子的。
-	uiDir, uiErr := p.installUI(ctx, plan.Config)
+	uiDir, uiErr := p.installUI(ctx, plan.facts)
 
 	l, err := p.lock(ctx)
 	if err != nil {
@@ -564,13 +570,13 @@ func (p *Pipeline) owner() *fsutil.Owner {
 // installUI 在面板目录不存在时下载并校验 zashboard，免得内核自己从未经校验的地址下载。
 // 只处理 external-ui-url 仍是 zashboard 官方地址（或经镜像的地址）的配置，
 // 用户在 mixin 中换了面板时交给内核。返回新安装的目录。
-func (p *Pipeline) installUI(ctx context.Context, cfg []byte) (string, error) {
+func (p *Pipeline) installUI(ctx context.Context, facts *config.Facts) (string, error) {
 	set, err := settings.Load(p.Layout.SettingsFile())
 	if err != nil {
 		return "", err
 	}
-	dir, url, err := config.ExternalUI(cfg, p.Layout.CoreDir())
-	if err != nil || dir == "" {
+	dir, url := facts.ExternalUI(p.Layout.CoreDir())
+	if dir == "" {
 		return "", nil
 	}
 	if url != mihomo.ZashboardURL && url != download.MirrorURL(set.GitHubMirror, mihomo.ZashboardURL) {

@@ -602,7 +602,7 @@ func (m *Manager) validate(ctx context.Context, binary string) error {
 		return err
 	}
 	v := &Validator{Binary: binary, HomeDir: m.Layout.CoreDir(), Download: d, RunAs: m.Owner}
-	if err := v.Validate(ctx, cfg); err != nil {
+	if err := v.Validate(ctx, cfg, nil); err != nil {
 		return fmt.Errorf("the published configuration does not work with the new kernel: %w", err)
 	}
 	return nil

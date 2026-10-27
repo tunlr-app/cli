@@ -66,17 +66,23 @@ func (e *CheckError) Unwrap() error {
 // ErrNotInstalled 表示用于校验的内核不存在。
 var ErrNotInstalled = errors.New("mihomo is not installed")
 
-// Validate 准备配置所需的 geo 数据，然后运行 mihomo -t。
+// Validate 准备配置所需的 geo 数据，然后运行 mihomo -t。geo 是配置需要的 geo 数据（如合成时
+// 提取的 config.Facts.Geo），为 nil 时解析 cfg 判断。
 // 配置有误时返回 *CheckError；内核不存在时返回 ErrNotInstalled；
 // 准备数据失败或无法运行内核时返回其他错误。
-func (v *Validator) Validate(ctx context.Context, cfg []byte) error {
+func (v *Validator) Validate(ctx context.Context, cfg []byte, geo *config.GeoNeeds) error {
 	if _, err := os.Stat(v.Binary); errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("%w (expected at %s)", ErrNotInstalled, v.Binary)
 	}
 	if v.Download != nil {
-		// 解析失败的配置交给 mihomo -t 报告，这里不提前返回。
-		if needs, err := config.DetectGeo(cfg); err == nil {
-			if _, err := EnsureGeo(ctx, v.Download, v.HomeDir, GeoFilesFor(needs), v.RunAs); err != nil {
+		if geo == nil {
+			// 解析失败的配置交给 mihomo -t 报告，这里不提前返回。
+			if needs, err := config.DetectGeo(cfg); err == nil {
+				geo = &needs
+			}
+		}
+		if geo != nil {
+			if _, err := EnsureGeo(ctx, v.Download, v.HomeDir, GeoFilesFor(*geo), v.RunAs); err != nil {
 				return err
 			}
 		}

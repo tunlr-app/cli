@@ -2,8 +2,6 @@ package config
 
 import (
 	"reflect"
-
-	"go.yaml.in/yaml/v3"
 )
 
 // restartKeys 是热重载不会生效、变化时需要重启内核的顶层键。内核的热重载只调用
@@ -24,20 +22,17 @@ var restartKeys = []string{
 	"geo-update-interval",
 }
 
-// RestartKeys 返回从 old 到 new 有变化、需要重启内核才能生效的顶层键。
-func RestartKeys(old, new []byte) ([]string, error) {
-	var a, b map[string]any
-	if err := yaml.Unmarshal(old, &a); err != nil {
-		return nil, err
-	}
-	if err := yaml.Unmarshal(new, &b); err != nil {
-		return nil, err
+// RestartKeys 返回从 old 到 new 有变化、需要重启内核才能生效的顶层键。任一份为 nil（无法解析）
+// 时返回 nil，交给 mihomo -t 报告。
+func RestartKeys(old, new *Facts) []string {
+	if old == nil || new == nil {
+		return nil
 	}
 	var changed []string
 	for _, k := range restartKeys {
-		if !reflect.DeepEqual(a[k], b[k]) {
+		if !reflect.DeepEqual(old.restart[k], new.restart[k]) {
 			changed = append(changed, k)
 		}
 	}
-	return changed, nil
+	return changed
 }

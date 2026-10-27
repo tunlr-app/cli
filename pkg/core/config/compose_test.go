@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -84,6 +85,10 @@ func TestComposeGolden(t *testing.T) {
 					t.Fatal(err)
 				}
 				return
+			}
+			// 合成时提取的 Facts 与重新解析输出得到的相同。
+			if f, err := Inspect(res.Config); err != nil || !reflect.DeepEqual(res.Facts, f) {
+				t.Errorf("Facts = %+v, Inspect(Config) = %+v, %v", res.Facts, f, err)
 			}
 			if want := sections["want.yaml"]; !bytes.Equal(res.Config, want) {
 				t.Errorf("config mismatch (run with -update to accept)\n--- got ---\n%s\n--- want ---\n%s", res.Config, want)
@@ -239,9 +244,12 @@ func TestExternalUI(t *testing.T) {
 		{"external-ui: ui\nexternal-ui-name: ../x\n", "", ""},
 		{"mixed-port: 1\n", "", ""},
 	} {
-		dir, url, err := ExternalUI([]byte(tt.cfg), home)
-		if err != nil || dir != tt.dir || url != tt.url {
-			t.Errorf("ExternalUI(%q) = %q, %q, %v; want %q, %q", tt.cfg, dir, url, err, tt.dir, tt.url)
+		f, err := Inspect([]byte(tt.cfg))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dir, url := f.ExternalUI(home); dir != tt.dir || url != tt.url {
+			t.Errorf("ExternalUI(%q) = %q, %q; want %q, %q", tt.cfg, dir, url, tt.dir, tt.url)
 		}
 	}
 }

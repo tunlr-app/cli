@@ -3,8 +3,6 @@ package config
 import (
 	"reflect"
 	"slices"
-
-	"go.yaml.in/yaml/v3"
 )
 
 // ProxyChanges 汇总两份配置之间顶层 proxies 的变化，按节点名对应。机场的订阅每次抓取都可能不同
@@ -32,16 +30,16 @@ func (c *ProxyChanges) Empty() bool {
 	return len(c.Added) == 0 && len(c.Removed) == 0 && len(c.Renamed) == 0 && c.Changed == 0
 }
 
-// DiffProxies 比较 old 与 new 的顶层 proxies。任一份无法解析时返回 nil。
+// DiffProxies 比较 old 与 new 的顶层 proxies。任一份为 nil（无法解析）或其 proxies 不是由映射
+// 组成的列表时返回 nil。
 //
 // 删除与新增的节点只在除名称外内容完全相同时配对为改名，不按位置等线索猜测：名称和其他字段同时
 // 变化的（如端口也随机的信息节点）照常列为一增一删。
-func DiffProxies(old, new []byte) *ProxyChanges {
-	a, okA := proxiesByName(old)
-	b, okB := proxiesByName(new)
-	if !okA || !okB {
+func DiffProxies(old, new *Facts) *ProxyChanges {
+	if old == nil || new == nil || !old.proxiesOK || !new.proxiesOK {
 		return nil
 	}
+	a, b := old.proxies, new.proxies
 	c := &ProxyChanges{}
 	var removed, added []string
 	for _, name := range a.names {
@@ -85,25 +83,6 @@ func DiffProxies(old, new []byte) *ProxyChanges {
 type namedProxies struct {
 	names []string
 	items map[string]map[string]any
-}
-
-func proxiesByName(cfg []byte) (namedProxies, bool) {
-	var c struct {
-		Proxies []map[string]any `yaml:"proxies"`
-	}
-	if err := yaml.Unmarshal(cfg, &c); err != nil {
-		return namedProxies{}, false
-	}
-	n := namedProxies{items: map[string]map[string]any{}}
-	for _, p := range c.Proxies {
-		name, _ := p["name"].(string)
-		if _, dup := n.items[name]; dup {
-			continue
-		}
-		n.names = append(n.names, name)
-		n.items[name] = p
-	}
-	return n, true
 }
 
 // changedFields 返回 a 与 b 中值不同的字段名，按名称排序。

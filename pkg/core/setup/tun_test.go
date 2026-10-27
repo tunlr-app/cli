@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/lock"
 	"github.com/tunlr-app/cli/pkg/core/netfilter"
@@ -22,7 +23,7 @@ import (
 
 type passValidator struct{}
 
-func (passValidator) Validate(context.Context, []byte) error { return nil }
+func (passValidator) Validate(context.Context, []byte, *config.GeoNeeds) error { return nil }
 
 // fakeReloader 记录每次热重载时磁盘上的配置。
 type fakeReloader struct {

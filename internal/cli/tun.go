@@ -41,7 +41,7 @@ func (a *app) newTunCommand() *cobra.Command {
 			return a.render(s, func() error { a.printTunStatus(s); return nil })
 		},
 	}
-	cmd.AddCommand(a.newTunOnCommand(), a.newTunOffCommand())
+	cmd.AddCommand(a.withFullDiff(a.newTunOnCommand()), a.withFullDiff(a.newTunOffCommand()))
 	return cmd
 }
 

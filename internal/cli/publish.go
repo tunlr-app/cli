@@ -39,9 +39,11 @@ type planView struct {
 	Restart []string `json:"restart,omitempty"`
 	// Proxies 汇总节点的变化，没有变化时省略。
 	Proxies *config.ProxyChanges `json:"proxies,omitempty"`
-	Diff    string               `json:"diff,omitempty"`
-	Config  string               `json:"config,omitempty"`
-	Check   checkView            `json:"check"`
+	// Diff 总是完整的；DiffSections 按顶层键汇总它增删的行数。
+	Diff         string               `json:"diff,omitempty"`
+	DiffSections []config.DiffSection `json:"diff_sections,omitempty"`
+	Config       string               `json:"config,omitempty"`
+	Check        checkView            `json:"check"`
 }
 
 // hiddenSecret 在输出中代替 API secret 的值。
@@ -83,6 +85,7 @@ func newPlanView(p *pipeline.Plan, full bool) planView {
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
 		Subscription: p.Subscription, Dropped: p.Dropped, Mixins: p.Mixins,
 		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, Proxies: p.Proxies, Diff: p.Diff,
+		DiffSections: p.DiffSections,
 	}
 	if p.Generated != nil {
 		g := *p.Generated
@@ -168,7 +171,11 @@ func (a *app) writePlan(w io.Writer, v planView) {
 		if v.Proxies != nil {
 			fmt.Fprintf(w, "Proxies: %s\n\n", describeProxies(v.Proxies))
 		}
-		fmt.Fprint(w, a.style.diff(v.Diff))
+		if n := strings.Count(v.Diff, "\n"); n > maxDiffLines && !a.fullDiff {
+			a.writeDiffSections(w, v.DiffSections, n)
+		} else {
+			fmt.Fprint(w, a.style.diff(v.Diff))
+		}
 		fmt.Fprintln(w)
 	}
 	if len(v.Restart) > 0 {
@@ -188,6 +195,29 @@ func (a *app) writePlan(w io.Writer, v planView) {
 	default:
 		fmt.Fprintf(w, "Check (mihomo -t): %s %s\n", a.style.warn("could not complete:"), v.Check.Messages[0])
 	}
+}
+
+// maxDiffLines 是完整显示差异的最大行数，更长的差异（如换了机场）按顶层键汇总，用 --full-diff 查看全部。
+const maxDiffLines = 300
+
+// writeDiffSections 输出按顶层键汇总的增删行数，代替过长的差异。
+func (a *app) writeDiffSections(w io.Writer, sections []config.DiffSection, lines int) {
+	fmt.Fprintf(w, "The diff has %d lines; changed lines by section (show all with --full-diff):\n", lines)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, s := range sections {
+		key := s.Key
+		if key == "" {
+			key = "(top of file)"
+		}
+		// 同一列每格的颜色控制符一样长，tabwriter 照样对齐。
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", key, a.style.good(fmt.Sprintf("+%d", s.Added)), a.style.bad(fmt.Sprintf("-%d", s.Removed)))
+	}
+	tw.Flush()
+}
+
+func (a *app) withFullDiff(cmd *cobra.Command) *cobra.Command {
+	cmd.Flags().BoolVar(&a.fullDiff, "full-diff", false, fmt.Sprintf("show the whole diff even when it is longer than %d lines", maxDiffLines))
+	return cmd
 }
 
 // describeProxies 用一行概括节点的变化，例如

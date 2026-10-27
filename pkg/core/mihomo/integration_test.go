@@ -49,7 +49,7 @@ func TestIntegrationValidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := v.Validate(ctx, res.Config); err != nil {
+	if err := v.Validate(ctx, res.Config, nil); err != nil {
 		t.Fatalf("composed config: %v", err)
 	}
 	// 只下载了需要的 geo 文件，-t 没有往工作目录写其他东西。
@@ -67,7 +67,7 @@ func TestIntegrationValidate(t *testing.T) {
 	}
 
 	bad := strings.Replace(string(res.Config), "MATCH,g", "MATCH,NOPE", 1)
-	err = v.Validate(ctx, []byte(bad))
+	err = v.Validate(ctx, []byte(bad), nil)
 	var ce *CheckError
 	if !errors.As(err, &ce) || !errors.Is(err, core.ErrCheckFailed) || ce.MissingData {
 		t.Fatalf("bad config: err = %v", err)
@@ -83,7 +83,7 @@ func TestIntegrationMissingData(t *testing.T) {
 	// 让内核现场下载的地址立即失败，避免等待直连 GitHub 超时。
 	cfg := "geox-url:\n  mmdb: http://127.0.0.1:1/geoip.metadb\n" +
 		"rules:\n  - GEOIP,CN,DIRECT\n  - MATCH,DIRECT\n"
-	err := v.Validate(context.Background(), []byte(cfg))
+	err := v.Validate(context.Background(), []byte(cfg), nil)
 	var ce *CheckError
 	if !errors.As(err, &ce) || !ce.MissingData || errors.Is(err, core.ErrCheckFailed) {
 		t.Fatalf("err = %v", err)

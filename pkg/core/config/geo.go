@@ -27,13 +27,18 @@ var geoIgnoredKeys = map[string]bool{
 
 // DetectGeo 判断配置需要哪些 geo 数据。判断按名称宽松匹配（规则、DNS 设置中出现 geoip、
 // geosite、ip-asn 即视为需要）：多判只会多准备一个文件，漏判则会让 mihomo -t 现场下载。
+// 已经有 Facts 时用其中的 Geo，不必再次解析。
 func DetectGeo(cfg []byte) (GeoNeeds, error) {
-	var needs GeoNeeds
-	doc, err := parseDocument("config", cfg)
-	if err != nil || doc == nil {
-		return needs, err
+	f, err := Inspect(cfg)
+	if err != nil {
+		return GeoNeeds{}, err
 	}
-	root := doc.Content[0]
+	return f.Geo, nil
+}
+
+// detectGeo 同 DetectGeo，作用于已展开别名的顶层映射。
+func detectGeo(root *yaml.Node) GeoNeeds {
+	var needs GeoNeeds
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		k, v := root.Content[i], root.Content[i+1]
 		switch {
@@ -44,7 +49,7 @@ func DetectGeo(cfg []byte) (GeoNeeds, error) {
 			needs.scan(v)
 		}
 	}
-	return needs, nil
+	return needs
 }
 
 func (n *GeoNeeds) scan(node *yaml.Node) {

@@ -20,7 +20,7 @@ func TestDiffProxies(t *testing.T) {
   - {name: jp-1, type: trojan, server: b.example, port: 443, password: p}
   - {name: new, type: ss, server: d.example, port: 8388, cipher: aes-128-gcm, password: p}
 `)
-	got := DiffProxies(old, new)
+	got := DiffProxies(facts(old), facts(new))
 	// 名称和端口同时变化的信息节点列为一增一删。
 	want := &ProxyChanges{
 		Added:   []string{"剩余流量：90.55 GB", "new"},
@@ -38,11 +38,11 @@ func TestDiffProxies(t *testing.T) {
   - {name: jp-one, type: trojan, server: b.example, port: 443, password: p}
   - {name: x, type: trojan, server: e.example, port: 443, password: p}
 `)
-	got = DiffProxies([]byte(`proxies:
+	got = DiffProxies(facts([]byte(`proxies:
   - {name: jp-1, type: trojan, server: b.example, port: 443, password: p}
   - {name: y, type: trojan, server: f.example, port: 443, password: p}
   - {name: jp-2, type: trojan, server: b.example, port: 443, password: p}
-`), moved)
+`)), facts(moved))
 	want = &ProxyChanges{
 		Added:   []string{"x"},
 		Removed: []string{"y"},
@@ -52,13 +52,35 @@ func TestDiffProxies(t *testing.T) {
 		t.Errorf("moved: DiffProxies = %+v\nwant %+v", got, want)
 	}
 
-	if c := DiffProxies(old, old); c == nil || !c.Empty() {
+	if c := DiffProxies(facts(old), facts(old)); c == nil || !c.Empty() {
 		t.Errorf("same proxies = %+v", c)
 	}
-	if c := DiffProxies([]byte("mode: rule\n"), new); c == nil || len(c.Added) != 5 {
+	if c := DiffProxies(facts([]byte("mode: rule\n")), facts(new)); c == nil || len(c.Added) != 5 {
 		t.Errorf("no proxies before = %+v", c)
 	}
-	if c := DiffProxies([]byte("proxies: [\n"), new); c != nil {
+	if c := DiffProxies(facts([]byte("proxies: [\n")), facts(new)); c != nil {
 		t.Errorf("unparsable = %+v", c)
+	}
+	if c := DiffProxies(facts([]byte("proxies: [a, b]\n")), facts(new)); c != nil {
+		t.Errorf("not mappings = %+v", c)
+	}
+}
+
+// facts 返回 Inspect(cfg) 的结果，无法解析时为 nil。
+func facts(cfg []byte) *Facts {
+	f, _ := Inspect(cfg)
+	return f
+}
+
+func TestRestartKeys(t *testing.T) {
+	old := facts([]byte("secret: a\nexternal-ui: ui\nmode: rule\n"))
+	if got := RestartKeys(old, facts([]byte("secret: b\nexternal-ui: ui\nmode: global\n"))); !reflect.DeepEqual(got, []string{"secret"}) {
+		t.Errorf("RestartKeys = %v", got)
+	}
+	if got := RestartKeys(old, facts([]byte("secret: a\n"))); !reflect.DeepEqual(got, []string{"external-ui"}) {
+		t.Errorf("removed key: RestartKeys = %v", got)
+	}
+	if got := RestartKeys(nil, old); got != nil {
+		t.Errorf("unparsable: RestartKeys = %v", got)
 	}
 }

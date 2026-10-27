@@ -15,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 
+	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/paths"
@@ -24,7 +25,7 @@ import (
 // editValidator 在配置含 MATCH,NOPE 时报告检查未通过，含 GEO-DOWN 时报告数据下载失败。
 type editValidator struct{}
 
-func (editValidator) Validate(_ context.Context, cfg []byte) error {
+func (editValidator) Validate(_ context.Context, cfg []byte, _ *config.GeoNeeds) error {
 	switch {
 	case bytes.Contains(cfg, []byte("MATCH,NOPE")):
 		return &mihomo.CheckError{Messages: []string{"rules[0] [MATCH,NOPE] error: proxy [NOPE] not found"}}

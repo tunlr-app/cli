@@ -100,9 +100,20 @@ type Subscription struct {
 	FetchedAt time.Time `json:"fetched_at,omitzero"`
 	// UserInfo 来自最近一次成功抓取的 subscription-userinfo 响应头，机场没有提供时为空。
 	UserInfo *UserInfo `json:"userinfo,omitempty"`
+	// Counts 统计最近一次成功抓取的内容，列出订阅时不必重新解析大订阅。
+	// 较早版本写入的状态文件中没有，这时由读取方解析内容得到。
+	Counts *Counts `json:"counts,omitempty"`
 	// LastError 是最近一次抓取失败的原因，再次成功后清空。
 	LastError   string    `json:"last_error,omitempty"`
 	LastErrorAt time.Time `json:"last_error_at,omitzero"`
+}
+
+// Counts 是订阅内容中路由部分各项的数量，含义同 config.SubscriptionSummary。
+type Counts struct {
+	Proxies        int `json:"proxies"`
+	ProxyProviders int `json:"proxy_providers"`
+	ProxyGroups    int `json:"proxy_groups"`
+	Rules          int `json:"rules"`
 }
 
 // UserInfo 是机场报告的流量与到期时间。

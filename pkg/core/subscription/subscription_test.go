@@ -100,8 +100,23 @@ func TestAddListRemove(t *testing.T) {
 	if info == nil || info.Upload != 100 || info.Download != 200 || info.Total != 1000 || info.Expire.Year() != 2027 {
 		t.Errorf("userinfo = %+v", info)
 	}
-	if entries[0].Summary.Proxies != 1 {
-		t.Errorf("summary = %+v", entries[0].Summary)
+	if entries[0].Summary.Proxies != 1 || entries[0].Counts == nil {
+		t.Errorf("summary = %+v, counts = %+v", entries[0].Summary, entries[0].Counts)
+	}
+	// 列出时用状态文件中记下的统计，不再解析内容；较早的状态文件没有统计时才解析。
+	if err := os.WriteFile(m.Layout.SubscriptionFile("first"), []byte("proxies: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := m.List(); entries[0].Summary.Proxies != 1 {
+		t.Errorf("summary from state = %+v", entries[0].Summary)
+	}
+	st, _ := state.Load(m.Layout.StateFile())
+	st.Subscriptions[0].Counts = nil
+	if err := state.Save(m.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := m.List(); entries[0].Summary.Proxies != 0 {
+		t.Errorf("summary without counts = %+v", entries[0].Summary)
 	}
 
 	if _, err := m.Add(ctx, "first", p.URL+"/ok", ""); !errors.Is(err, ErrExists) {

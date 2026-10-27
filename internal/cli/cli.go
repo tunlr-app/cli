@@ -56,6 +56,8 @@ type app struct {
 	session context.Context
 	// aborted 表示用户在命令开头的提问中取消了，什么都没做（见 cancelled）。
 	aborted bool
+	// fullDiff 对应 --full-diff：差异很长时也完整显示，而不是按段汇总。
+	fullDiff bool
 
 	// 以下供测试替换，为空时使用默认实现。
 	validator pipeline.Validator
@@ -187,10 +189,10 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.newUninstallCommand(),
 		a.newRescueCommand(),
 		a.newUpdateCommand(),
-		a.newPlanCommand(),
-		a.newApplyCommand(),
-		a.newRollbackCommand(),
-		a.newEditCommand(),
+		a.withFullDiff(a.newPlanCommand()),
+		a.withFullDiff(a.newApplyCommand()),
+		a.withFullDiff(a.newRollbackCommand()),
+		a.withFullDiff(a.newEditCommand()),
 		a.newSubCommand(),
 		a.newTunCommand(),
 		a.newPreStartCommand(),

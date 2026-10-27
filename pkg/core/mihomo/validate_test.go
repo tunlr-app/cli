@@ -75,11 +75,11 @@ func TestValidate(t *testing.T) {
 	v := fakeValidator(t)
 	ctx := context.Background()
 
-	if err := v.Validate(ctx, []byte("rules:\n  - MATCH,DIRECT\n")); err != nil {
+	if err := v.Validate(ctx, []byte("rules:\n  - MATCH,DIRECT\n"), nil); err != nil {
 		t.Fatalf("valid config: %v", err)
 	}
 
-	err := v.Validate(ctx, []byte("rules:\n  - MATCH,NOPE\n"))
+	err := v.Validate(ctx, []byte("rules:\n  - MATCH,NOPE\n"), nil)
 	var ce *CheckError
 	if !errors.As(err, &ce) || !errors.Is(err, core.ErrCheckFailed) || ce.MissingData {
 		t.Fatalf("bad config: err = %v", err)
@@ -89,7 +89,7 @@ func TestValidate(t *testing.T) {
 	}
 
 	// 没有 MMDB 且不下载：报告为数据缺失，而不是配置错误。
-	err = v.Validate(ctx, []byte("rules:\n  - GEOIP,CN,DIRECT\n"))
+	err = v.Validate(ctx, []byte("rules:\n  - GEOIP,CN,DIRECT\n"), nil)
 	if !errors.As(err, &ce) || !ce.MissingData || errors.Is(err, core.ErrCheckFailed) {
 		t.Fatalf("missing geo: err = %v", err)
 	}
@@ -101,11 +101,11 @@ func TestValidate(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(v.HomeDir, "GeoIP.metadb"), []byte("mmdb"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.Validate(ctx, []byte("rules:\n  - GEOIP,CN,DIRECT\n")); err != nil {
+	if err := v.Validate(ctx, []byte("rules:\n  - GEOIP,CN,DIRECT\n"), nil); err != nil {
 		t.Fatalf("with geo present: %v", err)
 	}
 
-	err = v.Validate(ctx, []byte("SILENT: true\n"))
+	err = v.Validate(ctx, []byte("SILENT: true\n"), nil)
 	if !errors.As(err, &ce) || ce.Messages[0] != "mihomo -t exited with status 1" {
 		t.Errorf("silent failure: err = %v", err)
 	}
@@ -114,7 +114,7 @@ func TestValidate(t *testing.T) {
 func TestValidateTimeout(t *testing.T) {
 	v := fakeValidator(t)
 	v.Timeout = 300 * time.Millisecond
-	err := v.Validate(context.Background(), []byte("HANG: true\n"))
+	err := v.Validate(context.Background(), []byte("HANG: true\n"), nil)
 	if err == nil || !strings.Contains(err.Error(), "did not finish within 300ms") {
 		t.Fatalf("err = %v", err)
 	}
@@ -122,7 +122,7 @@ func TestValidateTimeout(t *testing.T) {
 
 func TestValidateMissingBinary(t *testing.T) {
 	v := &Validator{Binary: filepath.Join(t.TempDir(), "no-mihomo")}
-	err := v.Validate(context.Background(), []byte("rules: []\n"))
+	err := v.Validate(context.Background(), []byte("rules: []\n"), nil)
 	var ce *CheckError
 	if !errors.Is(err, ErrNotInstalled) || errors.As(err, &ce) {
 		t.Fatalf("err = %v, want ErrNotInstalled", err)
@@ -151,7 +151,17 @@ func TestValidateDownloadsGeo(t *testing.T) {
 
 	v := fakeValidator(t)
 	v.Download = &download.Client{APIBase: srv.URL}
-	if err := v.Validate(context.Background(), []byte("rules:\n  - GEOIP,CN,DIRECT\n")); err != nil {
+	// 调用方给出 geo 需求时以它为准，不再解析配置。
+	if err := v.Validate(context.Background(), []byte("rules:\n  - MATCH,DIRECT\n"), &config.GeoNeeds{GeoIP: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(v.HomeDir, "geoip.metadb")); err != nil {
+		t.Fatalf("geo given by the caller not downloaded: %v", err)
+	}
+	if err := os.Remove(filepath.Join(v.HomeDir, "geoip.metadb")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Validate(context.Background(), []byte("rules:\n  - GEOIP,CN,DIRECT\n"), nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(filepath.Join(v.HomeDir, "geoip.metadb")); err != nil || string(got) != "fake mmdb" {
@@ -159,7 +169,7 @@ func TestValidateDownloadsGeo(t *testing.T) {
 	}
 	// 已有的文件不重复下载。
 	srv.Close()
-	if err := v.Validate(context.Background(), []byte("rules:\n  - GEOIP,CN,DIRECT\n")); err != nil {
+	if err := v.Validate(context.Background(), []byte("rules:\n  - GEOIP,CN,DIRECT\n"), nil); err != nil {
 		t.Fatalf("second validate should not download: %v", err)
 	}
 }

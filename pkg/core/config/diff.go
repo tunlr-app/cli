@@ -17,14 +17,26 @@ type diffLine struct {
 	text string
 }
 
-// Diff 返回 a 到 b 的统一格式（diff -u）逐行差异，两者相同时返回空串。
-func Diff(oldName, newName string, a, b []byte) string {
+// diffTimeout 是计算差异的时限。新旧配置差别很大时（如换了机场）逐行比较可能要几秒；超时后得到的
+// 差异仍然正确，只是不一定最短，这种情况下差异本来就大，用户通常只看按段的汇总。
+const diffTimeout = time.Second
+
+// DiffSection 是差异中一个顶层键（段）增删的行数。
+type DiffSection struct {
+	// Key 是顶层键；第一个顶层键之前的行（如文件开头的注释）为空串。
+	Key     string `json:"key"`
+	Added   int    `json:"added"`
+	Removed int    `json:"removed"`
+}
+
+// Diff 返回 a 到 b 的统一格式（diff -u）逐行差异，以及按顶层键汇总的增删行数（按出现顺序），
+// 两者相同时返回空串和 nil。
+func Diff(oldName, newName string, a, b []byte) (string, []DiffSection) {
 	if string(a) == string(b) {
-		return ""
+		return "", nil
 	}
 	dmp := diffmatchpatch.New()
-	// 超时后得到的差异仍然正确，只是不一定最短。
-	dmp.DiffTimeout = 5 * time.Second
+	dmp.DiffTimeout = diffTimeout
 	ra, rb, lines := dmp.DiffLinesToRunes(string(a), string(b))
 	diffs := dmp.DiffCharsToLines(dmp.DiffMainRunes(ra, rb, false), lines)
 
@@ -41,6 +53,58 @@ func Diff(oldName, newName string, a, b []byte) string {
 			ls = append(ls, diffLine{op, t})
 		}
 	}
+	return unified(oldName, newName, ls), sections(ls)
+}
+
+// sections 按顶层键汇总增删的行数。新旧两侧分别跟踪当前所在的段：删除的行属于旧配置中它所在的段，
+// 新增的行属于新配置中它所在的段。
+func sections(ls []diffLine) []DiffSection {
+	var out []DiffSection
+	index := map[string]int{}
+	add := func(key string, added, removed int) {
+		i, ok := index[key]
+		if !ok {
+			i = len(out)
+			index[key] = i
+			out = append(out, DiffSection{Key: key})
+		}
+		out[i].Added += added
+		out[i].Removed += removed
+	}
+	var oldKey, newKey string
+	for _, l := range ls {
+		if k, ok := topLevelKey(l.text); ok {
+			if l.op != '+' {
+				oldKey = k
+			}
+			if l.op != '-' {
+				newKey = k
+			}
+		}
+		switch l.op {
+		case '-':
+			add(oldKey, 0, 1)
+		case '+':
+			add(newKey, 1, 0)
+		}
+	}
+	return out
+}
+
+// topLevelKey 返回顶层键所在行的键名。生成的配置中第 0 列的行只可能是顶层键或注释（见 spaceSections）。
+func topLevelKey(line string) (string, bool) {
+	if line == "" || line[0] == ' ' || line[0] == '#' {
+		return "", false
+	}
+	k, _, ok := strings.Cut(line, ":")
+	if !ok {
+		return "", false
+	}
+	return strings.Trim(k, `"'`), true
+}
+
+// unified 把逐行差异写成统一格式。
+func unified(oldName, newName string, ls []diffLine) string {
 
 	// before[i] 是 ls[i] 之前旧、新两侧各有多少行，用于计算每段的起始行号。
 	type counts struct{ old, new int }

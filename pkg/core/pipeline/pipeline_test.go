@@ -31,7 +31,7 @@ import (
 // fakeValidator 在配置含 MATCH,NOPE 时报告检查未通过，并记录校验次数。
 type fakeValidator struct{ calls int }
 
-func (v *fakeValidator) Validate(_ context.Context, cfg []byte) error {
+func (v *fakeValidator) Validate(_ context.Context, cfg []byte, _ *config.GeoNeeds) error {
 	v.calls++
 	if bytes.Contains(cfg, []byte("MATCH,NOPE")) {
 		return core.ErrCheckFailed

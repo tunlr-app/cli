@@ -61,7 +61,7 @@ func TestDiff(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Diff("old", "new", tt.a, tt.b)
+			got, _ := Diff("old", "new", tt.a, tt.b)
 			want := tt.want
 			if want != "" {
 				want = "--- old\n+++ new\n" + want
@@ -70,5 +70,25 @@ func TestDiff(t *testing.T) {
 				t.Errorf("got:\n%s\nwant:\n%s", got, want)
 			}
 		})
+	}
+}
+
+func TestDiffSections(t *testing.T) {
+	old := []byte("# head\nmode: rule\nproxies:\n  - a\n  - b\nold-key:\n  - x\nrules:\n  - r1\n  - r2\n")
+	new := []byte("# head 2\nmode: global\nproxies:\n  - a\n  - c\n  - d\nrules:\n  - r1\nnew-key: 1\n")
+	_, got := Diff("old", "new", old, new)
+	want := []DiffSection{
+		{Key: "", Added: 1, Removed: 1},
+		{Key: "mode", Added: 1, Removed: 1},
+		{Key: "proxies", Added: 2, Removed: 1},
+		{Key: "old-key", Removed: 2},
+		{Key: "rules", Removed: 1},
+		{Key: "new-key", Added: 1},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("sections = %+v\nwant %+v", got, want)
+	}
+	if _, s := Diff("old", "new", old, old); s != nil {
+		t.Errorf("identical: sections = %+v", s)
 	}
 }

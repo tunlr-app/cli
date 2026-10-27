@@ -130,7 +130,9 @@ func (m *Manager) List() ([]Entry, error) {
 	entries := make([]Entry, 0, len(st.Subscriptions))
 	for _, s := range st.Subscriptions {
 		e := Entry{Subscription: s, Active: s.Name == st.Active}
-		if data, err := os.ReadFile(m.Layout.SubscriptionFile(s.Name)); err == nil {
+		if c := s.Counts; c != nil {
+			e.Summary = config.SubscriptionSummary(*c)
+		} else if data, err := os.ReadFile(m.Layout.SubscriptionFile(s.Name)); err == nil {
 			e.Summary, _ = config.InspectSubscription(data)
 		}
 		entries = append(entries, e)
@@ -290,6 +292,8 @@ func (m *Manager) fetchAndStore(ctx context.Context, s *state.Subscription) (con
 	}
 	s.FetchedAt = m.now().UTC()
 	s.UserInfo = info
+	c := state.Counts(sum)
+	s.Counts = &c
 	s.LastError = ""
 	s.LastErrorAt = time.Time{}
 	return sum, nil
