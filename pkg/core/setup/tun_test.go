@@ -294,7 +294,20 @@ func TestCheck(t *testing.T) {
 	ctx := context.Background()
 	i, h, _ := newTunInstaller(t)
 	h.active = true
+
+	// 透明代理关着时什么都不查，停用自己。
 	res, err := i.Check(ctx)
+	if err != nil || len(res.Actions) != 1 || !h.called("systemctl disable --now "+service.CheckTimer) || h.called("nft") {
+		t.Fatalf("TUN off: %+v, %v, %q", res, err, h.calls)
+	}
+
+	st := tunSwitch(t, i)
+	st.SetTun(state.TunOn, time.Time{})
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	h.calls = nil
+	res, err = i.Check(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +321,7 @@ func TestCheck(t *testing.T) {
 
 	// 回滚定时器没有生效：过期一分钟以上的 pending 被关闭。
 	setPending(t, i, testNow.Add(-2*time.Minute))
-	if res, err = i.Check(ctx); err != nil || len(res.Actions) != 1 {
+	if res, err = i.Check(ctx); err != nil || len(res.Actions) != 2 || !h.called("systemctl disable --now "+service.CheckTimer) {
 		t.Fatalf("expired pending: %+v, %v", res, err)
 	}
 	if st := tunSwitch(t, i); st.Tun != "" || tunEnabled(t, i) {

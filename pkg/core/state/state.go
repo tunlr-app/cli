@@ -44,6 +44,18 @@ type State struct {
 	Tun string `json:"tun,omitempty"`
 	// TunDeadline 是 TunPending 的期限：过期仍未确认时，由回滚定时器或下次启动内核前关闭。
 	TunDeadline time.Time `json:"tun_deadline,omitzero"`
+
+	// Updates 记录定时更新任务（键为任务名，目前只有 geo；订阅的记在各自的 FetchedAt、LastErrorAt 中）
+	// 最近一次执行的情况，用来判断下次何时到期。只记最近一次，历次的情况在 journal 中。
+	Updates map[string]UpdateRun `json:"updates,omitempty"`
+}
+
+// UpdateRun 是一次定时更新任务的执行情况。
+type UpdateRun struct {
+	At time.Time `json:"at"`
+	// Status 是 ok、skipped 或 failed，Message 是说明。
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
 }
 
 // 透明代理开关的状态，关闭时为空。
@@ -93,8 +105,11 @@ type Subscription struct {
 	// URL 通常带有机场的访问令牌，不能出现在输出和日志中。
 	URL string `json:"url"`
 	// UserAgent 为空时使用默认值。机场按 User-Agent 决定返回的格式。
-	UserAgent string    `json:"user_agent,omitempty"`
-	AddedAt   time.Time `json:"added_at"`
+	UserAgent string `json:"user_agent,omitempty"`
+	// Update 是自动更新的周期（如 "6h"、"1d"，"off" 为不自动更新），为空时为 DefaultUpdate。
+	// 不论是否启用都按它更新；只有启用的订阅更新后才发布配置。
+	Update  string    `json:"update,omitempty"`
+	AddedAt time.Time `json:"added_at"`
 
 	// FetchedAt 是最近一次成功抓取的时间。
 	FetchedAt time.Time `json:"fetched_at,omitzero"`
@@ -106,6 +121,17 @@ type Subscription struct {
 	// LastError 是最近一次抓取失败的原因，再次成功后清空。
 	LastError   string    `json:"last_error,omitempty"`
 	LastErrorAt time.Time `json:"last_error_at,omitzero"`
+}
+
+// DefaultUpdate 是订阅自动更新的默认周期。
+const DefaultUpdate = "1d"
+
+// UpdatePeriod 返回订阅的自动更新周期（没有设置时为默认值）。
+func (s *Subscription) UpdatePeriod() string {
+	if s.Update == "" {
+		return DefaultUpdate
+	}
+	return s.Update
 }
 
 // Counts 是订阅内容中路由部分各项的数量，含义同 config.SubscriptionSummary。

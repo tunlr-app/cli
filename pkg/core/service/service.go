@@ -148,8 +148,8 @@ func (s *Systemd) ResetFailed(ctx context.Context, unit string) error {
 	return err
 }
 
-// Install 写入全部 unit，重新加载 systemd，启用内核服务（不启动），启用并启动定时更新
-// （timer 只启用不启动的话，要到下次开机才开始计时）。
+// Install 写入全部 unit，重新加载 systemd，启用内核服务（不启动）。timer 是否启用由调用方按设置和
+// 状态用 SetTimer 决定。
 func (s *Systemd) Install(ctx context.Context) error {
 	units, err := RenderUnits(s.Layout)
 	if err != nil {
@@ -166,11 +166,25 @@ func (s *Systemd) Install(ctx context.Context) error {
 	if _, err := s.systemctl(ctx, "daemon-reload"); err != nil {
 		return err
 	}
-	if _, err := s.systemctl(ctx, "enable", CoreUnit); err != nil {
-		return err
-	}
-	_, err = s.systemctl(ctx, "enable", "--now", UpdateTimer, CheckTimer)
+	_, err = s.systemctl(ctx, "enable", CoreUnit)
 	return err
+}
+
+// SetTimer 启用并启动（on）或停止并禁用 timer。只启用不启动的话，要到下次开机才开始计时。
+// 已经是目标状态时 systemctl 什么都不做。
+func (s *Systemd) SetTimer(ctx context.Context, timer string, on bool) error {
+	action := "disable"
+	if on {
+		action = "enable"
+	}
+	_, err := s.systemctl(ctx, action, "--now", timer)
+	return err
+}
+
+// TimerEnabled 报告 timer 是否启用。
+func (s *Systemd) TimerEnabled(ctx context.Context, timer string) bool {
+	v, err := s.Property(ctx, timer, "UnitFileState")
+	return err == nil && v == "enabled"
 }
 
 // Uninstall 停止并禁用全部 unit，删除 unit 文件，重新加载 systemd。unit 不存在时不报错。

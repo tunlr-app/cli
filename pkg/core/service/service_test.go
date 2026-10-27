@@ -94,7 +94,6 @@ func TestInstallAndUninstall(t *testing.T) {
 	want := [][]string{
 		{"systemctl", "daemon-reload"},
 		{"systemctl", "enable", CoreUnit},
-		{"systemctl", "enable", "--now", UpdateTimer, CheckTimer},
 	}
 	if !slices.EqualFunc(f.calls, want, slices.Equal) {
 		t.Errorf("calls = %v", f.calls)

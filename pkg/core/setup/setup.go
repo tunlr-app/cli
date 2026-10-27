@@ -168,7 +168,7 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 		}
 		if st == nil || st.Find(opts.SubName) == nil {
 			progress("Adding the subscription " + opts.SubName)
-			if _, err := subs.Add(ctx, opts.SubName, opts.SubURL, ""); err != nil {
+			if _, err := subs.Add(ctx, opts.SubName, opts.SubURL, subscription.AddOptions{}); err != nil {
 				return nil, err
 			}
 			res.SubscriptionAdded = opts.SubName
@@ -200,10 +200,17 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 
 	if _, err := os.Stat(i.Layout.CoreConfig()); err != nil {
 		res.NotStarted = "no configuration has been published yet: add a subscription (tunlr sub add), then run tunlr apply and tunlr start"
-		return res, nil
+	} else {
+		progress("Starting mihomo")
+		if res.Started, err = kernels.Restart(ctx); err != nil {
+			return nil, err
+		}
 	}
-	progress("Starting mihomo")
-	if res.Started, err = kernels.Restart(ctx); err != nil {
+
+	// timer 最后启用：重写过的 timer 重新启用时可能立即触发（上次触发已过了一个周期），
+	// 定时更新不能与上面的发布同时进行。
+	progress("Scheduling the updates")
+	if err := i.SyncTimers(ctx); err != nil {
 		return nil, err
 	}
 	return res, nil
@@ -244,7 +251,12 @@ func (i *Installer) InitSteps(ctx context.Context, opts InitOptions) ([]string, 
 		steps = append(steps, "Install mihomo "+v+", verified against the official sha256")
 	}
 	sd := i.systemd()
-	steps = append(steps, fmt.Sprintf("Install and enable %s and the daily %s", service.CoreUnit, service.UpdateTimer))
+	set, err := settings.Load(i.Layout.SettingsFile())
+	if err != nil {
+		return nil, err
+	}
+	steps = append(steps, fmt.Sprintf("Install and enable %s and %s (geo data %s; subscriptions %s unless set otherwise)",
+		service.CoreUnit, service.UpdateTimer, DescribeGeoUpdate(set), settings.DescribePeriod(state.DefaultUpdate)))
 
 	st, err := state.Load(i.Layout.StateFile())
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {

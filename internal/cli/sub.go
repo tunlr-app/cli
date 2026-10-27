@@ -13,6 +13,7 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
+	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
@@ -23,6 +24,7 @@ type subscriptionView struct {
 	URL         string                     `json:"url"`
 	Active      bool                       `json:"active"`
 	UserAgent   string                     `json:"user_agent,omitempty"`
+	Update      string                     `json:"update"`
 	AddedAt     time.Time                  `json:"added_at"`
 	FetchedAt   time.Time                  `json:"fetched_at,omitzero"`
 	LastError   string                     `json:"last_error,omitempty"`
@@ -61,29 +63,58 @@ func (a *app) newSubCommand() *cobra.Command {
 		a.newSubAddCommand(),
 		a.newSubListCommand(),
 		a.newSubRemoveCommand(),
+		a.newSubSetCommand(),
 		a.newSubUpdateCommand(),
 		a.newSubUseCommand(),
 	)
 	return cmd
 }
 
+// updateFlagHelp 是 sub add、sub set 的 --update 参数的说明。
+const updateFlagHelp = "how often it is fetched automatically: hours or days such as 6h, 1d or 7d, or off"
+
+// updatePeriodArg 把 --update 的值转换为订阅的周期设置：default 和空字符串都是默认值。
+func updatePeriodArg(v string) (string, error) {
+	if v == "" || v == "default" {
+		return "", nil
+	}
+	_, err := settings.ParsePeriod(v)
+	return v, err
+}
+
 func (a *app) newSubAddCommand() *cobra.Command {
-	var userAgent string
+	var userAgent, update string
 	cmd := &cobra.Command{
 		Use:   "add <name> <url>",
 		Short: "Fetch and save a subscription; the first one becomes active",
-		Args:  usageArgs(cobra.ExactArgs(2)),
+		Long: "Fetch and save a subscription; the first one becomes active. It is fetched again\n" +
+			"automatically every day unless --update says otherwise (interactively tunlr asks);\n" +
+			"the active subscription's configuration is published after each fetch that changed it.",
+		Args: usageArgs(cobra.ExactArgs(2)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			period, err := updatePeriodArg(update)
+			if err != nil {
+				return err
+			}
+			if !cmd.Flags().Changed("update") && a.interactive() {
+				if period, err = a.choosePeriod(cmd, fmt.Sprintf("subscription %q", args[0]), state.DefaultUpdate); err != nil || period == "" {
+					_, err := a.cancelled(err)
+					return err
+				}
+			}
 			var res *subscription.Fetched
-			err := a.spin("Fetching the subscription", func() (err error) {
-				res, err = a.subscriptions().Add(cmd.Context(), args[0], args[1], userAgent)
+			err = a.spin("Fetching the subscription", func() (err error) {
+				res, err = a.subscriptions().Add(cmd.Context(), args[0], args[1], subscription.AddOptions{UserAgent: userAgent, Update: period})
 				return err
 			})
 			if err != nil {
 				return err
 			}
+			if err := a.syncTimers(cmd); err != nil {
+				return err
+			}
 			return a.render(fetchedView{res.Name, res.Activated, res.Summary}, func() error {
-				fmt.Fprintf(a.stdout, "Added subscription %q: %s.\n", res.Name, describeSummary(res.Summary))
+				fmt.Fprintf(a.stdout, "Added subscription %q: %s; %s.\n", res.Name, describeSummary(res.Summary), describeFetching(period))
 				if res.Activated {
 					fmt.Fprintf(a.stdout, "%q is now the active subscription.\n", res.Name)
 				}
@@ -94,6 +125,88 @@ func (a *app) newSubAddCommand() *cobra.Command {
 	cmd.Flags().StringVar(&userAgent, "user-agent", "",
 		"User-Agent sent when fetching (default: user-agent in "+a.layout.SettingsFile()+", or "+
 			fmt.Sprintf("%q", subscription.DefaultUserAgent(a.info.Version))+")")
+	cmd.Flags().StringVar(&update, "update", "", updateFlagHelp+" (default "+state.DefaultUpdate+")")
+	return cmd
+}
+
+// describeFetching 是订阅自动更新周期的说法，如 "fetched again daily"；空字符串为默认值。
+func describeFetching(period string) string {
+	if period == "" {
+		period = state.DefaultUpdate
+	}
+	if period == settings.PeriodOff {
+		return "not fetched again automatically"
+	}
+	return "fetched again " + settings.DescribePeriod(period)
+}
+
+// syncTimers 在订阅的增删改之后按新的情况启用或停用 tunlr-update.timer（还没有安装时什么都不做）。
+func (a *app) syncTimers(cmd *cobra.Command) error {
+	return a.installer().SyncTimers(cmd.Context())
+}
+
+func (a *app) newSubSetCommand() *cobra.Command {
+	var update string
+	cmd := &cobra.Command{
+		Use:   "set [name] --update <period>",
+		Short: "Change how often a subscription is fetched automatically",
+		Long: "Change how often a subscription is fetched automatically: --update with a number of\n" +
+			"hours or days such as 6h, 1d or 7d, off for never, or default for " + state.DefaultUpdate + ". Without a\n" +
+			"name or --update, choose them from a list (needs a terminal). Every saved subscription\n" +
+			"is fetched on its own period; only the active one's configuration is published.",
+		Args: usageArgs(cobra.MaximumNArgs(1)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if a.opts.DryRun {
+				return usageErrorf("sub set does not support --dry-run")
+			}
+			if (len(args) == 0 || !cmd.Flags().Changed("update")) && !a.interactive() {
+				return usageErrorf("sub set needs the name of a subscription and --update, e.g. tunlr sub set home --update 6h")
+			}
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			} else {
+				var err error
+				if name, err = a.chooseSubscription(cmd, "Change which subscription?"); err != nil {
+					_, err := a.cancelled(err)
+					return err
+				}
+			}
+			period, err := updatePeriodArg(update)
+			if err != nil {
+				return err
+			}
+			if !cmd.Flags().Changed("update") {
+				entries, err := a.subscriptions().List()
+				if err != nil {
+					return err
+				}
+				i := slices.IndexFunc(entries, func(e subscription.Entry) bool { return e.Name == name })
+				if i < 0 {
+					return fmt.Errorf("%w: %s", subscription.ErrNotFound, name)
+				}
+				if period, err = a.choosePeriod(cmd, fmt.Sprintf("subscription %q", name), entries[i].UpdatePeriod()); err != nil || period == "" {
+					_, err := a.cancelled(err)
+					return err
+				}
+			}
+			if err := a.subscriptions().Set(cmd.Context(), name, period); err != nil {
+				return err
+			}
+			if err := a.syncTimers(cmd); err != nil {
+				return err
+			}
+			return a.render(map[string]string{"name": name, "update": period}, func() error {
+				if period == settings.PeriodOff {
+					_, err := fmt.Fprintf(a.stdout, "%q is no longer fetched automatically; fetch it with tunlr sub update %s.\n", name, name)
+					return err
+				}
+				_, err := fmt.Fprintf(a.stdout, "%q is %s.\n", name, describeFetching(period))
+				return err
+			})
+		},
+	}
+	cmd.Flags().StringVar(&update, "update", "", updateFlagHelp+", or default")
 	return cmd
 }
 
@@ -111,7 +224,7 @@ func (a *app) newSubListCommand() *cobra.Command {
 			for _, e := range entries {
 				views = append(views, subscriptionView{
 					Name: e.Name, URL: subscription.Redact(e.URL), Active: e.Active, UserAgent: e.UserAgent,
-					AddedAt: e.AddedAt, FetchedAt: e.FetchedAt, LastError: e.LastError, LastErrorAt: e.LastErrorAt,
+					Update: e.UpdatePeriod(), AddedAt: e.AddedAt, FetchedAt: e.FetchedAt, LastError: e.LastError, LastErrorAt: e.LastErrorAt,
 					UserInfo: e.UserInfo, Summary: e.Summary,
 				})
 			}
@@ -121,7 +234,7 @@ func (a *app) newSubListCommand() *cobra.Command {
 					return err
 				}
 				tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(tw, "\tNAME\tPROXIES\tUPDATED\tUSAGE\tEXPIRES\tURL")
+				fmt.Fprintln(tw, "\tNAME\tPROXIES\tUPDATED\tEVERY\tUSAGE\tEXPIRES\tURL")
 				for _, v := range views {
 					mark := ""
 					if v.Active {
@@ -131,8 +244,8 @@ func (a *app) newSubListCommand() *cobra.Command {
 					if v.LastError != "" {
 						updated += " (last update failed)"
 					}
-					fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
-						mark, v.Name, v.Summary.Proxies, updated, formatUsage(v.UserInfo), formatExpire(v.UserInfo), v.URL)
+					fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
+						mark, v.Name, v.Summary.Proxies, updated, settings.DescribePeriod(v.Update), formatUsage(v.UserInfo), formatExpire(v.UserInfo), v.URL)
 				}
 				return tw.Flush()
 			})
@@ -174,6 +287,9 @@ func (a *app) newSubRemoveCommand() *cobra.Command {
 					return err
 				}
 				removed = append(removed, name)
+			}
+			if err := a.syncTimers(cmd); err != nil {
+				return err
 			}
 			return a.render(map[string][]string{"removed": removed}, func() error {
 				for _, name := range removed {
@@ -244,7 +360,7 @@ func (a *app) confirmRemove(cmd *cobra.Command, names []string) (bool, error) {
 }
 
 // chooseSubscription 让用户从全部订阅中选一个，光标起始于启用的那个。
-func (a *app) chooseSubscription(cmd *cobra.Command) (string, error) {
+func (a *app) chooseSubscription(cmd *cobra.Command, question string) (string, error) {
 	entries, err := a.subscriptions().List()
 	if err != nil {
 		return "", err
@@ -258,7 +374,7 @@ func (a *app) chooseSubscription(cmd *cobra.Command) (string, error) {
 			initial = i
 		}
 	}
-	i, err := a.prompt.Choose(cmd.Context(), "Use which subscription?", subscriptionOptions(entries), initial)
+	i, err := a.prompt.Choose(cmd.Context(), question, subscriptionOptions(entries), initial)
 	if err != nil {
 		return "", err
 	}
@@ -357,7 +473,7 @@ func (a *app) newSubUseCommand() *cobra.Command {
 					return usageErrorf("sub use needs the name of a subscription (see: tunlr sub list)")
 				}
 				var err error
-				if name, err = a.chooseSubscription(cmd); err != nil {
+				if name, err = a.chooseSubscription(cmd, "Use which subscription?"); err != nil {
 					_, err := a.cancelled(err)
 					return err
 				}

@@ -1,12 +1,12 @@
 # 由 tunlr 生成，tunlr init 时重写；不要直接修改。
+# 每小时唤醒一次，由 tunlr _update 按设置的周期判断哪些更新到期（tunlr update show 查看）。
 [Unit]
-Description=Daily tunlr update
+Description=Run due tunlr updates (hourly check)
 Documentation=https://tunlr.app
 
 [Timer]
-OnCalendar=daily
-RandomizedDelaySec=1h
-Persistent=true
+OnCalendar=hourly
+RandomizedDelaySec=15min
 
 [Install]
 WantedBy=timers.target

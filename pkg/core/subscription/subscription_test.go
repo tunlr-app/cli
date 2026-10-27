@@ -68,7 +68,7 @@ func TestAddListRemove(t *testing.T) {
 	m := newManager(t)
 	ctx := context.Background()
 
-	res, err := m.Add(ctx, "first", p.URL+"/ok?token=secret", "")
+	res, err := m.Add(ctx, "first", p.URL+"/ok?token=secret", AddOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestAddListRemove(t *testing.T) {
 	if ua, _ := p.userAgent.Load().(string); ua != "clash.meta mihomo tunlr/test" {
 		t.Errorf("User-Agent = %q", ua)
 	}
-	res, err = m.Add(ctx, "second", p.URL+"/ok", "custom-agent/1.0")
+	res, err = m.Add(ctx, "second", p.URL+"/ok", AddOptions{UserAgent: "custom-agent/1.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestAddListRemove(t *testing.T) {
 		t.Errorf("summary without counts = %+v", entries[0].Summary)
 	}
 
-	if _, err := m.Add(ctx, "first", p.URL+"/ok", ""); !errors.Is(err, ErrExists) {
+	if _, err := m.Add(ctx, "first", p.URL+"/ok", AddOptions{}); !errors.Is(err, ErrExists) {
 		t.Errorf("duplicate add: err = %v", err)
 	}
 	if err := m.Remove(ctx, "first"); !errors.Is(err, ErrActive) {
@@ -151,7 +151,7 @@ func TestAddRejects(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := m.Add(ctx, tt.subName, tt.url, "")
+			_, err := m.Add(ctx, tt.subName, tt.url, AddOptions{})
 			if err == nil || !tt.check(err) {
 				t.Fatalf("err = %v", err)
 			}
@@ -168,7 +168,7 @@ func TestAddRejects(t *testing.T) {
 func TestFetchErrorHidesToken(t *testing.T) {
 	m := newManager(t)
 	// 端口 1 上通常没有服务，连接会被拒绝；错误信息中不能出现令牌。
-	_, err := m.Add(context.Background(), "a", "http://127.0.0.1:1/sub?token=secret", "")
+	_, err := m.Add(context.Background(), "a", "http://127.0.0.1:1/sub?token=secret", AddOptions{})
 	if err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("err = %v", err)
 	}
@@ -181,7 +181,7 @@ func TestUpdateKeepsLastGood(t *testing.T) {
 	p := newProvider(t)
 	m := newManager(t)
 	ctx := context.Background()
-	if _, err := m.Add(ctx, "a", p.URL+"/ok", ""); err != nil {
+	if _, err := m.Add(ctx, "a", p.URL+"/ok", AddOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(m.Layout.SubscriptionFile("a"))
@@ -242,7 +242,7 @@ func TestUserAgent(t *testing.T) {
 		return st.Find("a").UserAgent
 	}
 
-	if _, err := m.Add(ctx, "a", p.URL+"/ok", ""); err != nil {
+	if _, err := m.Add(ctx, "a", p.URL+"/ok", AddOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(m.Layout.ConfigDir(), 0o755); err != nil {
@@ -284,7 +284,7 @@ func TestUserAgent(t *testing.T) {
 	if err := update(&injected); !errors.Is(err, core.ErrInvalidArgument) {
 		t.Errorf("control characters: err = %v", err)
 	}
-	if _, err := m.Add(ctx, "b", p.URL+"/ok", injected); !errors.Is(err, core.ErrInvalidArgument) {
+	if _, err := m.Add(ctx, "b", p.URL+"/ok", AddOptions{UserAgent: injected}); !errors.Is(err, core.ErrInvalidArgument) {
 		t.Errorf("add with control characters: err = %v", err)
 	}
 }
@@ -294,7 +294,7 @@ func TestUse(t *testing.T) {
 	m := newManager(t)
 	ctx := context.Background()
 	for _, name := range []string{"a", "b"} {
-		if _, err := m.Add(ctx, name, p.URL+"/ok", ""); err != nil {
+		if _, err := m.Add(ctx, name, p.URL+"/ok", AddOptions{}); err != nil {
 			t.Fatal(err)
 		}
 	}

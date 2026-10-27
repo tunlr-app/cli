@@ -14,7 +14,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
 
+	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/setup"
+	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
@@ -24,6 +26,7 @@ const (
 	groupConfiguration = "Configuration"
 	groupTun           = "Transparent proxy"
 	groupService       = "mihomo service"
+	groupUpdates       = "Scheduled updates"
 )
 
 const (
@@ -218,6 +221,12 @@ func (m *menuModel) showAsk(it menuItem) tea.Cmd {
 	m.values = make([]string, len(it.ask))
 	fields := make([]huh.Field, len(it.ask))
 	for i, f := range it.ask {
+		if f.options != nil {
+			m.values[i] = f.initial
+			fields[i] = huh.NewSelect[string]().Title(f.title).Description(f.description).Options(f.options...).
+				Value(&m.values[i]).Height(listHeight(make([]string, len(f.options)), 2))
+			continue
+		}
 		fields[i] = huh.NewInput().Title(f.title).Description(f.description).Validate(f.validate).Value(&m.values[i])
 	}
 	m.adding = &it
@@ -431,6 +440,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 			{label: groupConfiguration, group: groupConfiguration, note: a.describeRevision(s)},
 			{label: groupTun, group: groupTun, note: a.describeTun(s.Tun)},
 			{label: groupService, group: groupService, note: a.describeService(s)},
+			{label: groupUpdates, group: groupUpdates, note: a.describeUpdates(s.Updates)},
 			{label: menuQuit, quit: true},
 		}
 	case groupSubscriptions:
@@ -441,7 +451,10 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 				menuItem{label: "Update subscriptions", args: []string{"sub", "update"}})
 		}
 		items = append(items, menuItem{label: "Add a subscription", ask: subscriptionFields(),
-			build: func(v []string) []string { return []string{"sub", "add", v[0], v[1]} }})
+			build: func(v []string) []string { return []string{"sub", "add", v[0], v[1], "--update", v[2]} }})
+		if len(d.subs) > 0 {
+			items = append(items, menuItem{label: "Change how often one is fetched", args: []string{"sub", "set"}})
+		}
 		if len(d.subs) > 1 {
 			items = append(items, menuItem{label: "Remove subscriptions", args: []string{"sub", "remove"}})
 		}
@@ -473,6 +486,11 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		items = append(items,
 			menuItem{label: "Show recent logs", args: []string{"logs", "-n", "50"}},
 			menuItem{label: "Upgrade mihomo to the latest release", args: []string{"upgrade", "core"}})
+	case groupUpdates:
+		items = append(items,
+			menuItem{label: "Show the schedule", args: []string{"update", "show"}},
+			menuItem{label: "Change the geo data update", args: []string{"update", "set", "geo"}},
+			menuItem{label: "Update everything now", args: []string{"update"}})
 	default:
 		return "", nil
 	}
@@ -514,6 +532,37 @@ func (a *app) describeRevision(s *setup.Status) string {
 	return fmt.Sprintf("revision %d", s.Revision.Number)
 }
 
+// describeUpdates 是定时更新分类右侧的状态，如 "2 subscriptions · geo weekly by tunlr"；最近一次
+// 失败的标红。
+func (a *app) describeUpdates(scheds []setup.Schedule) string {
+	subs, failed := 0, 0
+	geo := ""
+	for _, s := range scheds {
+		if s.Task == setup.TaskGeo {
+			geo = "geo " + settings.DescribePeriod(s.Period)
+			if s.Period != settings.PeriodOff {
+				geo += " by " + s.Updater
+			}
+			if s.Last != nil && s.Last.Status == setup.StepFailed {
+				geo = a.style.bad(geo + " (failed)")
+			}
+			continue
+		}
+		subs++
+		if s.Last != nil && s.Last.Status == setup.StepFailed {
+			failed++
+		}
+	}
+	part := fmt.Sprintf("%d subscriptions", subs)
+	if subs == 1 {
+		part = "1 subscription"
+	}
+	if failed > 0 {
+		part = a.style.bad(fmt.Sprintf("%s (%d failed)", part, failed))
+	}
+	return part + a.style.dim(" · ") + geo
+}
+
 func (a *app) describeService(s *setup.Status) string {
 	if s.Running != "" {
 		return a.style.good("running") + a.style.dim(" · "+s.Running)
@@ -524,11 +573,16 @@ func (a *app) describeService(s *setup.Status) string {
 	return a.style.warn("not running")
 }
 
-// subscriptionFields 是添加订阅时在同一个表单中询问的名称和地址。
+// subscriptionFields 是添加订阅时在同一个表单中询问的名称、地址和自动更新周期。
 func subscriptionFields() []inputField {
+	periods := make([]huh.Option[string], len(periodChoices))
+	for i, p := range periodChoices {
+		periods[i] = huh.NewOption(describePeriod(p), p)
+	}
 	return []inputField{
-		{"Name of the subscription", "e.g. home or work; letters, digits, '.', '_' and '-'", subscription.ValidateName},
-		{"Subscription URL", "The URL your provider gives for Clash/mihomo.", subscription.ValidateURL},
+		{title: "Name of the subscription", description: "e.g. home or work; letters, digits, '.', '_' and '-'", validate: subscription.ValidateName},
+		{title: "Subscription URL", description: "The URL your provider gives for Clash/mihomo.", validate: subscription.ValidateURL},
+		{title: "Fetch it again how often?", description: "Change later with tunlr sub set.", options: periods, initial: state.DefaultUpdate},
 	}
 }
 

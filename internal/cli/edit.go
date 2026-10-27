@@ -40,6 +40,9 @@ type prompter interface {
 type inputField struct {
 	title, description string
 	validate           func(string) error
+	// options 不为空时是从中选一个（值为选项的值），initial 是起始的选项；否则是输入文字。
+	options []huh.Option[string]
+	initial string
 }
 
 type huhPrompter struct{ a *app }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"time"
 
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
@@ -26,8 +25,8 @@ type Status struct {
 	Subscription string `json:"subscription,omitempty"`
 	// Revision 是与生效配置一致的历史修订，没有发布过或手工改过时为 nil。
 	Revision *config.Revision `json:"revision,omitempty"`
-	// NextUpdate 是下次定时更新的时间。
-	NextUpdate time.Time `json:"next_update,omitzero"`
+	// Updates 是各定时更新任务的周期和执行情况。
+	Updates []Schedule `json:"updates"`
 	// Tun 是透明代理的状态。
 	Tun *TunStatus `json:"tun"`
 }
@@ -42,9 +41,6 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 			return nil, err
 		}
 		s.Service = &st
-		if v, err := sd.Property(ctx, service.UpdateTimer, "NextElapseUSecRealtime"); err == nil {
-			s.NextUpdate = parseTimestamp(v)
-		}
 	}
 	if v, err := mihomo.NewClient(i.Layout.CoreSocket()).Version(ctx); err == nil {
 		s.Running = v
@@ -70,19 +66,11 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 			break
 		}
 	}
+	if s.Updates, err = i.Schedules(); err != nil {
+		return nil, err
+	}
 	if s.Tun, err = i.TunStatus(ctx); err != nil {
 		return nil, err
 	}
 	return s, nil
-}
-
-// parseTimestamp 解析 systemctl show 的时间，例如 "Tue 2026-10-27 00:34:57 CST"。时区缩写是本机
-// 时区的（systemd 252 的 show 不理会 --timestamp=utc），按 time.Local 解析即得到正确的偏移。
-// 无法解析时（如 timer 尚未排期）返回零值。
-func parseTimestamp(v string) time.Time {
-	t, err := time.ParseInLocation("Mon 2006-01-02 15:04:05 MST", v, time.Local)
-	if err != nil {
-		return time.Time{}
-	}
-	return t
 }

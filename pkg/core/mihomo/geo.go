@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/download"
@@ -166,6 +167,29 @@ func EnsureHome(home string, owner *fsutil.Owner) error {
 		return err
 	}
 	return owner.Chown(home)
+}
+
+// GeoModTime 返回 home 中 files 里最新的那个 geo 文件的修改时间，一个都没有时返回零值。
+// 内核自己更新 geo 数据时不报告结果，只能由文件的修改时间知道它最近一次更新。
+func GeoModTime(home string, files []GeoFile) (time.Time, error) {
+	var newest time.Time
+	for _, f := range files {
+		path, err := findGeo(home, f)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if path == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+	}
+	return newest, nil
 }
 
 // findGeo 按内核的规则（文件名不区分大小写，含别名）在 dir 中查找 f，返回其路径；不存在时返回空串。

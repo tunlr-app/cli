@@ -8,7 +8,7 @@ stdout '"data": \[\]'
 cp airport.yaml provider/airport.yaml
 cp airport.yaml.userinfo provider/airport.yaml.userinfo
 exec tunlr sub add main $PROVIDER/airport.yaml?token=secret-token
-stdout '^Added subscription "main": 2 proxies, 1 groups, 2 rules\.$'
+stdout '^Added subscription "main": 2 proxies, 1 groups, 2 rules; fetched again daily\.$'
 stdout '"main" is now the active subscription'
 grep '^clash\.meta mihomo tunlr/v0\.0\.0-test$' provider/.last-ua
 
@@ -19,7 +19,7 @@ grep '^custom/1\.0$' provider/.last-ua
 
 # 列表：启用标记、流量、到期时间；URL 缩写，不泄露令牌
 exec tunlr sub list
-stdout '^\*\s+main\s+2\s+\S+ \S+\s+1\.0 GiB / 100\.0 GiB\s+2027-01-01\s+http://127\.0\.0\.1:\d+/\.\.\.$'
+stdout '^\*\s+main\s+2\s+\S+ \S+\s+daily\s+1\.0 GiB / 100\.0 GiB\s+2027-01-01\s+http://127\.0\.0\.1:\d+/\.\.\.$'
 stdout '^\s+backup\s+2\s+'
 ! stdout 'secret-token'
 exec tunlr sub list --json

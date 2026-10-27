@@ -23,7 +23,7 @@ func TestInitSteps(t *testing.T) {
 		"Copy tunlr to " + l.ToolBinary(),
 		"Download from GitHub through https://gh-proxy.com/",
 		"Install mihomo (latest release)",
-		"Install and enable tunlr-core.service",
+		"Install and enable tunlr-core.service and tunlr-update.timer (geo data weekly by tunlr; subscriptions daily unless set otherwise)",
 		`Add the subscription "home"`,
 		`Publish the configuration from "home"`,
 		"Start mihomo",

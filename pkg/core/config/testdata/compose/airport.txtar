@@ -137,8 +137,9 @@ profile:
   store-selected: true
   store-fake-ip: true
 
-# geo 数据由 tunlr 每天的定时更新让内核下载，再按官方 sha256 核对。
-# 内核自己的定时更新下载后不做校验，因此关闭。
+# geo 数据的自动更新由 tunlr 的设置决定（tunlr update set geo），mixin 改不了：
+# 默认由 tunlr 按周期让内核下载、再按官方 sha256 核对；也可以交给内核自己按
+# geo-update-interval 更新（不校验）。
 geo-auto-update: false
 
 # geo 数据的下载地址。设置了 github-mirror 时由 tunlr 改为经镜像下载。

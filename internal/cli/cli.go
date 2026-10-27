@@ -189,6 +189,7 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.newUninstallCommand(),
 		a.newRescueCommand(),
 		a.newUpdateCommand(),
+		a.newInternalUpdateCommand(),
 		a.withFullDiff(a.newPlanCommand()),
 		a.withFullDiff(a.newApplyCommand()),
 		a.withFullDiff(a.newRollbackCommand()),

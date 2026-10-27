@@ -76,16 +76,26 @@ type UpdateOptions struct {
 	UserAgent *string
 }
 
-// Add 抓取并保存一个新订阅。抓取或检查失败时什么都不保存。
-// 这是第一个订阅时自动启用它。userAgent 为空时使用默认值（见 userAgent）。
-func (m *Manager) Add(ctx context.Context, name, rawURL, userAgent string) (*Fetched, error) {
+// AddOptions 是新订阅的设置。
+type AddOptions struct {
+	// UserAgent 为空时使用默认值（见 userAgent）。
+	UserAgent string
+	// Update 是自动更新的周期（见 settings.ParsePeriod），为空时为 state.DefaultUpdate。
+	Update string
+}
+
+// Add 抓取并保存一个新订阅。抓取或检查失败时什么都不保存。这是第一个订阅时自动启用它。
+func (m *Manager) Add(ctx context.Context, name, rawURL string, opts AddOptions) (*Fetched, error) {
 	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
 	if err := ValidateURL(rawURL); err != nil {
 		return nil, err
 	}
-	if err := settings.ValidateUserAgent(userAgent); err != nil {
+	if err := settings.ValidateUserAgent(opts.UserAgent); err != nil {
+		return nil, err
+	}
+	if err := validatePeriod(opts.Update); err != nil {
 		return nil, err
 	}
 	l, err := m.lock(ctx)
@@ -101,7 +111,7 @@ func (m *Manager) Add(ctx context.Context, name, rawURL, userAgent string) (*Fet
 	if st.Find(name) != nil {
 		return nil, fmt.Errorf("%w: %s", ErrExists, name)
 	}
-	sub := state.Subscription{Name: name, URL: rawURL, UserAgent: userAgent, AddedAt: m.now().UTC()}
+	sub := state.Subscription{Name: name, URL: rawURL, UserAgent: opts.UserAgent, Update: opts.Update, AddedAt: m.now().UTC()}
 	sum, err := m.fetchAndStore(ctx, &sub)
 	if err != nil {
 		return nil, err
@@ -138,6 +148,59 @@ func (m *Manager) List() ([]Entry, error) {
 		entries = append(entries, e)
 	}
 	return entries, nil
+}
+
+// Set 修改订阅的自动更新周期（period 为空时恢复默认值）。
+func (m *Manager) Set(ctx context.Context, name, period string) error {
+	if err := validatePeriod(period); err != nil {
+		return err
+	}
+	l, err := m.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer l.Release()
+
+	st, err := m.loadExisting()
+	if err != nil {
+		return err
+	}
+	s := st.Find(name)
+	if s == nil {
+		return fmt.Errorf("%w: %s", ErrNotFound, name)
+	}
+	s.Update = period
+	return state.Save(m.Layout.StateFile(), st)
+}
+
+// validatePeriod 检查订阅的自动更新周期，空字符串（默认值）也合法。
+func validatePeriod(period string) error {
+	if period == "" {
+		return nil
+	}
+	_, err := settings.ParsePeriod(period)
+	return err
+}
+
+// retryAfter 是抓取失败后再次尝试的最长间隔：失败不必等满一个周期。
+const retryAfter = 6 * time.Hour
+
+// NextUpdate 返回订阅下次自动更新的时间：上次抓取（成功或失败，取较晚者；从未抓取过时为添加时间）
+// 之后再过一个周期，上次失败时最多再过 retryAfter。不自动更新时返回零值。
+func NextUpdate(s *state.Subscription) time.Time {
+	d, err := settings.ParsePeriod(s.UpdatePeriod())
+	if err != nil || d == 0 {
+		return time.Time{}
+	}
+	last := s.FetchedAt
+	if s.LastErrorAt.After(last) {
+		last = s.LastErrorAt
+		d = min(d, retryAfter)
+	}
+	if last.IsZero() {
+		last = s.AddedAt
+	}
+	return last.Add(d)
 }
 
 // Remove 删除一个订阅及其内容。不能删除正在启用的订阅。

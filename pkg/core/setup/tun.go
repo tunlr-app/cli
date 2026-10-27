@@ -131,6 +131,10 @@ func (i *Installer) TunOn(ctx context.Context, plan *pipeline.Plan, opts TunOpti
 	progress(fmt.Sprintf("Arming the rollback timer (TUN is turned off in %s unless the checks pass)", GuardTimeout))
 	err = sd.ArmGuard(ctx, GuardTimeout)
 	if err == nil {
+		// 规则被清空的检查随开关启用；开启失败、开关回到关闭后由 _check 停用自己。
+		err = sd.SetTimer(ctx, service.CheckTimer, true)
+	}
+	if err == nil {
 		// 通常 _prestart 已经加载过；内核服务由旧版 unit 启动时还没有。在开启 TUN 之前加载，
 		// 已经建立的连接（如这个 SSH 会话）在对方发来下一个包时就会标记，回包不进 TUN。
 		err = i.rules().Up(ctx)
@@ -218,6 +222,10 @@ func (i *Installer) TunOff(ctx context.Context, plan *pipeline.Plan) (*TunResult
 		return nil, errors.Join(err, state.Save(i.Layout.StateFile(), st))
 	}
 	i.systemd().DisarmGuard(ctx)
+	if err := i.systemd().SetTimer(ctx, service.CheckTimer, false); err != nil {
+		// TUN 已经关闭；停用失败时 _check 下次执行时会停用自己。
+		i.log().Warn("stop "+service.CheckTimer, "err", err)
+	}
 	res := &TunResult{}
 	if applied != nil {
 		res.Revision = applied.Revision
@@ -320,6 +328,9 @@ type CheckResult struct {
 // Check 是 tunlr-check.timer 每 5 分钟执行的 _check：内核在运行而工具的表不见了时重新加载；内核开着
 // TUN 而它的表不见了（例如重新加载 nftables.service 时 flush ruleset）时重启内核，由内核重建；开关为
 // pending 且已过期限一分钟以上（回滚定时器没有生效）时关闭 TUN。
+//
+// 这些都是透明代理的事：tunlr-check.timer 随开关启停（tun on 启用，tun off 停用）。开关已经关闭时
+// （如回滚定时器或 _prestart 关闭了 TUN）停用自己。面板临时打开的 TUN 不在保护范围内。
 func (i *Installer) Check(ctx context.Context) (*CheckResult, error) {
 	res := &CheckResult{}
 	st, err := state.Load(i.Layout.StateFile())
@@ -331,6 +342,14 @@ func (i *Installer) Check(ctx context.Context) (*CheckResult, error) {
 			return res, err
 		}
 		res.Actions = append(res.Actions, "turned off the TUN that was never confirmed")
+		st.SetTun("", time.Time{})
+	}
+	if st == nil || !st.TunEnabled() {
+		if err := i.systemd().SetTimer(ctx, service.CheckTimer, false); err != nil {
+			return res, err
+		}
+		res.Actions = append(res.Actions, "stopped "+service.CheckTimer+": the transparent proxy is off")
+		return res, nil
 	}
 
 	status, err := i.systemd().Status(ctx, service.CoreUnit)

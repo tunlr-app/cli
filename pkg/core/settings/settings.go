@@ -4,6 +4,7 @@ package settings
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
@@ -32,6 +35,86 @@ type Settings struct {
 	// UserAgent 是抓取订阅时默认使用的 User-Agent，单个订阅设置了自己的 User-Agent 时以订阅为准。
 	// 为空时使用内置默认值。
 	UserAgent string `yaml:"user-agent,omitempty"`
+	// GeoUpdate 是自动更新 geo 数据的周期，如 "6h"、"1d"、"7d"，"off" 为不自动更新；为空时使用默认值。
+	// 见 ParsePeriod。订阅的更新周期是每个订阅自己的属性，在状态文件中。
+	GeoUpdate string `yaml:"geo-update,omitempty"`
+	// GeoUpdater 是谁来更新 geo 数据：GeoUpdaterTunlr 由 tunlr 按周期让内核下载后按官方 sha256 核对；
+	// GeoUpdaterMihomo 由内核自己按周期下载（geo-auto-update），不校验、不重启。为空时为 tunlr。
+	GeoUpdater string `yaml:"geo-updater,omitempty"`
+}
+
+// geo 数据更新的设置键和默认值。geo 数据上游每周更新一次，每天拉取没有意义。
+const (
+	KeyGeoUpdate      = "geo-update"
+	KeyGeoUpdater     = "geo-updater"
+	DefaultGeoUpdate  = "7d"
+	GeoUpdaterTunlr   = "tunlr"
+	GeoUpdaterMihomo  = "mihomo"
+	DefaultGeoUpdater = GeoUpdaterTunlr
+)
+
+// ValidateGeoUpdater 检查 geo 更新方式的设置值。
+func ValidateGeoUpdater(v string) error {
+	if v != GeoUpdaterTunlr && v != GeoUpdaterMihomo {
+		return fmt.Errorf("%w: geo-updater must be %s or %s", core.ErrInvalidArgument, GeoUpdaterTunlr, GeoUpdaterMihomo)
+	}
+	return nil
+}
+
+// PeriodOff 表示不定时更新。
+const PeriodOff = "off"
+
+// maxPeriod 是更新周期的上限，防止写错单位（如把小时写成天）后几乎永不更新而不自知。
+const maxPeriod = 365 * 24 * time.Hour
+
+// ParsePeriod 解析更新周期：正整数加单位 h（小时）或 d（天），至少 1 小时，最多 365 天；"off" 返回 0。
+func ParsePeriod(s string) (time.Duration, error) {
+	if s == PeriodOff {
+		return 0, nil
+	}
+	if len(s) >= 2 {
+		n, err := strconv.Atoi(s[:len(s)-1])
+		unit := map[byte]time.Duration{'h': time.Hour, 'd': 24 * time.Hour}[s[len(s)-1]]
+		if err == nil && n >= 1 && unit != 0 && s[0] != '+' && time.Duration(n) <= maxPeriod/unit {
+			return time.Duration(n) * unit, nil
+		}
+	}
+	return 0, fmt.Errorf("%w: invalid update period %q: use a number of hours or days such as 6h, 1d or 7d (at most 365d), or off", core.ErrInvalidArgument, s)
+}
+
+// DescribePeriod 把周期设置写成给人看的说法，如 "every 6 hours"、"daily"、"weekly"、"never"。
+func DescribePeriod(p string) string {
+	d, err := ParsePeriod(p)
+	switch {
+	case err != nil:
+		return p
+	case d == 0:
+		return "never"
+	case d == time.Hour:
+		return "hourly"
+	case d == 24*time.Hour:
+		return "daily"
+	case d == 7*24*time.Hour:
+		return "weekly"
+	case p[len(p)-1] == 'h':
+		return "every " + p[:len(p)-1] + " hours"
+	}
+	return "every " + p[:len(p)-1] + " days"
+}
+
+// GeoPeriod 返回 geo 数据的更新周期设置，GeoUpdaterValue 返回更新方式（没有设置时为默认值）。
+func (s *Settings) GeoPeriod() string { return cmp.Or(s.GeoUpdate, DefaultGeoUpdate) }
+
+func (s *Settings) GeoUpdaterValue() string { return cmp.Or(s.GeoUpdater, DefaultGeoUpdater) }
+
+// GeoAutoUpdate 返回按设置写入配置的 geo-auto-update 和 geo-update-interval（小时）：由内核自己更新且
+// 没有关闭时打开，间隔为周期；否则关闭，间隔为 0 表示不写。
+func (s *Settings) GeoAutoUpdate() (on bool, intervalHours int) {
+	d, err := ParsePeriod(s.GeoPeriod())
+	if err != nil || d == 0 || s.GeoUpdaterValue() != GeoUpdaterMihomo {
+		return false, 0
+	}
+	return true, int(d / time.Hour)
 }
 
 // Load 读取设置文件。文件不存在时返回默认设置；未知的键视为错误，避免拼写错误被静默忽略。
@@ -73,6 +156,12 @@ func (s *Settings) validate() error {
 	if err := ValidateUserAgent(s.UserAgent); err != nil {
 		return fmt.Errorf("user-agent: %w", err)
 	}
+	if _, err := ParsePeriod(s.GeoPeriod()); err != nil {
+		return fmt.Errorf("%s: %w", KeyGeoUpdate, err)
+	}
+	if err := ValidateGeoUpdater(s.GeoUpdaterValue()); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -94,6 +183,8 @@ func Set(path, key, value string) error {
 	if m.Kind != yaml.MappingNode {
 		return fmt.Errorf("settings %s: not a mapping", path)
 	}
+	// 删光键后文件是 "{}"，再读回来是流式写法；总是按块写法写出，一行一个键。
+	m.Style = 0
 	found := false
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		if m.Content[i].Value != key {

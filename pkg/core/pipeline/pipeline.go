@@ -234,7 +234,7 @@ func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin, tun *bool) (*
 		Subscription: sub,
 		Generated:    generated,
 		Mixins:       mixins,
-		Enforced:     enforcedLayer(tunOn),
+		Enforced:     enforcedLayer(tunOn, set),
 	})
 	if err != nil {
 		return nil, err
@@ -258,8 +258,12 @@ func (p *Pipeline) PlanEnforce(ctx context.Context) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	set, err := settings.Load(p.Layout.SettingsFile())
+	if err != nil {
+		return nil, err
+	}
 	plan := &Plan{Kind: KindApply, Subscription: st.Active}
-	if plan.Config, plan.facts, err = config.Enforce(current, enforcedLayer(st.TunEnabled())); err != nil {
+	if plan.Config, plan.facts, err = config.Enforce(current, enforcedLayer(st.TunEnabled(), set)); err != nil {
 		return nil, fmt.Errorf("the published configuration: %w", err)
 	}
 	if err := p.finish(ctx, plan); err != nil {
@@ -303,7 +307,11 @@ func (p *Pipeline) PlanRollback(ctx context.Context, n int) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, facts, err := config.Enforce(data, enforcedLayer(st.TunEnabled()))
+	set, err := settings.Load(p.Layout.SettingsFile())
+	if err != nil {
+		return nil, err
+	}
+	data, facts, err := config.Enforce(data, enforcedLayer(st.TunEnabled(), set))
 	if err != nil {
 		return nil, fmt.Errorf("revision %d: %w", n, err)
 	}
@@ -678,9 +686,16 @@ func mirrorRules(mirror string) []string {
 
 // enforcedLayer 生成强制项：工具运行所依赖、mixin 不能覆盖的键。tun 段中除 enable 取自透明代理
 // 开关外都是固定值，工具补充的规则、清理和检测依赖它们；面板临时打开 TUN 时也按这些值工作。
-func enforcedLayer(tun bool) []byte {
+// geo 数据的自动更新由工具设置决定（tunlr update set geo），只有一个旋钮：由内核自己更新时才写
+// geo-auto-update: true 和间隔，否则关闭它，由 tunlr 按周期更新并校验。
+func enforcedLayer(tun bool, set *settings.Settings) []byte {
+	geoAuto, geoHours := set.GeoAutoUpdate()
+	geo := fmt.Sprintf("geo-auto-update: %t\n", geoAuto)
+	if geoAuto {
+		geo += fmt.Sprintf("geo-update-interval: %d\n", geoHours)
+	}
 	return fmt.Appendf(nil, `external-controller-unix: %s
-tun:
+%stun:
   enable: %t
   auto-route: true
   auto-redirect: true
@@ -688,7 +703,7 @@ tun:
   device: %s
   iproute2-table-index: %d
   iproute2-rule-index: %d
-`, paths.CoreSocketName, tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex)
+`, paths.CoreSocketName, geo, tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex)
 }
 
 // newSecret 生成 32 个十六进制字符的随机 secret。

@@ -1,0 +1,106 @@
+# 还没有订阅：只有 geo 数据，默认每周由 tunlr 更新，从现在起算
+exec tunlr update show
+stdout '^geo \(by tunlr\)\s+weekly \(7d\)\s+never\s+'
+! stdout '^sub '
+exec tunlr update show --json
+stdout '"updater": "tunlr"'
+
+# 订阅各有自己的周期：非交互时默认每天，--update 指定；sub list 和 update show 都显示
+cp airport.yaml provider/airport.yaml
+exec tunlr sub add main $PROVIDER/airport.yaml
+stdout 'fetched again daily'
+exec tunlr sub add spare $PROVIDER/airport.yaml --update off
+stdout 'not fetched again automatically'
+exec tunlr sub list
+stdout '^\*\s+main\s+2\s+\S+ \S+\s+daily\s+'
+stdout '^\s+spare\s+2\s+\S+ \S+\s+never\s+'
+exec tunlr sub list --json
+stdout '"update": "off"'
+exec tunlr update show
+stdout '^sub main \*\s+daily \(1d\)\s+\S+ \S+ ok\s+\S+ \S+$'
+stdout '^sub spare\s+never \(off\)\s+\S+ \S+ ok\s+-$'
+exec tunlr status
+stdout '^Updates:\s+sub main daily, last ok '
+stdout '^\s+sub spare never$'
+stdout '^\s+geo weekly by tunlr, not run yet$'
+
+# sub set 改周期，保存在状态文件中；default 恢复默认值
+exec tunlr sub set main --update 6h
+stdout '^"main" is fetched again every 6 hours\.$'
+grep '"update": "6h"' root/var/lib/tunlr/state.json
+exec tunlr sub set main --update default
+! grep '"update": "6h"' root/var/lib/tunlr/state.json
+exec tunlr sub set spare --update 1d
+exec tunlr sub set spare --update off
+stdout 'no longer fetched automatically'
+exitcode 2 tunlr sub set main --update 2w
+stderr 'invalid update period "2w"'
+exitcode 2 tunlr sub set main
+stderr 'sub set needs the name'
+exitcode 1 tunlr sub set nope --update off
+stderr 'subscription not found: nope'
+
+# geo 数据的周期保存在设置文件中；由 tunlr 更新时不涉及配置
+exec tunlr update set geo 1d
+stdout '^The geo data is updated daily by tunlr; next due '
+grep '^geo-update: 1d$' root/etc/tunlr/settings.yaml
+exec tunlr update set geo off
+stdout 'no longer updated automatically'
+exec tunlr update show
+stdout '^geo \(by tunlr\)\s+never \(off\)\s+never\s+-$'
+exec tunlr update set geo default
+! grep 'geo-update' root/etc/tunlr/settings.yaml
+
+# 交给内核自己更新要改配置：非交互时需要 --yes；发布后配置中打开 geo-auto-update
+install-mihomo
+exec tunlr apply --yes
+exitcode 2 tunlr update set geo --by mihomo
+stderr 'update set geo needs confirmation; pass --yes'
+! grep 'geo-updater' root/etc/tunlr/settings.yaml
+exec tunlr update set geo 2d --by mihomo --yes
+stdout 'The geo data is updated every 2 days by mihomo itself'
+stdout '^-geo-auto-update: false$'
+stdout '^\+geo-auto-update: true$'
+stdout '^\+geo-update-interval: 48$'
+stdout 'Published revision'
+grep '^geo-updater: mihomo$' root/etc/tunlr/settings.yaml
+grep '^geo-auto-update: true$' root/var/lib/tunlr/core/config.yaml
+exec tunlr update show
+stdout '^geo \(by mihomo\)\s+every 2 days \(2d\)\s+never\s+mihomo$'
+exec tunlr status
+stdout '^\s+geo every 2 days by mihomo, not run yet$'
+
+# 换回 tunlr 同样要发布
+exec tunlr update set geo --by default --yes
+stdout '^\+geo-auto-update: false$'
+grep '^geo-auto-update: false$' root/var/lib/tunlr/core/config.yaml
+! grep 'geo-updater' root/etc/tunlr/settings.yaml
+
+# 用法错误：非法周期或方式、订阅的周期不在这里设、非交互时省略参数、--dry-run
+exitcode 2 tunlr update set geo 2w
+stderr 'invalid update period "2w"'
+exitcode 2 tunlr update set sub 1d
+stderr 'tunlr sub set'
+exitcode 2 tunlr update set geo --by clash
+stderr 'geo-updater must be tunlr or mihomo'
+exitcode 2 tunlr update set
+stderr 'update set needs the period or --by'
+exitcode 2 tunlr update set geo 1d --dry-run
+stderr 'does not support --dry-run'
+exitcode 2 tunlr update bogus
+stderr 'unknown update "bogus"'
+exitcode 2 tunlr update --dry-run
+stderr 'does not support --dry-run'
+
+# 刚抓取的订阅和从安装起算的 geo 数据都没有到期：_update 什么都不输出
+exec tunlr _update
+! stdout .
+
+-- airport.yaml --
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: b, type: ss, server: b.example.net, port: 2, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: g, type: select, proxies: [a, b]}
+rules:
+  - MATCH,g

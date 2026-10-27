@@ -266,8 +266,13 @@ func TestMenuAddSubscription(t *testing.T) {
 	for range len("../bad") {
 		mt.send(tea.KeyPressMsg{Code: tea.KeyBackspace})
 	}
+	// 周期从列表中选，光标起始于每天；选每周。
 	mt.keys("home", "enter", "https://example.net/sub?token=secret", "enter")
-	if mt.commands() != "sub add home https://example.net/sub?token=secret" {
+	if mt.m.adding == nil || len(mt.ran) != 0 {
+		t.Fatalf("submitted without the period: ran %q", mt.ran)
+	}
+	mt.keys("down", "enter")
+	if mt.commands() != "sub add home https://example.net/sub?token=secret --update 7d" {
 		t.Fatalf("ran %q", mt.ran)
 	}
 	if mt.m.adding != nil || mt.hovered() != "Add a subscription" {
@@ -344,8 +349,9 @@ func TestMenuItems(t *testing.T) {
 	}
 
 	for group, want := range map[string]string{
-		"":                 "tunlr: Show status|Subscriptions|Configuration|Transparent proxy|mihomo service|Quit",
-		groupSubscriptions: "tunlr › Subscriptions: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|Remove subscriptions|← Back",
+		"":                 "tunlr: Show status|Subscriptions|Configuration|Transparent proxy|mihomo service|Scheduled updates|Quit",
+		groupUpdates:       "tunlr › Scheduled updates: Show the schedule|Change the geo data update|Update everything now|← Back",
+		groupSubscriptions: "tunlr › Subscriptions: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|Change how often one is fetched|Remove subscriptions|← Back",
 		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|Roll back|List revisions|← Back",
 		groupTun:           "tunlr › Transparent proxy: Turn TUN off|Show details|← Back",
 		groupService:       "tunlr › mihomo service: Restart mihomo|Stop mihomo|Show recent logs|Upgrade mihomo to the latest release|← Back",
@@ -360,7 +366,7 @@ func TestMenuItems(t *testing.T) {
 	}
 
 	for group, want := range map[string]string{
-		groupSubscriptions: "tunlr › Subscriptions: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|← Back",
+		groupSubscriptions: "tunlr › Subscriptions: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|Change how often one is fetched|← Back",
 		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|← Back",
 		groupTun:           "tunlr › Transparent proxy: Turn TUN on|Show details|← Back",
 		groupService:       "tunlr › mihomo service: Start mihomo|Show recent logs|Upgrade mihomo to the latest release|← Back",

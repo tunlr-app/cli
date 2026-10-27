@@ -36,11 +36,11 @@ func (a *app) newInitCommand() *cobra.Command {
 	var mirror, sub, version string
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Install or repair tunlr: kernel, systemd service and daily update",
+		Short: "Install or repair tunlr: kernel, systemd service and scheduled updates",
 		Long: "Set up this server: copy tunlr to /usr/local/bin, create the user tunlr that runs\n" +
 			"mihomo, install the latest mihomo release (checksum verified), install and enable\n" +
-			"tunlr-core.service and the daily tunlr-update.timer, add a subscription, publish the\n" +
-			"configuration and start mihomo. Running it again repairs the installation.\n\n" +
+			"tunlr-core.service and tunlr-update.timer (see: tunlr update show), add a subscription,\n" +
+			"publish the configuration and start mihomo. Running it again repairs the installation.\n\n" +
 			"Interactively it asks for a GitHub mirror and a subscription (both optional);\n" +
 			"otherwise pass --mirror and --sub <name>=<url>.",
 		Args: usageArgs(cobra.NoArgs),
@@ -352,8 +352,12 @@ func (a *app) printStatus(s *setup.Status) {
 	if s.Revision != nil {
 		fmt.Fprintf(w, "Configuration: revision %d, published %s\n", s.Revision.Number, s.Revision.CreatedAt.Local().Format(time.DateTime))
 	}
-	if !s.NextUpdate.IsZero() {
-		fmt.Fprintf(w, "Next update:   %s\n", s.NextUpdate.Local().Format(time.DateTime))
+	for i, u := range s.Updates {
+		label := "Updates:"
+		if i > 0 {
+			label = ""
+		}
+		fmt.Fprintf(w, "%-15s%s\n", label, a.describeSchedule(u))
 	}
 	if s.Tun != nil {
 		fmt.Fprintf(w, "TUN:           %s\n", a.describeTun(s.Tun))
@@ -544,31 +548,6 @@ func (a *app) newRescueCommand() *cobra.Command {
 				_, err := fmt.Fprintf(a.stdout, "Switched back to the known-good mihomo %s; it is running again.\n", res.To)
 				return err
 			})
-		},
-	}
-}
-
-// newUpdateCommand 是 tunlr-update.service 每天执行的内部命令。
-func (a *app) newUpdateCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:    "_update",
-		Hidden: true,
-		Args:   usageArgs(cobra.NoArgs),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			res, err := a.installer().Update(cmd.Context())
-			if res == nil {
-				return err
-			}
-			rerr := a.render(res, func() error {
-				for _, s := range res.Steps {
-					a.printCheck(s.Status, s.Name, 13, s.Message)
-				}
-				return nil
-			})
-			if err != nil {
-				return renderedError{err}
-			}
-			return rerr
 		},
 	}
 }
