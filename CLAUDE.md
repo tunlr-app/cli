@@ -13,7 +13,11 @@
 
 - 语言：Go。产物是一个 `CGO_ENABLED=0` 的静态二进制，模板用 `go:embed` 打包。
 - **不要 import mihomo 的任何 Go 包**。只通过 REST API 与独立运行的 mihomo 进程交互，配置结构只定义自己需要的字段。这保证本项目不受 mihomo 的 GPL-3.0 约束。
-- **不做全屏 TUI**。交互只用 `huh`（问答表单）和 `lipgloss`（美化输出），不直接写 Bubble Tea 的 Model/Update/View。
+- **不做全屏 TUI**：不进入终端的备用屏幕（alternate screen），所有输出都留在终端的滚动记录里。
+  - 允许在 `internal/cli` 写 Bubble Tea 模型，但只用于展示与交互（菜单外壳、进度视图等）；业务逻辑仍全部在 `pkg/core`。
+  - 提问优先用 `huh` 的现成字段，huh 满足不了时才自己写组件；输出样式用 `lipgloss`。
+  - 每个交互功能都有等价的命令行参数，非交互模式与 `--json` 不受影响。
+  - 不做 zashboard 已有的实时视图（流量、连接、日志跟随、切节点）。
 - **不做常驻守护进程**。常驻的只有 mihomo 内核；定时任务、救援、回滚全部交给 systemd。
 - 只支持：使用 systemd 的 Linux（Debian 12+、Ubuntu 22.04+ 等）、amd64 与 arm64、nftables、root 运行工具。不支持 OpenRC/procd/路由器固件/WSL、iptables、sing-box 及其他内核。环境不满足时由 `doctor` 明确拒绝，不做兜底兼容。
 - 不做 zashboard 已有的功能。例外：Linux 侧必须由工具负责的事项（如 TUN 的持久化开关）。
@@ -25,7 +29,7 @@
 | 用途 | 选型 |
 |---|---|
 | CLI | `spf13/cobra` |
-| 交互与输出 | `huh`、`lipgloss` |
+| 交互与输出 | `huh`、`lipgloss`；需要时用 Bubble Tea 与 `bubbles` 写内联（非全屏）的界面 |
 | YAML | `go.yaml.in/yaml/v3`（不要用已归档的 `gopkg.in/yaml.v3`），基于 `yaml.Node` 合并以保留键顺序与注释 |
 | diff | `sergi/go-diff` |
 | 内核 API | 标准库 `net/http`，经 Unix socket（`external-controller-unix`）连接 |

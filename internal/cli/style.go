@@ -79,16 +79,6 @@ func (a *app) downloadProgress(name string, done, total int64) {
 	}
 }
 
-// clearScreen 清屏，但不丢掉之前的输出：先把光标移到最后一行，输出一屏换行把屏幕上的内容
-// 全部推进回滚缓冲区，再回到左上角，往上翻仍看得到。标准输出不是终端时什么都不做。
-func (a *app) clearScreen() {
-	rows := a.rows()
-	if rows == 0 {
-		return
-	}
-	fmt.Fprintf(a.stdout, "\x1b[%d;1H%s\x1b[H", rows, strings.Repeat("\n", rows))
-}
-
 // page 输出 text。在终端里交互时超过一屏的内容交给分页器（像 git 一样）：$PAGER，默认 less；
 // 没有设置 LESS 时用 FRX：不足一屏直接输出，保留颜色，退出后内容留在屏幕上。
 // 分页器无法运行时直接输出。atEnd 时 less 从末尾开始显示（日志最新的在最后）。

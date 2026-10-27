@@ -32,15 +32,11 @@ type prompter interface {
 	ChooseMany(ctx context.Context, title string, options []string) ([]int, error)
 	// Input 让用户输入一行文字，description 是标题下的说明，validate 不通过时要求重新输入。
 	Input(ctx context.Context, title, description string, validate func(string) error) (string, error)
-	// Inputs 在同一个表单中依次询问 fields，用户可以用 Shift-Tab 回到前一项修改。
-	Inputs(ctx context.Context, fields []inputField) ([]string, error)
 	// Confirm 问一个是非题，description 是问题下的说明，可以为空。
 	Confirm(ctx context.Context, title, description string) (bool, error)
-	// Pause 显示 title 和按钮 button，等用户按回车（或 Esc）后返回。
-	Pause(ctx context.Context, title, button string) error
 }
 
-// inputField 是 Inputs 中的一项。
+// inputField 是表单中的一项输入（见主菜单的 menuItem.ask）。
 type inputField struct {
 	title, description string
 	validate           func(string) error
@@ -89,28 +85,10 @@ func (p huhPrompter) Input(ctx context.Context, title, description string, valid
 	return v, err
 }
 
-func (p huhPrompter) Inputs(ctx context.Context, fields []inputField) ([]string, error) {
-	v := make([]string, len(fields))
-	hf := make([]huh.Field, len(fields))
-	for i, f := range fields {
-		hf[i] = huh.NewInput().Title(f.title).Description(f.description).Validate(f.validate).Value(&v[i])
-	}
-	err := p.run(ctx, hf...)
-	return v, err
-}
-
 func (p huhPrompter) Confirm(ctx context.Context, title, description string) (bool, error) {
 	ok := false
 	err := p.run(ctx, huh.NewConfirm().Title(title).Description(description).Value(&ok))
 	return ok, err
-}
-
-func (p huhPrompter) Pause(ctx context.Context, title, button string) error {
-	err := p.runList(ctx, huh.NewNote().Title(title).Next(true).NextLabel(button))
-	if errors.Is(err, huh.ErrUserAborted) {
-		return nil
-	}
-	return err
 }
 
 // run 运行只有一组字段的表单。用 ThemeBase16：跟随终端的 16 色，与其余输出一致。
@@ -118,7 +96,7 @@ func (p huhPrompter) run(ctx context.Context, fields ...huh.Field) error {
 	return p.runKeys(ctx, promptKeys(), fields...)
 }
 
-// runList 运行不需要输入文字的表单（列表、结果页），q 也能取消。
+// runList 运行不需要输入文字的表单（列表），q 也能取消。
 func (p huhPrompter) runList(ctx context.Context, fields ...huh.Field) error {
 	return p.runKeys(ctx, promptKeys("q"), fields...)
 }
