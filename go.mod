@@ -11,7 +11,6 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/gofrs/flock v0.13.1
 	github.com/rogpeppe/go-internal v1.16.0
-	github.com/sergi/go-diff v1.4.0
 	github.com/spf13/cobra v1.10.2
 	go.yaml.in/yaml/v3 v3.0.5
 )

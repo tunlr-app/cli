@@ -31,11 +31,10 @@
 | CLI | `spf13/cobra` |
 | 交互与输出 | `huh`、`lipgloss`；需要时用 Bubble Tea 与 `bubbles` 写内联（非全屏）的界面 |
 | YAML | `go.yaml.in/yaml/v3`（不要用已归档的 `gopkg.in/yaml.v3`），基于 `yaml.Node` 合并以保留键顺序与注释 |
-| diff | `sergi/go-diff` |
+| diff | 自己实现的锚定（patience）逐行 diff，不引入依赖 |
 | 内核 API | 标准库 `net/http`，经 Unix socket（`external-controller-unix`）连接 |
-| 实时数据流 | `coder/websocket` |
 | 并发互斥 | `gofrs/flock` |
-| nftables | `text/template` 生成脚本，`nft -f` 原子加载；仅在需要程序化查询时用 `google/nftables` |
+| nftables | `text/template` 生成脚本，`nft -f` 原子加载，查询也用 `nft` 命令；不用 `google/nftables`（理由见 `docs/DESIGN.md` 5.4） |
 | systemd | 直接执行 `systemctl` |
 | 日志 | `log/slog` |
 | 发布 | goreleaser（amd64、arm64，带 checksum） |

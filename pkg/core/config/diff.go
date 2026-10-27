@@ -2,10 +2,8 @@ package config
 
 import (
 	"fmt"
+	"sort"
 	"strings"
-	"time"
-
-	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 // diffContext 是 Diff 输出的每处改动前后保留的上下文行数，与 diff -u 一致。
@@ -17,10 +15,6 @@ type diffLine struct {
 	text string
 }
 
-// diffTimeout 是计算差异的时限。新旧配置差别很大时（如换了机场）逐行比较可能要几秒；超时后得到的
-// 差异仍然正确，只是不一定最短，这种情况下差异本来就大，用户通常只看按段的汇总。
-const diffTimeout = time.Second
-
 // DiffSection 是差异中一个顶层键（段）增删的行数。
 type DiffSection struct {
 	// Key 是顶层键；第一个顶层键之前的行（如文件开头的注释）为空串。
@@ -31,29 +25,111 @@ type DiffSection struct {
 
 // Diff 返回 a 到 b 的统一格式（diff -u）逐行差异，以及按顶层键汇总的增删行数（按出现顺序），
 // 两者相同时返回空串和 nil。
+//
+// 差异用锚定算法（git 称为 patience diff）计算：以新旧两侧各只出现一次的行为锚点，取锚点的最长
+// 公共子序列对齐，锚点之间的空隙递归处理。耗时为 O(n log n)，新旧差别很大时（如换了机场）也不会
+// 像求最短差异那样耗时成倍增长；结果对配置这类每行多半唯一的文本也更易读，不会拿无关的
+// 重复行（如各策略组里的 type: select）去对齐。
 func Diff(oldName, newName string, a, b []byte) (string, []DiffSection) {
 	if string(a) == string(b) {
 		return "", nil
 	}
-	dmp := diffmatchpatch.New()
-	dmp.DiffTimeout = diffTimeout
-	ra, rb, lines := dmp.DiffLinesToRunes(string(a), string(b))
-	diffs := dmp.DiffCharsToLines(dmp.DiffMainRunes(ra, rb, false), lines)
-
 	var ls []diffLine
-	for _, d := range diffs {
-		op := byte(' ')
-		switch d.Type {
-		case diffmatchpatch.DiffDelete:
-			op = '-'
-		case diffmatchpatch.DiffInsert:
-			op = '+'
-		}
-		for _, t := range splitLines(d.Text) {
-			ls = append(ls, diffLine{op, t})
+	anchored(splitLines(string(a)), splitLines(string(b)), &ls)
+	return unified(oldName, newName, ls), sections(ls)
+}
+
+// anchored 把 x 到 y 的逐行差异追加到 ls。
+func anchored(x, y []string, ls *[]diffLine) {
+	// 去掉相同的开头和结尾，空隙里原本不唯一的行因此常常变得唯一。
+	p := 0
+	for p < len(x) && p < len(y) && x[p] == y[p] {
+		p++
+	}
+	s := 0
+	for s < len(x)-p && s < len(y)-p && x[len(x)-1-s] == y[len(y)-1-s] {
+		s++
+	}
+	emit := func(op byte, lines []string) {
+		for _, l := range lines {
+			*ls = append(*ls, diffLine{op, l})
 		}
 	}
-	return unified(oldName, newName, ls), sections(ls)
+	emit(' ', x[:p])
+	mx, my := x[p:len(x)-s], y[p:len(y)-s]
+
+	if matches := uniqueLCS(mx, my); len(matches) == 0 {
+		// 没有可以对齐的行：整段删除再整段新增。
+		emit('-', mx)
+		emit('+', my)
+	} else {
+		var i, j int
+		for _, m := range matches {
+			anchored(mx[i:m.x], my[j:m.y], ls)
+			emit(' ', mx[m.x:m.x+1])
+			i, j = m.x+1, m.y+1
+		}
+		anchored(mx[i:], my[j:], ls)
+	}
+	emit(' ', x[len(x)-s:])
+}
+
+// linePair 是 x、y 中相同的一行的位置。
+type linePair struct{ x, y int }
+
+// uniqueLCS 返回 x、y 中各只出现一次的行（锚点）的最长公共子序列，按位置递增。
+// 按 x 的顺序排列锚点在 y 中的位置，求其最长递增子序列（耐心排序，O(n log n)）。
+func uniqueLCS(x, y []string) []linePair {
+	if len(x) == 0 || len(y) == 0 {
+		return nil
+	}
+	// count 记录每行在 x、y 中各出现几次（超过 1 次按 2 计）及在 y 中的位置。
+	type count struct{ x, y, at int }
+	counts := make(map[string]*count)
+	for _, l := range x {
+		c := counts[l]
+		if c == nil {
+			c = &count{}
+			counts[l] = c
+		}
+		c.x = min(c.x+1, 2)
+	}
+	for i, l := range y {
+		if c := counts[l]; c != nil {
+			c.y = min(c.y+1, 2)
+			c.at = i
+		}
+	}
+	var anchors []linePair
+	for i, l := range x {
+		if c := counts[l]; c.x == 1 && c.y == 1 {
+			anchors = append(anchors, linePair{i, c.at})
+		}
+	}
+	if len(anchors) == 0 {
+		return nil
+	}
+
+	// tails[k] 是长度为 k+1 的递增子序列中结尾最小者在 anchors 中的下标；prev 用于回溯。
+	tails := make([]int, 0, len(anchors))
+	prev := make([]int, len(anchors))
+	for i, a := range anchors {
+		k := sort.Search(len(tails), func(k int) bool { return anchors[tails[k]].y >= a.y })
+		prev[i] = -1
+		if k > 0 {
+			prev[i] = tails[k-1]
+		}
+		if k == len(tails) {
+			tails = append(tails, i)
+		} else {
+			tails[k] = i
+		}
+	}
+	lcs := make([]linePair, len(tails))
+	for k, i := len(tails)-1, tails[len(tails)-1]; k >= 0; k, i = k-1, prev[i] {
+		lcs[k] = anchors[i]
+	}
+	return lcs
 }
 
 // sections 按顶层键汇总增删的行数。新旧两侧分别跟踪当前所在的段：删除的行属于旧配置中它所在的段，
@@ -105,7 +181,6 @@ func topLevelKey(line string) (string, bool) {
 
 // unified 把逐行差异写成统一格式。
 func unified(oldName, newName string, ls []diffLine) string {
-
 	// before[i] 是 ls[i] 之前旧、新两侧各有多少行，用于计算每段的起始行号。
 	type counts struct{ old, new int }
 	before := make([]counts, len(ls)+1)

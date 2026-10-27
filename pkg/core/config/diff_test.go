@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func numbered(n int, change map[int]string) []byte {
@@ -70,6 +72,58 @@ func TestDiff(t *testing.T) {
 				t.Errorf("got:\n%s\nwant:\n%s", got, want)
 			}
 		})
+	}
+}
+
+// TestDiffRepeatedLines 确认重复行很多时（各策略组都列出全部节点）差异仍然精确：同一组里相隔较远的
+// 两处变化不会让中间的行变成整段删除再新增。
+func TestDiffRepeatedLines(t *testing.T) {
+	groups := func(drop ...string) []byte {
+		var b strings.Builder
+		b.WriteString("proxy-groups:\n")
+		for _, g := range []string{"a", "b", "c"} {
+			fmt.Fprintf(&b, "  - name: %s\n    type: select\n    proxies:\n", g)
+			for i := range 40 {
+				n := fmt.Sprintf("n%d", i)
+				if g == "b" && slices.Contains(drop, n) {
+					continue
+				}
+				fmt.Fprintf(&b, "      - %s\n", n)
+			}
+		}
+		return []byte(b.String())
+	}
+	_, s := Diff("old", "new", groups(), groups("n5", "n30"))
+	if fmt.Sprint(s) != fmt.Sprint([]DiffSection{{Key: "proxy-groups", Removed: 2}}) {
+		t.Errorf("sections = %+v", s)
+	}
+	got, _ := Diff("old", "new", groups(), groups("n5", "n30"))
+	if !strings.Contains(got, "\n-      - n5\n") || !strings.Contains(got, "\n-      - n30\n") || strings.Count(got, "\n@@") != 2 {
+		t.Errorf("diff:\n%s", got)
+	}
+}
+
+// TestDiffLargeChange 确认新旧差别很大时（节点和规则全换）仍然很快。
+func TestDiffLargeChange(t *testing.T) {
+	gen := func(prefix string, n int) []byte {
+		var b strings.Builder
+		b.WriteString("proxies:\n")
+		for i := range n {
+			fmt.Fprintf(&b, "  - {name: %s-%d, port: %d}\n", prefix, i, i)
+		}
+		b.WriteString("rules:\n")
+		for i := range 5 * n {
+			fmt.Fprintf(&b, "  - DOMAIN-SUFFIX,%s%d.com,Proxy\n", prefix, i%(n+i%7))
+		}
+		return []byte(b.String())
+	}
+	start := time.Now()
+	_, s := Diff("old", "new", gen("a", 5000), gen("b", 10000))
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("took %v", took)
+	}
+	if len(s) != 2 || s[0].Removed != 5000 || s[0].Added != 10000 {
+		t.Errorf("sections = %+v", s)
 	}
 }
 
