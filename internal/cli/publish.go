@@ -400,6 +400,30 @@ func (a *app) requireConfirmation(command string) error {
 	return usageErrorf("%s needs confirmation; pass --yes to proceed without asking (or --dry-run to preview)", command)
 }
 
+// requireYes 同 requireConfirmation，用于不支持 --dry-run 的命令（如 stop、upgrade core）：
+// 带 --dry-run 时报告用法错误，不把它当作不必确认。
+func (a *app) requireYes(command string) error {
+	if a.opts.DryRun {
+		return usageErrorf("%s does not support --dry-run", command)
+	}
+	if a.opts.Yes || a.interactive() {
+		return nil
+	}
+	return usageErrorf("%s needs confirmation; pass --yes to proceed without asking", command)
+}
+
+// ask 在执行操作前确认，同意时返回 true。用户回答否或取消时输出 declined，记下 a.aborted（什么都
+// 没做，主菜单显示为已取消）并返回 false。已经做了一部分的操作中途确认时用 confirm。
+func (a *app) ask(ctx context.Context, question, description, declined string) (bool, error) {
+	ok, err := a.confirm(ctx, question, description)
+	if err != nil || ok {
+		return ok, err
+	}
+	a.aborted = true
+	fmt.Fprintln(a.stdout, declined)
+	return false, nil
+}
+
 // confirm 向用户确认，description 是问题下的说明（可以为空）；--yes 时直接同意。调用前须用
 // requireConfirmation 排除无法提问的情况。用户取消算作回答“否”。
 func (a *app) confirm(ctx context.Context, question, description string) (bool, error) {
@@ -439,10 +463,7 @@ func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) 
 			summary = "Proxies: " + s
 		}
 	}
-	if ok, err := a.confirm(cmd.Context(), question, summary); err != nil || !ok {
-		if err == nil {
-			fmt.Fprintln(a.stdout, "Not applied.")
-		}
+	if ok, err := a.ask(cmd.Context(), question, summary, "Not applied."); !ok {
 		return err
 	}
 

@@ -248,7 +248,9 @@ func TestEditFixMistake(t *testing.T) {
 func TestEditCheckFailedDiscard(t *testing.T) {
 	et := newEditTest(t, "prepend-rules:\n  - MATCH,NOPE\n")
 	writeMixin(t, et.a.layout, "50-rules.yaml", "log-level: info\n")
-	et.prompt.choices = []int{1}
+	// 先按 Esc，在确认时反悔，回到选项；再选放弃并确认。
+	et.prompt.choices = []int{-1, 1}
+	et.prompt.confirms = []bool{false, true}
 	et.run(0, "edit", "50-rules")
 	out := et.stdout.String()
 	for _, want := range []string{"Check (mihomo -t): FAILED", "proxy [NOPE] not found", "Discarded; nothing saved."} {
@@ -259,8 +261,14 @@ func TestEditCheckFailedDiscard(t *testing.T) {
 	if got := et.mixin("50-rules.yaml"); got != "log-level: info\n" {
 		t.Errorf("file changed: %q", got)
 	}
-	if len(et.prompt.asked) != 1 || strings.Join(et.prompt.asked[0], "|") != choiceEdit+"|"+choiceDiscard {
+	if len(et.prompt.asked) != 2 || strings.Join(et.prompt.asked[0], "|") != choiceEdit+"|"+choiceDiscard {
 		t.Errorf("choices = %v", et.prompt.asked)
+	}
+	if len(et.prompt.confirmed) != 2 || !strings.HasPrefix(et.prompt.confirmed[0], "Discard your edits?") {
+		t.Errorf("confirmed = %q", et.prompt.confirmed)
+	}
+	if !et.a.aborted {
+		t.Error("discarding should count as cancelled")
 	}
 }
 

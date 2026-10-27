@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -148,15 +149,21 @@ func (a *app) newSubRemoveCommand() *cobra.Command {
 		Args: usageArgs(cobra.ArbitraryArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			names := args
+			if len(names) == 0 && !a.interactive() {
+				return usageErrorf("sub remove needs the names of the subscriptions to remove (see: tunlr sub list)")
+			}
+			if err := a.requireYes("sub remove"); err != nil {
+				return err
+			}
 			if len(names) == 0 {
-				if !a.interactive() {
-					return usageErrorf("sub remove needs the names of the subscriptions to remove (see: tunlr sub list)")
-				}
 				var err error
 				if names, err = a.chooseToRemove(cmd); err != nil || names == nil {
 					_, err := a.cancelled(err)
 					return err
 				}
+			}
+			if ok, err := a.confirmRemove(cmd, names); !ok {
+				return err
 			}
 			var removed []string
 			for _, name := range names {
@@ -208,6 +215,32 @@ func (a *app) chooseToRemove(cmd *cobra.Command) ([]string, error) {
 		names[i] = candidates[p].Name
 	}
 	return names, nil
+}
+
+// confirmRemove 在删除订阅前确认，说明中列出它们的地址（缩写，不显示令牌）。
+func (a *app) confirmRemove(cmd *cobra.Command, names []string) (bool, error) {
+	if a.opts.Yes {
+		return true, nil
+	}
+	entries, err := a.subscriptions().List()
+	if err != nil {
+		return false, err
+	}
+	var lines []string
+	for _, e := range entries {
+		if slices.Contains(names, e.Name) {
+			lines = append(lines, e.Name+"  "+subscription.Redact(e.URL))
+		}
+	}
+	desc := "Their saved copies are deleted; to get one back, add it again with its full URL."
+	if len(lines) > 0 {
+		desc = bullets(lines) + "\n" + desc
+	}
+	question := fmt.Sprintf("Remove the subscription %s?", strings.Join(quoteAll(names), ", "))
+	if len(names) > 1 {
+		question = fmt.Sprintf("Remove the subscriptions %s?", strings.Join(quoteAll(names), ", "))
+	}
+	return a.ask(cmd.Context(), question, desc, "Nothing removed.")
 }
 
 // chooseSubscription 让用户从全部订阅中选一个，光标起始于启用的那个。
@@ -365,7 +398,9 @@ func (a *app) newSubUseCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.publish(cmd, plan, "Apply this configuration?")
+			err = a.publish(cmd, plan, "Apply this configuration?")
+			a.aborted = false // 订阅已经切换，不发布也不是什么都没做。
+			return err
 		},
 	}
 	cmd.Flags().BoolVar(&apply, "apply", false, "publish the configuration right away (like tunlr apply)")

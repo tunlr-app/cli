@@ -11,7 +11,9 @@ stdout '"kernels": \[\]'
 # 服务控制需要先 init
 exitcode 1 tunlr start
 stderr 'the mihomo service is not installed; run: tunlr init'
-exitcode 1 tunlr stop
+exitcode 1 tunlr stop --yes
+stderr 'run: tunlr init'
+exitcode 1 tunlr restart --yes
 stderr 'run: tunlr init'
 
 # 参数用法错误：退出码 2
@@ -24,7 +26,17 @@ stderr 'invalid mihomo version "v1.19"'
 exitcode 2 tunlr logs --json
 stdout 'logs does not support --json'
 
-# 非交互时卸载必须带 --yes
+# 非交互时停止、重启、升级内核、卸载必须带 --yes，且不支持 --dry-run（不能当作已确认）
+exitcode 2 tunlr stop
+stderr 'stop needs confirmation; pass --yes'
+exitcode 2 tunlr restart
+stderr 'restart needs confirmation; pass --yes'
+exitcode 2 tunlr stop --dry-run
+stderr 'stop does not support --dry-run'
+exitcode 2 tunlr upgrade core
+stderr 'upgrade core needs confirmation; pass --yes'
+exitcode 2 tunlr upgrade core --rollback --dry-run
+stderr 'does not support --dry-run'
 exitcode 2 tunlr uninstall
 stderr 'uninstall needs confirmation; pass --yes'
 exitcode 2 tunlr uninstall --dry-run

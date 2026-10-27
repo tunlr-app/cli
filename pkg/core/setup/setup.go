@@ -4,6 +4,7 @@ package setup
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -208,13 +209,95 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 	return res, nil
 }
 
-// installSelf 把正在运行的 tunlr 复制到 /usr/local/bin/tunlr（unit 引用这个路径）。内容相同时什么都不做。
-func (i *Installer) installSelf() (bool, error) {
+// InitSteps 按当前状态列出 Init(ctx, opts) 将做的事，供执行前确认；只读取，不做改动。
+func (i *Installer) InitSteps(ctx context.Context, opts InitOptions) ([]string, error) {
+	var steps []string
+	self, err := selfPath()
+	if err != nil {
+		return nil, err
+	}
+	if same, err := sameFile(self, i.Layout.ToolBinary()); err != nil {
+		return nil, err
+	} else if !same {
+		steps = append(steps, "Copy tunlr to "+i.Layout.ToolBinary())
+	}
+	if u, err := service.LookupUser(); err != nil {
+		return nil, err
+	} else if u == nil {
+		steps = append(steps, "Create the system user "+service.CoreUser+" that runs mihomo")
+	}
+	if opts.Mirror != nil {
+		set, err := settings.Load(i.Layout.SettingsFile())
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case *opts.Mirror == set.GitHubMirror:
+		case *opts.Mirror == "":
+			steps = append(steps, "Download from GitHub directly (remove the mirror setting)")
+		default:
+			steps = append(steps, "Download from GitHub through "+*opts.Mirror)
+		}
+	}
+	if !i.kernels(nil, mihomo.Arch{}).Installed() {
+		v := cmp.Or(opts.KernelVersion, "(latest release)")
+		steps = append(steps, "Install mihomo "+v+", verified against the official sha256")
+	}
+	sd := i.systemd()
+	steps = append(steps, fmt.Sprintf("Install and enable %s and the daily %s", service.CoreUnit, service.UpdateTimer))
+
+	st, err := state.Load(i.Layout.StateFile())
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	active := ""
+	if st != nil {
+		active = st.Active
+	}
+	if opts.SubName != "" && (st == nil || st.Find(opts.SubName) == nil) {
+		steps = append(steps, fmt.Sprintf("Add the subscription %q", opts.SubName))
+		active = cmp.Or(active, opts.SubName)
+	}
+	if active != "" {
+		steps = append(steps, fmt.Sprintf("Publish the configuration from %q if it changed", active))
+	}
+	if _, err := os.Stat(i.Layout.CoreConfig()); err != nil && active == "" {
+		return steps, nil
+	}
+	if sd.Installed() {
+		if s, err := sd.Status(ctx, service.CoreUnit); err == nil && s.Active() {
+			return append(steps, "Restart mihomo (open connections drop)"), nil
+		}
+	}
+	return append(steps, "Start mihomo"), nil
+}
+
+// selfPath 是正在运行的 tunlr 的路径（解析符号链接）。
+func selfPath() (string, error) {
 	self, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(self)
+}
+
+// sameFile 报告 a、b 的内容是否相同；b 不存在时为 false。边读边算校验值，不把二进制读进内存。
+func sameFile(a, b string) (bool, error) {
+	sa, err := mihomo.FileChecksum(a)
 	if err != nil {
 		return false, err
 	}
-	if self, err = filepath.EvalSymlinks(self); err != nil {
+	sb, err := mihomo.FileChecksum(b)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return sa == sb, err
+}
+
+// installSelf 把正在运行的 tunlr 复制到 /usr/local/bin/tunlr（unit 引用这个路径）。内容相同时什么都不做。
+func (i *Installer) installSelf() (bool, error) {
+	self, err := selfPath()
+	if err != nil {
 		return false, err
 	}
 	data, err := os.ReadFile(self)

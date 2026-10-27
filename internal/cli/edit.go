@@ -273,13 +273,9 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 		}
 
 		if choices != nil {
-			i, err := a.prompt.Choose(ctx, "The mixin was not saved. What now?", choices, 0)
-			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+			choice, err := a.chooseAfterCheck(ctx, choices)
+			if err != nil {
 				return err
-			}
-			choice := choiceDiscard
-			if err == nil {
-				choice = choices[i]
 			}
 			switch choice {
 			case choiceEdit:
@@ -291,6 +287,7 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 				fmt.Fprintf(a.stdout, "Saved %s; not applied. Run tunlr apply once the check can complete.\n", path)
 				return nil
 			}
+			a.aborted = true
 			fmt.Fprintln(a.stdout, "Discarded; nothing saved.")
 			return nil
 		}
@@ -304,7 +301,27 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 			return err
 		}
 		fmt.Fprintf(a.stdout, "Saved %s.\n\n", path)
-		return a.publish(cmd, plan, "Apply this configuration?")
+		err = a.publish(cmd, plan, "Apply this configuration?")
+		a.aborted = false // mixin 已经保存，不发布也不是什么都没做。
+		return err
+	}
+}
+
+// chooseAfterCheck 询问检查未通过后怎么办。选择放弃（或按 Esc 取消）时再确认一次，免得误按丢掉编辑的
+// 内容；回答否时重新选择。
+func (a *app) chooseAfterCheck(ctx context.Context, choices []string) (string, error) {
+	for {
+		i, err := a.prompt.Choose(ctx, "The mixin was not saved. What now?", choices, 0)
+		if err != nil && !errors.Is(err, huh.ErrUserAborted) {
+			return "", err
+		}
+		if err == nil && choices[i] != choiceDiscard {
+			return choices[i], nil
+		}
+		ok, err := a.confirm(ctx, "Discard your edits?", "The mixin file stays as it was.")
+		if err != nil || ok {
+			return choiceDiscard, err
+		}
 	}
 }
 

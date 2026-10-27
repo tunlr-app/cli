@@ -54,7 +54,7 @@ type app struct {
 	// session 是不随 Ctrl-C 取消的 context（只随 SIGTERM），主菜单在其中循环，
 	// Ctrl-C 只中断菜单里正在执行的那条命令。
 	session context.Context
-	// aborted 表示用户在命令开头的提问中取消了，什么都没做（见 cancelled）。
+	// aborted 表示用户取消了提问或在确认时回答否，什么都没做（见 cancelled、ask），主菜单显示为已取消。
 	aborted bool
 	// fullDiff 对应 --full-diff：差异很长时也完整显示，而不是按段汇总。
 	fullDiff bool

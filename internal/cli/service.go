@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -65,8 +66,20 @@ func (a *app) newInitCommand() *cobra.Command {
 			if err := setup.CheckEnvironment(); err != nil {
 				return err
 			}
+			if err := a.requireYes("init"); err != nil {
+				return err
+			}
 			if a.interactive() {
-				if err := a.askInit(cmd, &opts); err != nil {
+				if _, err := a.cancelled(a.askInit(cmd, &opts)); err != nil || a.aborted {
+					return err
+				}
+			}
+			if !a.opts.Yes {
+				steps, err := a.installer().InitSteps(cmd.Context(), opts)
+				if err != nil {
+					return err
+				}
+				if ok, err := a.ask(cmd.Context(), "Set up tunlr now?", bullets(steps), "Nothing changed."); !ok {
 					return err
 				}
 			}
@@ -172,15 +185,29 @@ func (a *app) newStartCommand() *cobra.Command {
 	}
 }
 
+// bullets 把每项写成一行，用作确认问题下的说明。
+func bullets(items []string) string {
+	return "• " + strings.Join(items, "\n• ")
+}
+
 func (a *app) newRestartCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart",
 		Short: "Restart mihomo and check that it is healthy",
 		Args:  usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := a.requireYes("restart"); err != nil {
+				return err
+			}
 			k, err := a.kernels()
 			if err != nil {
 				return err
+			}
+			// 没有安装时不问，直接报告（见 Restart）。
+			if k.Service.Installed() {
+				if ok, err := a.ask(cmd.Context(), "Restart mihomo?", "Open connections drop for a few seconds.", "Not restarted."); !ok {
+					return err
+				}
 			}
 			var h *mihomo.Health
 			err = a.spin("Restarting mihomo and checking its health", func() (err error) {
@@ -208,11 +235,25 @@ func (a *app) newStopCommand() *cobra.Command {
 		Short: "Stop mihomo",
 		Args:  usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if err := a.requireYes("stop"); err != nil {
+				return err
+			}
 			k, err := a.kernels()
 			if err != nil {
 				return err
 			}
-			if err := k.Stop(cmd.Context()); err != nil {
+			// 没有安装时不问，直接报告（见 Stop）。
+			if !a.opts.Yes && k.Service.Installed() {
+				desc := "Nothing goes through the proxy until you start it again (tunlr start, or at boot)."
+				if s, err := a.installer().TunStatus(ctx); err == nil && s.Switch != "off" {
+					desc += "\nTUN is on: this server's own traffic goes out directly meanwhile."
+				}
+				if ok, err := a.ask(ctx, "Stop mihomo?", desc, "Not stopped."); !ok {
+					return err
+				}
+			}
+			if err := k.Stop(ctx); err != nil {
 				return err
 			}
 			return a.render(map[string]bool{"stopped": true}, func() error {
@@ -330,20 +371,14 @@ func (a *app) newUninstallCommand() *cobra.Command {
 			"everything up again; --purge removes them too.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if a.opts.DryRun {
-				return usageErrorf("uninstall does not support --dry-run")
-			}
-			if !a.opts.Yes && !a.interactive() {
-				return usageErrorf("uninstall needs confirmation; pass --yes to proceed without asking")
+			if err := a.requireYes("uninstall"); err != nil {
+				return err
 			}
 			question := "Uninstall tunlr (mihomo stops; settings and subscriptions are kept)?"
 			if purge {
 				question = "Uninstall tunlr and delete all settings, subscriptions and history?"
 			}
-			if ok, err := a.confirm(cmd.Context(), question, ""); err != nil || !ok {
-				if err == nil {
-					fmt.Fprintln(a.stdout, "Not uninstalled.")
-				}
+			if ok, err := a.ask(cmd.Context(), question, "", "Not uninstalled."); !ok {
 				return err
 			}
 			res, err := a.installer().Uninstall(cmd.Context(), purge)
@@ -393,9 +428,6 @@ func (a *app) newUpgradeCoreCommand() *cobra.Command {
 			if rollback && version != "" {
 				return usageErrorf("--rollback and --version cannot be used together")
 			}
-			if a.opts.DryRun {
-				return usageErrorf("upgrade core does not support --dry-run")
-			}
 			if version != "" {
 				v, err := mihomo.NormalizeVersion(version)
 				if err != nil {
@@ -403,9 +435,17 @@ func (a *app) newUpgradeCoreCommand() *cobra.Command {
 				}
 				version = v
 			}
+			if err := a.requireYes("upgrade core"); err != nil {
+				return err
+			}
 			k, err := a.kernels()
 			if err != nil {
 				return err
+			}
+			if !a.opts.Yes {
+				if ok, err := a.confirmUpgrade(cmd.Context(), k, rollback, &version); !ok {
+					return err
+				}
 			}
 			var res *mihomo.UpgradeResult
 			title := "Upgrading mihomo (download, verify, check, restart)"
@@ -440,6 +480,49 @@ func (a *app) newUpgradeCoreCommand() *cobra.Command {
 	cmd.Flags().StringVar(&version, "version", "", "install this version instead of the latest release, e.g. v1.19.33")
 	cmd.Flags().BoolVar(&rollback, "rollback", false, "switch back to the previous known-good version")
 	return cmd
+}
+
+// confirmUpgrade 在替换内核前确认，问题中给出现在和将换成的版本。升级时先查询目标版本并写回 version，
+// 确认的是哪个版本就装哪个；已经是该版本时不问，交给 Upgrade 报告。
+func (a *app) confirmUpgrade(ctx context.Context, k *mihomo.Manager, rollback bool, version *string) (bool, error) {
+	ks, err := k.Status()
+	if err != nil {
+		return false, err
+	}
+	var target string
+	if rollback {
+		kg, err := k.RollbackTarget()
+		if err != nil {
+			return false, err
+		}
+		target = kg.Version
+	} else {
+		err := a.spin("Looking up the mihomo release", func() (err error) {
+			target, err = k.UpgradeTarget(ctx, *version)
+			return err
+		})
+		if err != nil {
+			return false, err
+		}
+		*version = target
+		if ks.KnownGood && ks.Version == target {
+			return true, nil
+		}
+	}
+	var question string
+	switch {
+	case !ks.Installed:
+		question = fmt.Sprintf("Install mihomo %s?", target)
+	case rollback && ks.KnownGood:
+		question = fmt.Sprintf("Switch mihomo %s back to %s?", ks.Version, target)
+	case ks.KnownGood:
+		question = fmt.Sprintf("Replace mihomo %s with %s?", ks.Version, target)
+	default:
+		question = fmt.Sprintf("Replace the installed mihomo with %s?", target)
+	}
+	desc := "It is checked against the published configuration first. A running mihomo restarts (open\n" +
+		"connections drop), and the previous one is put back if the new one is not healthy."
+	return a.ask(ctx, question, desc, "mihomo not changed.")
 }
 
 // newRescueCommand 是 tunlr-rescue.service 执行的内部命令，内核服务多次启动失败后由 systemd 触发。

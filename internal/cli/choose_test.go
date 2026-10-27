@@ -88,9 +88,16 @@ func TestSubUseNeedsNameWithoutTerminal(t *testing.T) {
 func TestSubRemoveChooses(t *testing.T) {
 	et := newEditTest(t)
 	addSubscriptions(t, et.a, "main", "main", "a", "b", "c")
-	et.prompt.many = [][]int{{0, 2}}
+	// 第一次在确认时回答否，什么都不删。
+	et.prompt.many = [][]int{{0, 2}, {0, 2}}
+	et.prompt.confirms = []bool{false, true}
 	et.run(0, "sub", "remove")
-	if len(et.prompt.asked) != 1 || len(et.prompt.asked[0]) != 3 || strings.Contains(strings.Join(et.prompt.asked[0], "\n"), "main") {
+	if len(et.prompt.confirmed) != 1 || !strings.HasPrefix(et.prompt.confirmed[0], `Remove the subscriptions "a", "c"?|• a  https://example.net/...`) ||
+		!strings.Contains(et.stdout.String(), "Nothing removed.") || !et.a.aborted {
+		t.Fatalf("confirmed = %q, output:\n%s", et.prompt.confirmed, et.stdout)
+	}
+	et.run(0, "sub", "remove")
+	if len(et.prompt.asked) != 2 || len(et.prompt.asked[0]) != 3 || strings.Contains(strings.Join(et.prompt.asked[0], "\n"), "main") {
 		t.Fatalf("the active subscription must not be offered: %q", et.prompt.asked)
 	}
 	st, _ := state.Load(et.a.layout.StateFile())

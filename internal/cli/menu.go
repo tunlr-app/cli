@@ -391,7 +391,7 @@ func (r *menuRun) Run() error {
 	return nil
 }
 
-// result 是操作结束后的一行结果。用户在命令开头的提问中取消时什么都没做，不算失败。
+// result 是操作结束后的一行结果。用户取消或在确认时回答否时什么都没做，不算失败。
 func (a *app) result(code int, interrupted bool, took time.Duration) string {
 	elapsed := " " + a.style.dim("("+formatElapsed(took)+")")
 	switch {

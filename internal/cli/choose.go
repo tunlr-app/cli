@@ -15,7 +15,7 @@ import (
 )
 
 // cancelled 把用户在选择列表中取消（Esc、Ctrl-C）转换为正常结束：告诉用户什么都没做。
-// 其他错误原样返回；err 为 nil 时返回 false。取消时记下 a.aborted，主菜单据此直接返回，不显示结果页。
+// 其他错误原样返回；err 为 nil 时返回 false。取消时记下 a.aborted，主菜单据此显示为已取消。
 func (a *app) cancelled(err error) (bool, error) {
 	if errors.Is(err, huh.ErrUserAborted) {
 		a.aborted = true

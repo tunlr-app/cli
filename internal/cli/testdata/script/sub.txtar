@@ -44,7 +44,7 @@ exitcode 2 tunlr sub add onlyname
 stderr 'accepts 2 arg'
 
 # 不能删除启用中的订阅
-exitcode 1 tunlr sub remove main
+exitcode 1 tunlr sub remove main --yes
 stderr 'subscription is active: main; switch to another subscription first'
 
 # 非交互模式下省略名称是用法错误（交互时从列表选择）
@@ -58,7 +58,12 @@ exec tunlr sub use backup
 stdout '^Switched to "backup": 2 proxies'
 exec tunlr sub use backup
 stdout 'already the active subscription'
-exec tunlr sub remove main
+exitcode 2 tunlr sub remove main
+stderr 'sub remove needs confirmation; pass --yes'
+exitcode 2 tunlr sub remove main --dry-run
+stderr 'does not support --dry-run'
+exists root/var/lib/tunlr/subscriptions/main.yaml
+exec tunlr sub remove main --yes
 stdout 'Removed subscription "main"'
 ! exists root/var/lib/tunlr/subscriptions/main.yaml
 

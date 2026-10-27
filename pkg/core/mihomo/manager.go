@@ -233,8 +233,25 @@ func (m *Manager) Upgrade(ctx context.Context, version string) (*UpgradeResult, 
 	return m.switchTo(ctx, k, true)
 }
 
-// Rollback 换到最近一个与当前二进制不同的已知可用版本，同样经过 -t、重启和健康检查。
-func (m *Manager) Rollback(ctx context.Context) (*UpgradeResult, error) {
+// UpgradeTarget 返回 Upgrade(ctx, version) 将安装的版本（version 为空时为最新的正式发布），只查询不下载，
+// 供执行前确认。确认后把它传给 Upgrade，确认期间有新发布也不会装成别的版本。
+func (m *Manager) UpgradeTarget(ctx context.Context, version string) (string, error) {
+	d, err := m.downloader()
+	if err != nil {
+		return "", err
+	}
+	rel, err := d.Release(ctx, kernelRepo, version)
+	if err != nil {
+		return "", err
+	}
+	if !versionPattern.MatchString(rel.Tag) {
+		return "", fmt.Errorf("unexpected mihomo release tag %q", rel.Tag)
+	}
+	return rel.Tag, nil
+}
+
+// RollbackTarget 返回 Rollback 将换到的版本：最近一个与当前二进制不同的已知可用版本，没有时返回 ErrNoKnownGood。
+func (m *Manager) RollbackTarget() (*state.Kernel, error) {
 	cur, err := m.currentSum()
 	if err != nil {
 		return nil, err
@@ -244,16 +261,24 @@ func (m *Manager) Rollback(ctx context.Context) (*UpgradeResult, error) {
 		return nil, err
 	}
 	for _, kg := range st.Kernels {
-		if kg.SHA256 == cur {
-			continue
+		if kg.SHA256 != cur {
+			return &kg, nil
 		}
-		k, err := m.storedKernel(kg)
-		if err != nil {
-			return nil, err
-		}
-		return m.switchTo(ctx, k, true)
 	}
 	return nil, ErrNoKnownGood
+}
+
+// Rollback 换到 RollbackTarget 给出的版本，同样经过 -t、重启和健康检查。
+func (m *Manager) Rollback(ctx context.Context) (*UpgradeResult, error) {
+	kg, err := m.RollbackTarget()
+	if err != nil {
+		return nil, err
+	}
+	k, err := m.storedKernel(*kg)
+	if err != nil {
+		return nil, err
+	}
+	return m.switchTo(ctx, k, true)
 }
 
 // switchTo 把 bin/mihomo 换成 k。validate 时先降权用 k 对生效的配置执行 -t。
