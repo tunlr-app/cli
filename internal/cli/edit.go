@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
 
@@ -22,7 +23,7 @@ import (
 	"github.com/tunlr-app/cli/templates"
 )
 
-// prompter 向用户提问。用户取消时返回 huh.ErrUserAborted。
+// prompter 向用户提问。用户按 Esc 或 Ctrl-C 取消时返回 huh.ErrUserAborted。
 type prompter interface {
 	// Choose 让用户用上下箭头从 options 中选一项，光标起始于下标 initial，返回所选的下标。
 	Choose(ctx context.Context, title string, options []string, initial int) (int, error)
@@ -76,7 +77,18 @@ func (p huhPrompter) Input(ctx context.Context, title, description string, valid
 }
 
 func (p huhPrompter) run(ctx context.Context, f huh.Field) error {
-	return huh.NewForm(huh.NewGroup(f)).WithInput(p.a.stdin).WithOutput(p.a.stderr).RunWithContext(ctx)
+	return huh.NewForm(huh.NewGroup(f)).WithKeyMap(promptKeys()).
+		WithInput(p.a.stdin).WithOutput(p.a.stderr).RunWithContext(ctx)
+}
+
+// promptKeys 让 Esc 与 Ctrl-C 一样取消提问（huh 默认只认 Ctrl-C）。过滤模式里 Esc 另有用途，
+// 而列表都不长，所以去掉按 / 过滤：没有按键的绑定既不匹配，也不显示在帮助行中。
+func promptKeys() *huh.KeyMap {
+	km := huh.NewDefaultKeyMap()
+	km.Quit = key.NewBinding(key.WithKeys("ctrl+c", "esc"))
+	km.Select.Filter = key.Binding{}
+	km.MultiSelect.Filter = key.Binding{}
+	return km
 }
 
 // 检查未通过时的选项。

@@ -79,10 +79,10 @@ type UpdateOptions struct {
 // Add 抓取并保存一个新订阅。抓取或检查失败时什么都不保存。
 // 这是第一个订阅时自动启用它。userAgent 为空时使用默认值（见 userAgent）。
 func (m *Manager) Add(ctx context.Context, name, rawURL, userAgent string) (*Fetched, error) {
-	if err := validateName(name); err != nil {
+	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
-	if err := validateURL(rawURL); err != nil {
+	if err := ValidateURL(rawURL); err != nil {
 		return nil, err
 	}
 	if err := settings.ValidateUserAgent(userAgent); err != nil {
@@ -317,7 +317,8 @@ func (m *Manager) now() time.Time {
 	return time.Now()
 }
 
-func validateName(name string) error {
+// ValidateName 检查订阅名称：1～64 个字母、数字、'.'、'_'、'-'，以字母或数字开头。
+func ValidateName(name string) error {
 	if !namePattern.MatchString(name) {
 		return fmt.Errorf("%w: subscription name %q must be 1-64 characters of letters, digits, '.', '_' or '-', starting with a letter or digit",
 			core.ErrInvalidArgument, name)
@@ -325,7 +326,8 @@ func validateName(name string) error {
 	return nil
 }
 
-func validateURL(rawURL string) error {
+// ValidateURL 检查订阅地址是 http 或 https 地址。
+func ValidateURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("%w: subscription URL must be an http or https URL", core.ErrInvalidArgument)

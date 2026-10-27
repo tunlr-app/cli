@@ -118,6 +118,10 @@ func (a *app) newRootCommand() *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
+				// 在终端里只输入 tunlr 时进入主菜单，否则显示帮助。
+				if a.interactive() {
+					return a.runMenu(cmd)
+				}
 				return cmd.Help()
 			}
 			hint := ""

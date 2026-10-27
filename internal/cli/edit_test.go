@@ -48,6 +48,8 @@ func (stoppedKernel) Reload(context.Context) error { return mihomo.ErrNotRunning
 type scriptedPrompt struct {
 	t       *testing.T
 	choices []int
+	// picks 按选项开头的文字选择，比 choices 优先；"" 表示用户取消。
+	picks []string
 	// many 是多选的回答，nil 表示用户取消。
 	many   [][]int
 	inputs []string
@@ -61,6 +63,19 @@ type scriptedPrompt struct {
 func (p *scriptedPrompt) Choose(_ context.Context, _ string, options []string, initial int) (int, error) {
 	p.asked = append(p.asked, options)
 	p.initials = append(p.initials, initial)
+	if len(p.picks) > 0 {
+		pick := p.picks[0]
+		p.picks = p.picks[1:]
+		if pick == "" {
+			return 0, huh.ErrUserAborted
+		}
+		for i, o := range options {
+			if strings.HasPrefix(o, pick) {
+				return i, nil
+			}
+		}
+		p.t.Fatalf("no option %q in %q", pick, options)
+	}
 	if len(p.choices) == 0 {
 		p.t.Fatalf("unexpected question: %v", options)
 	}
