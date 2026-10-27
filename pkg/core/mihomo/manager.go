@@ -630,7 +630,7 @@ func (m *Manager) running(ctx context.Context) (bool, error) {
 
 // currentSum 返回 bin/mihomo 的 sha256，不存在时为空。
 func (m *Manager) currentSum() (string, error) {
-	sum, err := FileChecksum(m.Layout.CoreBinary())
+	sum, err := cachedFileChecksum(m.Layout.CoreBinary())
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}

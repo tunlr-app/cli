@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/download"
@@ -141,6 +142,35 @@ func FileChecksum(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// sumCache 记住最近一次算过的文件校验值。主菜单每次刷新状态都要核对内核，二进制没变时不必再读一遍。
+var sumCache struct {
+	sync.Mutex
+	path string
+	info os.FileInfo
+	sum  string
+}
+
+// cachedFileChecksum 同 FileChecksum，但文件仍是上次那个（同一个 inode，大小和修改时间不变）时
+// 直接返回上次的结果。替换内核用临时文件加 rename，换了文件就是另一个 inode。
+func cachedFileChecksum(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	sumCache.Lock()
+	defer sumCache.Unlock()
+	if c := &sumCache; c.path == path && os.SameFile(c.info, info) && c.info.Size() == info.Size() &&
+		c.info.ModTime().Equal(info.ModTime()) {
+		return c.sum, nil
+	}
+	sum, err := FileChecksum(path)
+	if err != nil {
+		return "", err
+	}
+	sumCache.path, sumCache.info, sumCache.sum = path, info, sum
+	return sum, nil
 }
 
 // FetchKernel 下载 version 的内核（为空时为最新的正式发布），按官方 sha256 校验后解压。

@@ -433,3 +433,36 @@ func TestFileChecksum(t *testing.T) {
 		t.Fatalf("missing file: %v", err)
 	}
 }
+
+func TestCachedFileChecksum(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mihomo")
+	write := func(data string) {
+		t.Helper()
+		// 与替换内核一样，写临时文件再 rename。
+		if err := os.WriteFile(path+".tmp", []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(path+".tmp", path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(want string) {
+		t.Helper()
+		if sum, err := cachedFileChecksum(path); err != nil || sum != Checksum([]byte(want)) {
+			t.Fatalf("cachedFileChecksum = %q, %v; want the sum of %q", sum, err, want)
+		}
+	}
+	write("v1")
+	check("v1")
+	check("v1")
+	// 换成同样大小的另一个文件也要重新计算。
+	write("v2")
+	check("v2")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cachedFileChecksum(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file: %v", err)
+	}
+}
