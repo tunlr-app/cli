@@ -70,10 +70,10 @@ func (a *app) newInitCommand() *cobra.Command {
 					return err
 				}
 			}
-			if !a.opts.JSON {
-				opts.Progress = func(step string) { fmt.Fprintf(a.stdout, "==> %s\n", step) }
-			}
+			var done func(error)
+			opts.Progress, done = a.stepper()
 			res, err := a.installer().Init(cmd.Context(), opts)
+			done(err)
 			if err != nil {
 				return err
 			}
@@ -159,7 +159,11 @@ func (a *app) newStartCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			h, err := k.Start(cmd.Context())
+			var h *mihomo.Health
+			err = a.spin("Starting mihomo and checking its health", func() (err error) {
+				h, err = k.Start(cmd.Context())
+				return err
+			})
 			if err != nil {
 				return err
 			}
@@ -178,7 +182,11 @@ func (a *app) newRestartCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			h, err := k.Restart(cmd.Context())
+			var h *mihomo.Health
+			err = a.spin("Restarting mihomo and checking its health", func() (err error) {
+				h, err = k.Restart(cmd.Context())
+				return err
+			})
 			if err != nil {
 				return err
 			}
@@ -189,7 +197,7 @@ func (a *app) newRestartCommand() *cobra.Command {
 
 func (a *app) renderHealth(h *mihomo.Health) error {
 	return a.render(h, func() error {
-		_, err := fmt.Fprintf(a.stdout, "mihomo %s is running (pid %d) and passed the health check.\n", h.Version, h.MainPID)
+		_, err := fmt.Fprintf(a.stdout, "%s (pid %d) and passed the health check.\n", a.style.good(fmt.Sprintf("mihomo %s is running", h.Version)), h.MainPID)
 		return err
 	})
 }
@@ -257,11 +265,13 @@ func (a *app) printStatus(s *setup.Status) {
 	w := a.stdout
 	switch {
 	case !s.Installed:
-		fmt.Fprintln(w, "Service:       not installed (run: tunlr init)")
+		fmt.Fprintf(w, "Service:       %s (run: tunlr init)\n", a.style.warn("not installed"))
 	case s.Service.Active():
-		fmt.Fprintf(w, "Service:       %s (%s), pid %d\n", s.Service.ActiveState, s.Service.SubState, s.Service.MainPID)
+		fmt.Fprintf(w, "Service:       %s, pid %d\n", a.style.good(fmt.Sprintf("%s (%s)", s.Service.ActiveState, s.Service.SubState)), s.Service.MainPID)
+	case s.Service.ActiveState == "failed":
+		fmt.Fprintf(w, "Service:       %s\n", a.style.bad(fmt.Sprintf("%s (%s)", s.Service.ActiveState, s.Service.SubState)))
 	default:
-		fmt.Fprintf(w, "Service:       %s (%s)\n", s.Service.ActiveState, s.Service.SubState)
+		fmt.Fprintf(w, "Service:       %s\n", a.style.warn(fmt.Sprintf("%s (%s)", s.Service.ActiveState, s.Service.SubState)))
 	}
 	k := s.Kernel
 	switch {
@@ -270,13 +280,13 @@ func (a *app) printStatus(s *setup.Status) {
 		if !k.KnownGood {
 			note = " (not yet a known-good version)"
 		}
-		fmt.Fprintf(w, "mihomo:        %s running%s\n", s.Running, note)
+		fmt.Fprintf(w, "mihomo:        %s%s\n", a.style.good(s.Running+" running"), a.style.warn(note))
 	case !k.Installed:
-		fmt.Fprintln(w, "mihomo:        not installed")
+		fmt.Fprintf(w, "mihomo:        %s\n", a.style.warn("not installed"))
 	case k.KnownGood:
-		fmt.Fprintf(w, "mihomo:        %s, not running\n", k.Version)
+		fmt.Fprintf(w, "mihomo:        %s, %s\n", k.Version, a.style.warn("not running"))
 	default:
-		fmt.Fprintln(w, "mihomo:        installed, not running")
+		fmt.Fprintf(w, "mihomo:        installed, %s\n", a.style.warn("not running"))
 	}
 	if len(k.Kernels) > 0 {
 		vs := make([]string, len(k.Kernels))
@@ -288,7 +298,7 @@ func (a *app) printStatus(s *setup.Status) {
 	if s.Subscription != "" {
 		fmt.Fprintf(w, "Subscription:  %s\n", s.Subscription)
 	} else {
-		fmt.Fprintln(w, "Subscription:  none (add one with: tunlr sub add)")
+		fmt.Fprintf(w, "Subscription:  %s (add one with: tunlr sub add)\n", a.style.warn("none"))
 	}
 	if s.Revision != nil {
 		fmt.Fprintf(w, "Configuration: revision %d, published %s\n", s.Revision.Number, s.Revision.CreatedAt.Local().Format(time.DateTime))
@@ -297,7 +307,7 @@ func (a *app) printStatus(s *setup.Status) {
 		fmt.Fprintf(w, "Next update:   %s\n", s.NextUpdate.Local().Format(time.DateTime))
 	}
 	if s.Tun != nil {
-		fmt.Fprintf(w, "TUN:           %s\n", describeTun(s.Tun))
+		fmt.Fprintf(w, "TUN:           %s\n", a.describeTun(s.Tun))
 	}
 }
 
@@ -390,11 +400,18 @@ func (a *app) newUpgradeCoreCommand() *cobra.Command {
 				return err
 			}
 			var res *mihomo.UpgradeResult
+			title := "Upgrading mihomo (download, verify, check, restart)"
 			if rollback {
-				res, err = k.Rollback(cmd.Context())
-			} else {
-				res, err = k.Upgrade(cmd.Context(), version)
+				title = "Switching back to the previous known-good mihomo"
 			}
+			err = a.spin(title, func() (err error) {
+				if rollback {
+					res, err = k.Rollback(cmd.Context())
+				} else {
+					res, err = k.Upgrade(cmd.Context(), version)
+				}
+				return err
+			})
 			if err != nil {
 				return err
 			}
@@ -453,7 +470,7 @@ func (a *app) newUpdateCommand() *cobra.Command {
 			}
 			rerr := a.render(res, func() error {
 				for _, s := range res.Steps {
-					fmt.Fprintf(a.stdout, "%-8s %-13s %s\n", s.Status, s.Name, s.Message)
+					a.printCheck(s.Status, s.Name, 13, s.Message)
 				}
 				return nil
 			})

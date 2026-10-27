@@ -141,7 +141,7 @@ func (a *app) printPlan(v planView) {
 		}
 	}
 	if len(v.Warnings) > 0 {
-		fmt.Fprintln(w, "Warnings:")
+		fmt.Fprintln(w, a.style.warn("Warnings:"))
 		for _, wn := range v.Warnings {
 			fmt.Fprintf(w, "  %s\n", wn)
 		}
@@ -162,25 +162,25 @@ func (a *app) printPlan(v planView) {
 		if v.Proxies != nil {
 			fmt.Fprintf(w, "Proxies: %s\n\n", describeProxies(v.Proxies))
 		}
-		fmt.Fprint(w, v.Diff)
+		fmt.Fprint(w, a.style.diff(v.Diff))
 		fmt.Fprintln(w)
 	}
 	if len(v.Restart) > 0 {
-		fmt.Fprintf(w, "mihomo will be restarted: %s cannot change by reloading.\n", strings.Join(v.Restart, ", "))
+		fmt.Fprintf(w, "%s %s cannot change by reloading.\n", a.style.warn("mihomo will be restarted:"), strings.Join(v.Restart, ", "))
 	}
 
 	switch v.Check.Status {
 	case "passed":
-		fmt.Fprintln(w, "Check (mihomo -t): passed")
+		fmt.Fprintf(w, "Check (mihomo -t): %s\n", a.style.good("passed"))
 	case "failed":
-		fmt.Fprintln(w, "Check (mihomo -t): FAILED")
+		fmt.Fprintf(w, "Check (mihomo -t): %s\n", a.style.bad("FAILED"))
 		for _, m := range v.Check.Messages {
 			fmt.Fprintf(w, "  %s\n", m)
 		}
 	case "not_installed":
 		fmt.Fprintf(w, "Check (mihomo -t): not run, %s\n", v.Check.Messages[0])
 	default:
-		fmt.Fprintf(w, "Check (mihomo -t): could not complete: %s\n", v.Check.Messages[0])
+		fmt.Fprintf(w, "Check (mihomo -t): %s %s\n", a.style.warn("could not complete:"), v.Check.Messages[0])
 	}
 }
 
@@ -240,7 +240,7 @@ func (a *app) newPlanCommand() *cobra.Command {
 			"Nothing is changed, except that geo data the check needs may be downloaded.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			plan, err := a.pipeline().Plan(cmd.Context())
+			plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().Plan(cmd.Context()) })
 			if err != nil {
 				return err
 			}
@@ -267,7 +267,7 @@ func (a *app) newApplyCommand() *cobra.Command {
 			if err := a.requireConfirmation("apply"); err != nil {
 				return err
 			}
-			plan, err := a.pipeline().Plan(cmd.Context())
+			plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().Plan(cmd.Context()) })
 			if err != nil {
 				return err
 			}
@@ -310,7 +310,7 @@ func (a *app) newRollbackCommand() *cobra.Command {
 					return err
 				}
 			}
-			plan, err := a.pipeline().PlanRollback(cmd.Context(), n)
+			plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().PlanRollback(cmd.Context(), n) })
 			if err != nil {
 				return err
 			}
@@ -319,6 +319,16 @@ func (a *app) newRollbackCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&list, "list", false, "list the configuration history")
 	return cmd
+}
+
+// plan 执行 fn 合成并校验配置（可能要下载 geo 数据，较慢），期间显示 spinner。
+func (a *app) plan(fn func() (*pipeline.Plan, error)) (*pipeline.Plan, error) {
+	var p *pipeline.Plan
+	err := a.spin("Composing and checking the configuration", func() (err error) {
+		p, err = fn()
+		return err
+	})
+	return p, err
 }
 
 // chooseRevision 让用户从历史中选一个修订，光标起始于不带参数时会回到的那一份（最近一个与生效配置
@@ -394,7 +404,11 @@ func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) 
 		return err
 	}
 
-	res, err := a.pipeline().Apply(cmd.Context(), plan)
+	var res *pipeline.ApplyResult
+	err := a.spin("Publishing the configuration", func() (err error) {
+		res, err = a.pipeline().Apply(cmd.Context(), plan)
+		return err
+	})
 	if errors.Is(err, core.ErrRolledBack) {
 		return fmt.Errorf("%w; the previous configuration is back in place", err)
 	}
@@ -407,7 +421,7 @@ func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) 
 		v.UIError = res.UIError.Error()
 	}
 	return a.render(v, func() error {
-		fmt.Fprintf(a.stdout, "\nPublished revision %d to %s.\n", res.Revision.Number, a.layout.CoreConfig())
+		fmt.Fprintf(a.stdout, "\n%s to %s.\n", a.style.good(fmt.Sprintf("Published revision %d", res.Revision.Number)), a.layout.CoreConfig())
 		if res.UIInstalled != "" {
 			fmt.Fprintf(a.stdout, "Installed the panel (zashboard, checksum verified) in %s.\n", res.UIInstalled)
 		}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/charmbracelet/x/term"
@@ -46,6 +47,10 @@ type app struct {
 	stdout io.Writer
 	stderr io.Writer
 	log    *slog.Logger
+	// style、errStyle 是标准输出、标准错误的样式（不是终端时不加样式）。
+	style, errStyle styles
+	// live 是正在显示 spinner 的进度，日志经由它输出。
+	live atomic.Pointer[progress]
 
 	// 以下供测试替换，为空时使用默认实现。
 	validator pipeline.Validator
@@ -71,6 +76,7 @@ func Main(info BuildInfo, args []string) int {
 	}
 	// 不能只看是否为字符设备：/dev/null 也是（systemd 运行的命令、< /dev/null 都会误判为终端）。
 	a.terminal = func() bool { return term.IsTerminal(a.stdin.Fd()) }
+	a.style, a.errStyle = detectStyles(os.Stdout), detectStyles(os.Stderr)
 	a.editor = a.runEditor
 	a.prompt = huhPrompter{a}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -108,7 +114,7 @@ func (a *app) newRootCommand() *cobra.Command {
 			if a.opts.Verbose {
 				level = slog.LevelDebug
 			}
-			a.log = slog.New(slog.NewTextHandler(a.stderr, &slog.HandlerOptions{Level: level}))
+			a.log = slog.New(slog.NewTextHandler(logWriter{a}, &slog.HandlerOptions{Level: level}))
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tunlr-app/cli/pkg/core/config"
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
@@ -72,7 +73,11 @@ func (a *app) newSubAddCommand() *cobra.Command {
 		Short: "Fetch and save a subscription; the first one becomes active",
 		Args:  usageArgs(cobra.ExactArgs(2)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			res, err := a.subscriptions().Add(cmd.Context(), args[0], args[1], userAgent)
+			var res *subscription.Fetched
+			err := a.spin("Fetching the subscription", func() (err error) {
+				res, err = a.subscriptions().Add(cmd.Context(), args[0], args[1], userAgent)
+				return err
+			})
 			if err != nil {
 				return err
 			}
@@ -251,7 +256,11 @@ func (a *app) newSubUpdateCommand() *cobra.Command {
 			if cmd.Flags().Changed("user-agent") {
 				opts.UserAgent = &userAgent
 			}
-			results, err := a.subscriptions().Update(cmd.Context(), args, opts)
+			var results []subscription.UpdateResult
+			err := a.spin("Fetching subscriptions", func() (err error) {
+				results, err = a.subscriptions().Update(cmd.Context(), args, opts)
+				return err
+			})
 			if results == nil {
 				return err
 			}
@@ -265,10 +274,15 @@ func (a *app) newSubUpdateCommand() *cobra.Command {
 			}
 			rerr := a.render(views, func() error {
 				for _, v := range views {
-					if v.OK {
+					switch {
+					case !a.style.on && v.OK:
 						fmt.Fprintf(a.stdout, "ok      %s: %s\n", v.Name, describeSummary(v.Summary))
-					} else {
+					case !a.style.on:
 						fmt.Fprintf(a.stdout, "FAILED  %s: %s (keeping the last good copy)\n", v.Name, v.Error)
+					case v.OK:
+						a.printCheck("ok", v.Name+":", 0, describeSummary(v.Summary))
+					default:
+						a.printCheck("failed", v.Name+":", 0, v.Error+" (keeping the last good copy)")
 					}
 				}
 				return nil
@@ -322,7 +336,7 @@ func (a *app) newSubUseCommand() *cobra.Command {
 			err = a.render(fetchedView{res.Name, res.Activated, res.Summary}, func() error {
 				var err error
 				if res.Activated {
-					_, err = fmt.Fprintf(a.stdout, "Switched to %q: %s.\n", res.Name, describeSummary(res.Summary))
+					_, err = fmt.Fprintf(a.stdout, "%s: %s.\n", a.style.good(fmt.Sprintf("Switched to %q", res.Name)), describeSummary(res.Summary))
 				} else {
 					_, err = fmt.Fprintf(a.stdout, "%q is already the active subscription.\n", res.Name)
 				}
@@ -347,7 +361,7 @@ func (a *app) newSubUseCommand() *cobra.Command {
 				}
 			}
 			fmt.Fprintln(a.stdout)
-			plan, err := a.pipeline().Plan(cmd.Context())
+			plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().Plan(cmd.Context()) })
 			if err != nil {
 				return err
 			}

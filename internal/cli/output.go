@@ -47,7 +47,7 @@ func (a *app) printError(err error, code int) {
 			return
 		}
 	}
-	fmt.Fprintf(a.stderr, "tunlr: %v\n", err)
+	fmt.Fprintf(a.stderr, "%s %v\n", a.errStyle.bad("tunlr:"), err)
 	var ue usageError
 	if errors.As(err, &ue) {
 		fmt.Fprintln(a.stderr, "Run 'tunlr --help' for usage.")

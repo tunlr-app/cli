@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/netfilter"
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/setup"
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
@@ -49,18 +51,18 @@ func (a *app) printTunStatus(s *setup.TunStatus) {
 	case state.TunPending:
 		left := time.Until(s.Deadline).Round(time.Second)
 		if left > 0 {
-			fmt.Fprintf(w, "Transparent proxy: being checked (turned off in %s unless confirmed)\n", left)
+			fmt.Fprintf(w, "Transparent proxy: %s (turned off in %s unless confirmed)\n", a.style.warn("being checked"), left)
 		} else {
-			fmt.Fprintln(w, "Transparent proxy: never confirmed (it is turned off when mihomo starts or tunlr-check runs)")
+			fmt.Fprintf(w, "Transparent proxy: %s (it is turned off when mihomo starts or tunlr-check runs)\n", a.style.warn("never confirmed"))
 		}
 	case state.TunOn:
-		fmt.Fprintln(w, "Transparent proxy: on")
+		fmt.Fprintf(w, "Transparent proxy: %s\n", a.style.good("on"))
 	default:
-		fmt.Fprintln(w, "Transparent proxy: off")
+		fmt.Fprintf(w, "Transparent proxy: %s\n", a.style.dim("off"))
 	}
 	switch {
 	case s.Running == nil:
-		fmt.Fprintln(w, "mihomo:            not responding")
+		fmt.Fprintf(w, "mihomo:            %s\n", a.style.warn("not responding"))
 	case *s.Running:
 		fmt.Fprintln(w, "mihomo:            TUN enabled")
 	default:
@@ -73,7 +75,7 @@ func (a *app) printTunStatus(s *setup.TunStatus) {
 		if b {
 			return "present"
 		}
-		return "absent"
+		return a.style.dim("absent")
 	}
 	fmt.Fprintf(w, "Interface:         %s %s\n", netfilter.Device, yes(s.Device))
 	fmt.Fprintf(w, "nftables:          inet %s %s, inet %s %s\n", netfilter.Table, yes(s.Rules), netfilter.KernelTable, yes(s.KernelRules))
@@ -100,14 +102,14 @@ func (a *app) newTunOnCommand() *cobra.Command {
 			}
 			if !a.opts.JSON {
 				for _, w := range warnings {
-					fmt.Fprintf(a.stdout, "Warning: %s\n", w)
+					fmt.Fprintf(a.stdout, "%s %s\n", a.style.warn("Warning:"), w)
 				}
 			}
 			s, err := inst.TunStatus(ctx)
 			if err != nil {
 				return err
 			}
-			plan, err := a.pipeline().PlanTun(ctx, true)
+			plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().PlanTun(ctx, true) })
 			if err != nil {
 				return err
 			}
@@ -143,19 +145,26 @@ func (a *app) newTunOnCommand() *cobra.Command {
 			opts := a.sshProbe()
 			if !a.opts.JSON {
 				fmt.Fprintln(a.stdout)
-				opts.Progress = func(step string) { fmt.Fprintf(a.stdout, "==> %s\n", step) }
 			}
+			var done func(error)
+			opts.Progress, done = a.stepper()
 			res, err := inst.TunOn(ctx, plan, opts)
+			// 检测失败时 TunOn 已经关闭了 TUN，最后一步（关闭）本身是成功的，失败的项在下面列出。
+			if res == nil {
+				done(err)
+			} else {
+				done(nil)
+			}
 			v.Applied, v.Result = res != nil && err == nil, res
 			if res == nil {
 				return err
 			}
 			rerr := a.render(v, func() error {
 				for _, c := range res.Checks {
-					fmt.Fprintf(a.stdout, "%-8s %-6s %s\n", c.Status, c.Name, c.Message)
+					a.printCheck(c.Status, c.Name, 6, c.Message)
 				}
 				if err == nil {
-					fmt.Fprintln(a.stdout, "\nThe transparent proxy is on.")
+					fmt.Fprintf(a.stdout, "\n%s\n", a.style.good("The transparent proxy is on."))
 				}
 				return nil
 			})
@@ -188,7 +197,12 @@ func (a *app) sshProbe() setup.TunOptions {
 		return opts
 	}
 	opts.Probe = func() {
-		fmt.Fprintln(f, "==> Checking that this SSH session still gets through (no input needed)")
+		// 进行中的步骤显示着 spinner 时经由它输出，否则直接写到终端。
+		var w io.Writer = f
+		if p := a.live.Load(); p != nil && a.style.on {
+			w = p
+		}
+		fmt.Fprintln(w, a.style.dim("Checking that this SSH session still gets through (no input needed)"))
 	}
 	return opts
 }
@@ -208,7 +222,7 @@ func (a *app) newTunOffCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			plan, err := a.pipeline().PlanTun(ctx, false)
+			plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().PlanTun(ctx, false) })
 			if err != nil {
 				return err
 			}
@@ -241,7 +255,11 @@ func (a *app) newTunOffCommand() *cobra.Command {
 				}
 				return err
 			}
-			res, err := inst.TunOff(ctx, plan)
+			var res *setup.TunResult
+			err = a.spin("Publishing the configuration", func() (err error) {
+				res, err = inst.TunOff(ctx, plan)
+				return err
+			})
 			if errors.Is(err, core.ErrRolledBack) {
 				return fmt.Errorf("%w; the previous configuration is back in place", err)
 			}
@@ -250,7 +268,7 @@ func (a *app) newTunOffCommand() *cobra.Command {
 			}
 			v.Applied, v.Result = true, res
 			return a.render(v, func() error {
-				_, err := fmt.Fprintln(a.stdout, "\nThe transparent proxy is off.")
+				_, err := fmt.Fprintf(a.stdout, "\n%s\n", a.style.good("The transparent proxy is off."))
 				return err
 			})
 		},
@@ -333,15 +351,15 @@ func (a *app) newCheckCommand() *cobra.Command {
 }
 
 // describeTun 用于 status 的一行透明代理状态。
-func describeTun(s *setup.TunStatus) string {
+func (a *app) describeTun(s *setup.TunStatus) string {
 	var b strings.Builder
 	switch s.Switch {
 	case state.TunPending:
-		b.WriteString("being checked")
+		b.WriteString(a.style.warn("being checked"))
 	case state.TunOn:
-		b.WriteString("on")
+		b.WriteString(a.style.good("on"))
 	default:
-		b.WriteString("off")
+		b.WriteString(a.style.dim("off"))
 	}
 	if s.Running != nil && *s.Running != (s.Switch != "off") {
 		if *s.Running {
