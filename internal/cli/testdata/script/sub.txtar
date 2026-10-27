@@ -47,6 +47,12 @@ stderr 'accepts 2 arg'
 exitcode 1 tunlr sub remove main
 stderr 'subscription is active: main; switch to another subscription first'
 
+# 非交互模式下省略名称是用法错误（交互时从列表选择）
+exitcode 2 tunlr sub use
+stderr 'sub use needs the name of a subscription'
+exitcode 2 tunlr sub remove
+stderr 'sub remove needs the names'
+
 # 切换
 exec tunlr sub use backup
 stdout '^Switched to "backup": 2 proxies'

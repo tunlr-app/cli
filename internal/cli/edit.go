@@ -24,21 +24,48 @@ import (
 
 // prompter 向用户提问。用户取消时返回 huh.ErrUserAborted。
 type prompter interface {
-	// Choose 让用户从 options 中选一项，返回其下标。
-	Choose(ctx context.Context, title string, options []string) (int, error)
+	// Choose 让用户用上下箭头从 options 中选一项，光标起始于下标 initial，返回所选的下标。
+	Choose(ctx context.Context, title string, options []string, initial int) (int, error)
+	// ChooseMany 让用户勾选 options 中的若干项，返回所选的下标（按列表顺序）。
+	ChooseMany(ctx context.Context, title string, options []string) ([]int, error)
 	// Input 让用户输入一行文字，description 是标题下的说明，validate 不通过时要求重新输入。
 	Input(ctx context.Context, title, description string, validate func(string) error) (string, error)
 }
 
 type huhPrompter struct{ a *app }
 
-func (p huhPrompter) Choose(ctx context.Context, title string, options []string) (int, error) {
+// maxListRows 是列表一次显示的最多行数，更多时滚动。
+const maxListRows = 10
+
+func intOptions(options []string) []huh.Option[int] {
 	opts := make([]huh.Option[int], len(options))
 	for i, o := range options {
 		opts[i] = huh.NewOption(o, i)
 	}
-	var v int
-	err := p.run(ctx, huh.NewSelect[int]().Title(title).Options(opts...).Value(&v))
+	return opts
+}
+
+// listHeight 是选择列表的高度：最多 maxListRows 行选项，加上标题等 header 行。总是显式设置：
+// 不设置时 huh 按选项行数定高，再减去标题和说明，选项少时一行都显示不出来。
+func listHeight(options []string, header int) int {
+	return min(len(options), maxListRows) + header
+}
+
+func (p huhPrompter) Choose(ctx context.Context, title string, options []string, initial int) (int, error) {
+	v := initial
+	s := huh.NewSelect[int]().Title(title).Options(intOptions(options)...).Value(&v).
+		Height(listHeight(options, 1))
+	err := p.run(ctx, s)
+	return v, err
+}
+
+func (p huhPrompter) ChooseMany(ctx context.Context, title string, options []string) ([]int, error) {
+	var v []int
+	// 按键（x 或空格勾选、ctrl+a 全选）显示在底部的帮助行中。
+	s := huh.NewMultiSelect[int]().Title(title).Options(intOptions(options)...).Value(&v).
+		Height(listHeight(options, 1))
+	err := p.run(ctx, s)
+	slices.Sort(v)
 	return v, err
 }
 
@@ -103,7 +130,7 @@ func (a *app) chooseMixin(ctx context.Context) (string, error) {
 		names = append(names, m.Name)
 	}
 	if len(names) > 0 {
-		i, err := a.prompt.Choose(ctx, "Which mixin file?", append(slices.Clone(names), "New file..."))
+		i, err := a.prompt.Choose(ctx, "Which mixin file?", append(slices.Clone(names), "New file..."), 0)
 		if err != nil {
 			return "", err
 		}
@@ -194,7 +221,7 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 		}
 
 		if choices != nil {
-			i, err := a.prompt.Choose(ctx, "The mixin was not saved. What now?", choices)
+			i, err := a.prompt.Choose(ctx, "The mixin was not saved. What now?", choices, 0)
 			if err != nil && !errors.Is(err, huh.ErrUserAborted) {
 				return err
 			}

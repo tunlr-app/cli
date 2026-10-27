@@ -281,9 +281,10 @@ func (a *app) newRollbackCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rollback [revision]",
 		Short: "Publish an earlier configuration again (--list shows the history)",
-		Long: "Publish a configuration from the history again. Without a revision, go back to the\n" +
-			"most recent one that differs from the published configuration, so running it twice\n" +
-			"switches back. The next apply composes from the subscription and mixins again.",
+		Long: "Publish a configuration from the history again. Without a revision, choose it from\n" +
+			"the history in a terminal; otherwise (or with --yes) go back to the most recent one\n" +
+			"that differs from the published configuration, so running it twice switches back.\n" +
+			"The next apply composes from the subscription and mixins again.",
 		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if list {
@@ -302,6 +303,13 @@ func (a *app) newRollbackCommand() *cobra.Command {
 			if err := a.requireConfirmation("rollback"); err != nil {
 				return err
 			}
+			if n == 0 && a.interactive() && !a.opts.Yes {
+				var err error
+				if n, err = a.chooseRevision(cmd); err != nil || n == 0 {
+					_, err := a.cancelled(err)
+					return err
+				}
+			}
 			plan, err := a.pipeline().PlanRollback(cmd.Context(), n)
 			if err != nil {
 				return err
@@ -311,6 +319,31 @@ func (a *app) newRollbackCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&list, "list", false, "list the configuration history")
 	return cmd
+}
+
+// chooseRevision 让用户从历史中选一个修订，光标起始于不带参数时会回到的那一份（最近一个与生效配置
+// 不同的修订）。没有历史时告诉用户并返回 0。
+func (a *app) chooseRevision(cmd *cobra.Command) (int, error) {
+	revs, current, err := a.pipeline().Revisions()
+	if err != nil {
+		return 0, err
+	}
+	if len(revs) == 0 {
+		fmt.Fprintln(a.stdout, "No configuration has been published yet; there is nothing to roll back to.")
+		return 0, nil
+	}
+	initial := 0
+	for i, r := range revs {
+		if r.Number != current {
+			initial = i
+			break
+		}
+	}
+	i, err := a.prompt.Choose(cmd.Context(), "Roll back to which revision?", revisionOptions(revs, current), initial)
+	if err != nil {
+		return 0, err
+	}
+	return revs[i].Number, nil
 }
 
 // requireConfirmation 在无法提问又没有 --yes 时，于开始工作前报告用法错误。

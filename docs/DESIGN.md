@@ -455,7 +455,7 @@ tunlr rollback            回滚配置（--list 查看历史）
 tunlr edit [名称]         用 $EDITOR 编辑 mixin.d 中的文件，校验通过才保存，然后发布
 
 tunlr sub add | list | remove | update  订阅（可保存多个）
-tunlr sub use <name>      切换启用的订阅（同一时间只启用一个）
+tunlr sub use [name]      切换启用的订阅（同一时间只启用一个；交互时省略名称则从列表选择）
 tunlr tun on | off        透明代理（--mode 预留给将来的 tproxy）
 tunlr env on | off        当前 shell 的代理变量（需先配置 shell-init）
 
@@ -479,7 +479,16 @@ tunlr version
 - `start`、`stop`、`restart`：执行 `systemctl`，`start`、`restart` 之后做健康检查。`logs` 执行 `journalctl -u tunlr-core.service`，透传 `-f`、`-n`。
 - `status`：服务状态、运行中的内核版本、已知可用版本、启用的订阅、最近一次发布、下次定时更新的时间。
 - `uninstall`：停止并禁用、删除 unit，删除 `bin/`、`core/`、`kernels/` 和用户 `tunlr`；保留 `/etc/tunlr`、订阅、历史、状态文件和 `/usr/local/bin/tunlr`（之后可以直接 `tunlr init` 恢复），`--purge` 才一并删除。需要确认（`--yes`）。
-- `sub use <名称>`：交互模式下询问是否立即发布，`--apply` 直接发布（同 `apply`，非交互时需配合 `--yes`）。`_check` 推迟到 MVP 3。
+- `sub use [名称]`：交互模式下询问是否立即发布，`--apply` 直接发布（同 `apply`，非交互时需配合 `--yes`）。
+
+**从已有条目中选择**：命令的参数是从已有条目中挑一个（或几个）时，交互模式下可以省略参数，改为在列表中用上下箭头选择、回车确定（多选时 x 或空格勾选），`/` 过滤，Esc 或 Ctrl-C 取消，取消不算失败。非交互模式下省略参数的行为不变：原来必须给的照样报用法错误，原来有默认值的（如 `rollback` 回到上一个不同的修订）照样用默认值，带 `--yes` 时也不询问。选项要能放进 80 列的终端，细节留给 `sub list`、`rollback --list`。列表中每项附上做选择需要的信息，光标停在最可能的那一项上：
+
+| 命令 | 列表 | 光标起始 |
+|---|---|---|
+| `sub use` | 全部订阅，标出启用的那个，附节点数、更新时间、流量与到期日 | 启用的订阅 |
+| `sub remove` | 启用的以外的订阅（多选） | 第一项 |
+| `rollback` | 历史修订，附时间、来源、订阅，标出与生效配置相同的那一份 | 不带参数时会回到的那一份 |
+| `edit` | mixin 文件，末尾是“新建文件” | 第一项 |
 
 设计思路：高频的服务控制放在顶层，与 `systemctl` 的直觉一致；只保留 `sub`、`tun`、`env` 三组子命令（`sub use` 的说法与 `kubectl config use-context`、`nvm use` 一致）；合并含义重叠的命令。检验标准：没看过文档的人能猜对大部分常用操作。
 

@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -134,19 +136,103 @@ func (a *app) newSubListCommand() *cobra.Command {
 
 func (a *app) newSubRemoveCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "remove <name>",
-		Short: "Remove a saved subscription (not the active one)",
-		Args:  usageArgs(cobra.ExactArgs(1)),
+		Use:   "remove [name...]",
+		Short: "Remove saved subscriptions (not the active one)",
+		Long: "Remove saved subscriptions. The active one cannot be removed; switch to another first.\n" +
+			"Without names, choose them from a list (needs a terminal).",
+		Args: usageArgs(cobra.ArbitraryArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := a.subscriptions().Remove(cmd.Context(), args[0]); err != nil {
-				return err
+			names := args
+			if len(names) == 0 {
+				if !a.interactive() {
+					return usageErrorf("sub remove needs the names of the subscriptions to remove (see: tunlr sub list)")
+				}
+				var err error
+				if names, err = a.chooseToRemove(cmd); err != nil || names == nil {
+					_, err := a.cancelled(err)
+					return err
+				}
 			}
-			return a.render(map[string]string{"name": args[0]}, func() error {
-				_, err := fmt.Fprintf(a.stdout, "Removed subscription %q.\n", args[0])
-				return err
+			var removed []string
+			for _, name := range names {
+				if err := a.subscriptions().Remove(cmd.Context(), name); err != nil {
+					if len(removed) > 0 && !a.opts.JSON {
+						fmt.Fprintf(a.stdout, "Removed %s.\n", strings.Join(quoteAll(removed), ", "))
+					}
+					return err
+				}
+				removed = append(removed, name)
+			}
+			return a.render(map[string][]string{"removed": removed}, func() error {
+				for _, name := range removed {
+					fmt.Fprintf(a.stdout, "Removed subscription %q.\n", name)
+				}
+				return nil
 			})
 		},
 	}
+}
+
+// chooseToRemove 让用户勾选要删除的订阅（启用的那个不在列表中）。没有可删除的、或什么都没勾选时
+// 告诉用户并返回 nil。
+func (a *app) chooseToRemove(cmd *cobra.Command) ([]string, error) {
+	entries, err := a.subscriptions().List()
+	if err != nil {
+		return nil, err
+	}
+	var candidates []subscription.Entry
+	for _, e := range entries {
+		if !e.Active {
+			candidates = append(candidates, e)
+		}
+	}
+	if len(candidates) == 0 {
+		fmt.Fprintln(a.stdout, "Nothing to remove: the active subscription cannot be removed, and there is no other.")
+		return nil, nil
+	}
+	picked, err := a.prompt.ChooseMany(cmd.Context(), "Remove which subscriptions?", subscriptionOptions(candidates))
+	if err != nil {
+		return nil, err
+	}
+	if len(picked) == 0 {
+		fmt.Fprintln(a.stdout, "Nothing selected; nothing removed.")
+		return nil, nil
+	}
+	names := make([]string, len(picked))
+	for i, p := range picked {
+		names[i] = candidates[p].Name
+	}
+	return names, nil
+}
+
+// chooseSubscription 让用户从全部订阅中选一个，光标起始于启用的那个。
+func (a *app) chooseSubscription(cmd *cobra.Command) (string, error) {
+	entries, err := a.subscriptions().List()
+	if err != nil {
+		return "", err
+	}
+	if len(entries) == 0 {
+		return "", errors.New("no subscriptions yet; add one with: tunlr sub add <name> <url>")
+	}
+	initial := 0
+	for i, e := range entries {
+		if e.Active {
+			initial = i
+		}
+	}
+	i, err := a.prompt.Choose(cmd.Context(), "Use which subscription?", subscriptionOptions(entries), initial)
+	if err != nil {
+		return "", err
+	}
+	return entries[i].Name, nil
+}
+
+func quoteAll(names []string) []string {
+	q := make([]string, len(names))
+	for i, n := range names {
+		q[i] = strconv.Quote(n)
+	}
+	return q
 }
 
 func (a *app) newSubUpdateCommand() *cobra.Command {
@@ -200,12 +286,13 @@ func (a *app) newSubUpdateCommand() *cobra.Command {
 func (a *app) newSubUseCommand() *cobra.Command {
 	var apply bool
 	cmd := &cobra.Command{
-		Use:   "use <name>",
+		Use:   "use [name]",
 		Short: "Make a saved subscription the active one",
-		Long: "Make a saved subscription the active one. With --apply, publish the configuration\n" +
-			"right away like tunlr apply (pass --yes too when not interactive); interactively\n" +
-			"tunlr asks whether to publish it now.",
-		Args: usageArgs(cobra.ExactArgs(1)),
+		Long: "Make a saved subscription the active one. Without a name, choose it from a list\n" +
+			"(needs a terminal). With --apply, publish the configuration right away like\n" +
+			"tunlr apply (pass --yes too when not interactive); interactively tunlr asks whether\n" +
+			"to publish it now.",
+		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if apply {
 				if a.opts.JSON {
@@ -215,7 +302,20 @@ func (a *app) newSubUseCommand() *cobra.Command {
 					return err
 				}
 			}
-			res, err := a.subscriptions().Use(cmd.Context(), args[0])
+			var name string
+			if len(args) == 1 {
+				name = args[0]
+			} else {
+				if !a.interactive() {
+					return usageErrorf("sub use needs the name of a subscription (see: tunlr sub list)")
+				}
+				var err error
+				if name, err = a.chooseSubscription(cmd); err != nil {
+					_, err := a.cancelled(err)
+					return err
+				}
+			}
+			res, err := a.subscriptions().Use(cmd.Context(), name)
 			if err != nil {
 				return err
 			}

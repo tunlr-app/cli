@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/huh/v2"
+
 	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/paths"
@@ -42,23 +44,44 @@ type stoppedKernel struct{}
 
 func (stoppedKernel) Reload(context.Context) error { return mihomo.ErrNotRunning }
 
-// scriptedPrompt 按顺序给出预设的回答，并记录问过的选项。
+// scriptedPrompt 按顺序给出预设的回答，并记录问过的选项。choices 中的 -1 表示用户取消。
 type scriptedPrompt struct {
 	t       *testing.T
 	choices []int
-	inputs  []string
-	asked   [][]string
+	// many 是多选的回答，nil 表示用户取消。
+	many   [][]int
+	inputs []string
+	asked  [][]string
+	// initials 记录单选时光标的起始位置。
+	initials []int
 	// described 记录输入时的说明。
 	described []string
 }
 
-func (p *scriptedPrompt) Choose(_ context.Context, _ string, options []string) (int, error) {
+func (p *scriptedPrompt) Choose(_ context.Context, _ string, options []string, initial int) (int, error) {
 	p.asked = append(p.asked, options)
+	p.initials = append(p.initials, initial)
 	if len(p.choices) == 0 {
 		p.t.Fatalf("unexpected question: %v", options)
 	}
 	c := p.choices[0]
 	p.choices = p.choices[1:]
+	if c < 0 {
+		return 0, huh.ErrUserAborted
+	}
+	return c, nil
+}
+
+func (p *scriptedPrompt) ChooseMany(_ context.Context, _ string, options []string) ([]int, error) {
+	p.asked = append(p.asked, options)
+	if len(p.many) == 0 {
+		p.t.Fatalf("unexpected question: %v", options)
+	}
+	c := p.many[0]
+	p.many = p.many[1:]
+	if c == nil {
+		return nil, huh.ErrUserAborted
+	}
 	return c, nil
 }
 
