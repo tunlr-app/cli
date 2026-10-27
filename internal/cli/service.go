@@ -14,7 +14,10 @@ import (
 )
 
 func (a *app) installer() *setup.Installer {
-	return &setup.Installer{Layout: a.layout, Version: a.info.Version, Download: a.download, Log: a.log}
+	return &setup.Installer{
+		Layout: a.layout, Version: a.info.Version, Download: a.download, Log: a.log,
+		Validator: a.validator, Reloader: a.reloader,
+	}
 }
 
 func (a *app) kernels() (*mihomo.Manager, error) {
@@ -292,6 +295,9 @@ func (a *app) printStatus(s *setup.Status) {
 	}
 	if !s.NextUpdate.IsZero() {
 		fmt.Fprintf(w, "Next update:   %s\n", s.NextUpdate.Local().Format(time.DateTime))
+	}
+	if s.Tun != nil {
+		fmt.Fprintf(w, "TUN:           %s\n", describeTun(s.Tun))
 	}
 }
 

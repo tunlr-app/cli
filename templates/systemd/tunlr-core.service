@@ -12,7 +12,11 @@ OnFailure=tunlr-rescue.service
 Type=simple
 User={{.User}}
 Group={{.User}}
+# 以 root 运行（+），不受 User= 和沙箱限制；失败不阻止内核启动（-）。
+# _prestart 加载透明代理的回包规则，并关闭过期仍未确认的 TUN；_poststop 在内核以任何方式退出后清理规则。
+ExecStartPre=-+{{.Tool}} _prestart
 ExecStart={{.Binary}} -d {{.CoreDir}}
+ExecStopPost=-+{{.Tool}} _poststop
 Restart=on-failure
 RestartSec=3
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE

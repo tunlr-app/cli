@@ -124,8 +124,12 @@ func Compose(l Layers) (*Result, error) {
 		if err := m.apply(root, src, ""); err != nil {
 			return nil, err
 		}
+		// mixin 改动或写明了强制项、且结果与强制的值不同时警告。只看改动会漏掉写明的值碰巧与模板
+		// 相同的情况，如透明代理开着时写 tun.enable: false。
 		for i, p := range enforcedPaths {
-			if !sameNode(before[i], lookup(root, p)) {
+			after := lookup(root, p)
+			touched := !sameNode(before[i], after) || lookup(src, p) != nil
+			if touched && !sameNode(after, lookup(enforced.Content[0], p)) {
 				m.warnf(keyLine(src, p), "%s is managed by tunlr; the value in the mixin is ignored", strings.Join(p, "."))
 			}
 		}
@@ -150,6 +154,15 @@ func Compose(l Layers) (*Result, error) {
 	}
 	res.Config = spaceSections(buf.Bytes())
 	return res, nil
+}
+
+// Enforce 把强制项写入已经合成好的配置 cfg（例如回滚到的历史修订），其余内容不变。
+func Enforce(cfg, enforced []byte) ([]byte, error) {
+	res, err := Compose(Layers{Template: cfg, Enforced: enforced})
+	if err != nil {
+		return nil, err
+	}
+	return res.Config, nil
 }
 
 // spaceSections 在顶层段落之间补回空行（yaml.v3 编码时会丢弃键之间的空行）。

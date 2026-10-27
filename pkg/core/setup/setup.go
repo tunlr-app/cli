@@ -19,6 +19,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/fsutil"
 	"github.com/tunlr-app/cli/pkg/core/lock"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
+	"github.com/tunlr-app/cli/pkg/core/netfilter"
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/service"
@@ -43,6 +44,13 @@ type Installer struct {
 	Now func() time.Time
 	// Log 为空时不记录日志。
 	Log *slog.Logger
+	// Validator、Reloader 供测试替换配置的校验与内核的热重载，为空时使用默认实现。
+	Validator pipeline.Validator
+	Reloader  pipeline.Reloader
+	// Rules 为空时使用默认的 nft 与 ip 命令。
+	Rules *netfilter.Rules
+	// CheckNetwork 是开启透明代理后的检测，为空时使用默认的检测（测试时替换）。
+	CheckNetwork func(ctx context.Context, opts TunOptions) []TunCheck
 }
 
 // InitOptions 是 init 的参数。
@@ -266,8 +274,14 @@ func (i *Installer) Uninstall(ctx context.Context, purge bool) (*UninstallResult
 	defer l.Release()
 
 	res := &UninstallResult{}
+	// 停止内核服务时 _poststop 删除规则；服务没在运行（或 unit 是旧版）时这里再删一次。
 	if err := i.systemd().Uninstall(ctx); err != nil {
 		return nil, err
+	}
+	if left, err := i.rules().Down(ctx); err != nil {
+		i.log().Warn("remove the nftables rules", "err", err)
+	} else if left {
+		res.Removed = append(res.Removed, "nftables table inet "+netfilter.KernelTable)
 	}
 	res.Removed = append(res.Removed, filepath.Join(i.Layout.UnitDir(), "tunlr-*"))
 
@@ -296,9 +310,10 @@ func (i *Installer) Uninstall(ctx context.Context, purge bool) (*UninstallResult
 	}
 
 	if !purge {
-		// 已知可用版本的二进制已经删除。
-		if st, err := state.Load(lay.StateFile()); err == nil && len(st.Kernels) > 0 {
+		// 已知可用版本的二进制已经删除；生效配置也已删除，重新 init 时透明代理保持关闭。
+		if st, err := state.Load(lay.StateFile()); err == nil && (len(st.Kernels) > 0 || st.Tun != "") {
 			st.Kernels = nil
+			st.SetTun("", time.Time{})
 			if err := state.Save(lay.StateFile(), st); err != nil {
 				return res, err
 			}
@@ -333,7 +348,7 @@ func (i *Installer) kernels(owner *fsutil.Owner, arch mihomo.Arch) *mihomo.Manag
 func (i *Installer) pipeline(owner *fsutil.Owner) *pipeline.Pipeline {
 	return &pipeline.Pipeline{
 		Layout: i.Layout, Version: i.Version, Download: i.Download, Owner: owner, Now: i.Now,
-		Restarter: i.kernels(owner, mihomo.Arch{}),
+		Validator: i.Validator, Reloader: i.Reloader, Restarter: i.kernels(owner, mihomo.Arch{}),
 	}
 }
 

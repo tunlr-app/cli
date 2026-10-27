@@ -38,6 +38,31 @@ type State struct {
 
 	// Kernels 是已知可用的内核版本，最近确认的在前。
 	Kernels []Kernel `json:"kernels,omitempty"`
+
+	// Tun 是透明代理（TUN）的开关：空为关闭，TunPending 为已开启、正在检测，TunOn 为已确认。
+	// 只由 tun on/off 和防失联回滚修改，不放在用户可以手改的设置中，以免绕过检测。
+	Tun string `json:"tun,omitempty"`
+	// TunDeadline 是 TunPending 的期限：过期仍未确认时，由回滚定时器或下次启动内核前关闭。
+	TunDeadline time.Time `json:"tun_deadline,omitzero"`
+}
+
+// 透明代理开关的状态，关闭时为空。
+const (
+	TunPending = "pending"
+	TunOn      = "on"
+)
+
+// TunEnabled 报告配置中是否开启 TUN：已确认或正在检测时都开启。
+func (s *State) TunEnabled() bool {
+	return s.Tun == TunOn || s.Tun == TunPending
+}
+
+// SetTun 设置透明代理开关。TunPending 时 deadline 是期限，其他状态忽略它。
+func (s *State) SetTun(v string, deadline time.Time) {
+	s.Tun, s.TunDeadline = v, time.Time{}
+	if v == TunPending {
+		s.TunDeadline = deadline.UTC()
+	}
 }
 
 // Kernel 是一个已知可用的内核版本，二进制存放在 paths.Layout.KernelBinary(Version)。

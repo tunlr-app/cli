@@ -41,6 +41,23 @@ func Acquire(ctx context.Context, path string) (*Lock, error) {
 	}
 }
 
+// TryAcquire 只尝试一次获取 path 上的排他锁，被占用时立即返回包装了 ErrBusy 的错误。
+func TryAcquire(path string) (*Lock, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("lock %s: %w", path, err)
+	}
+	f := flock.New(path)
+	ok, err := f.TryLock()
+	switch {
+	case ok:
+		return &Lock{f: f}, nil
+	case err == nil:
+		return nil, fmt.Errorf("%w (lock file %s)", ErrBusy, path)
+	default:
+		return nil, fmt.Errorf("lock %s: %w", path, err)
+	}
+}
+
 // Release 释放锁。锁文件保留在磁盘上，删除它会让并发的获取者锁住不同的文件。
 func (l *Lock) Release() error {
 	return l.f.Unlock()

@@ -1,0 +1,19 @@
+# 由 tunlr 生成：从外部进入本机的连接，回包走主路由表，不进 TUN（DESIGN.md 8.4）。
+# 先建后删再建，整个文件在一个事务中替换旧表。
+table inet {{.Table}}
+delete table inet {{.Table}}
+table inet {{.Table}} {
+	chain prerouting {
+		type filter hook prerouting priority mangle - 1; policy accept;
+		# 目标为本机（此时尚未 DNAT，Docker 发布的端口也算）、不是从 TUN 进来的连接。不限于新连接：
+		# 加载本表前已经建立的连接（如开启 TUN 的 SSH 会话）在对方发来下一个包时也会标记。
+		iifname != { "lo", "{{.Device}}" } fib daddr type local ct direction original ct mark set ct mark | {{.Mark}}
+		# 容器等转发而来的回包。
+		ct direction reply ct mark & {{.Mark}} == {{.Mark}} meta mark set meta mark | {{.Mark}}
+	}
+	chain output {
+		type route hook output priority mangle - 1; policy accept;
+		# 本机进程发出的回包；标记变化后内核按 ip rule 重新选路。
+		ct direction reply ct mark & {{.Mark}} == {{.Mark}} meta mark set meta mark | {{.Mark}}
+	}
+}

@@ -143,7 +143,10 @@ exec tunlr rollback --list
 stdout '^\s+6\s+\S+ \S+\s+found on disk\s+-$'
 exec tunlr rollback 6 --yes --json
 stdout '"rollback_to": 6'
-cmp root/var/lib/tunlr/core/config.yaml edited.yaml
+# 回滚恢复修订的内容，强制项按当前状态重新写入
+grep '^edited: true$' root/var/lib/tunlr/core/config.yaml
+grep '^external-controller-unix: api\.sock$' root/var/lib/tunlr/core/config.yaml
+grep '^  enable: false$' root/var/lib/tunlr/core/config.yaml
 
 -- airport.yaml --
 port: 7890

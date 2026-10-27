@@ -28,6 +28,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/fsutil"
 	"github.com/tunlr-app/cli/pkg/core/lock"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
+	"github.com/tunlr-app/cli/pkg/core/netfilter"
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/settings"
@@ -153,16 +154,22 @@ func (p *Plan) Changed() bool {
 // Plan 用启用的订阅、mixin 和工具设置合成新配置，与生效的配置比较并校验。
 // mixin 有错时返回 *config.MixinError。
 func (p *Pipeline) Plan(ctx context.Context) (*Plan, error) {
-	return p.plan(ctx, nil)
+	return p.plan(ctx, nil, nil)
 }
 
 // PlanWithMixin 同 Plan，但用 m 代替磁盘上的同名 mixin 文件（不存在时按文件名顺序加入），
 // 用于在保存编辑结果之前检查它。
 func (p *Pipeline) PlanWithMixin(ctx context.Context, m config.Mixin) (*Plan, error) {
-	return p.plan(ctx, &m)
+	return p.plan(ctx, &m, nil)
 }
 
-func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin) (*Plan, error) {
+// PlanTun 同 Plan，但按透明代理开关为 on 时的样子合成，不看状态文件中的开关。
+// 用于开关之前预览和校验；调用方在发布前保存开关。
+func (p *Pipeline) PlanTun(ctx context.Context, on bool) (*Plan, error) {
+	return p.plan(ctx, nil, &on)
+}
+
+func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin, tun *bool) (*Plan, error) {
 	set, err := settings.Load(p.Layout.SettingsFile())
 	if err != nil {
 		return nil, err
@@ -213,19 +220,44 @@ func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin) (*Plan, error
 	for _, m := range mixins {
 		plan.Mixins = append(plan.Mixins, m.Name)
 	}
+	tunOn := st.TunEnabled()
+	if tun != nil {
+		tunOn = *tun
+	}
 
 	res, err := config.Compose(config.Layers{
 		Template:     templates.Config,
 		Subscription: sub,
 		Generated:    generated,
 		Mixins:       mixins,
-		Enforced:     enforcedLayer(),
+		Enforced:     enforcedLayer(tunOn),
 	})
 	if err != nil {
 		return nil, err
 	}
 	plan.Config, plan.Dropped = res.Config, res.Dropped
 	plan.Warnings, plan.Overrides = res.Warnings, res.Overrides
+	if err := p.finish(ctx, plan); err != nil {
+		return nil, err
+	}
+	return plan, nil
+}
+
+// PlanEnforce 准备只按状态文件重写生效配置中的强制项，其余内容不变；还没有发布过时返回 nil。
+// 用于自动关闭透明代理：不重新合成，期间订阅或 mixin 的变化不会混进来，也不会因它们校验失败。
+func (p *Pipeline) PlanEnforce(ctx context.Context) (*Plan, error) {
+	current, err := p.readCurrent()
+	if err != nil || current == nil {
+		return nil, err
+	}
+	st, _, err := state.LoadOrNew(p.Layout.StateFile(), p.now())
+	if err != nil {
+		return nil, err
+	}
+	plan := &Plan{Kind: KindApply, Subscription: st.Active}
+	if plan.Config, err = config.Enforce(current, enforcedLayer(st.TunEnabled())); err != nil {
+		return nil, fmt.Errorf("the published configuration: %w", err)
+	}
 	if err := p.finish(ctx, plan); err != nil {
 		return nil, err
 	}
@@ -261,6 +293,14 @@ func (p *Pipeline) PlanRollback(ctx context.Context, n int) (*Plan, error) {
 			err = fmt.Errorf("%w (see: tunlr rollback --list)", errors.Join(core.ErrInvalidArgument, err))
 		}
 		return nil, err
+	}
+	// 强制项按当前状态重新写入：修订中的透明代理开关可能与现在不同，照搬会与工具的规则和防失联状态对不上。
+	st, _, err := state.LoadOrNew(p.Layout.StateFile(), p.now())
+	if err != nil {
+		return nil, err
+	}
+	if data, err = config.Enforce(data, enforcedLayer(st.TunEnabled())); err != nil {
+		return nil, fmt.Errorf("revision %d: %w", n, err)
 	}
 	plan := &Plan{Kind: KindRollback, Config: data, Subscription: rev.Subscription, RollbackTo: n}
 	if err := p.finish(ctx, plan); err != nil {
@@ -332,6 +372,22 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) 
 	}
 	defer l.Release()
 
+	result, err := p.ApplyLocked(ctx, plan)
+	if result != nil {
+		result.UIInstalled, result.UIError = uiDir, uiErr
+	}
+	return result, err
+}
+
+// ApplyLocked 同 Apply，但调用方须持有文件锁，也不安装面板。用于与其他改动一起在锁内完成的发布，
+// 如透明代理开关。
+func (p *Pipeline) ApplyLocked(ctx context.Context, plan *Plan) (*ApplyResult, error) {
+	if plan.Check != nil {
+		return nil, plan.Check
+	}
+	if !plan.Changed() {
+		return nil, nil
+	}
 	current, err := p.readCurrent()
 	if err != nil {
 		return nil, err
@@ -359,7 +415,7 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) 
 	if err := p.writeConfig(plan.Config); err != nil {
 		return nil, err
 	}
-	result := &ApplyResult{UIInstalled: uiDir, UIError: uiErr}
+	result := &ApplyResult{}
 	if err := p.activate(ctx, plan.Restart, result); err != nil {
 		return nil, p.restore(ctx, current, plan.Restart, err)
 	}
@@ -614,9 +670,19 @@ func mirrorRules(mirror string) []string {
 	return []string{"DOMAIN," + host + ",DIRECT"}
 }
 
-// enforcedLayer 生成强制项：工具运行所依赖、mixin 不能覆盖的键。
-func enforcedLayer() []byte {
-	return []byte("external-controller-unix: " + paths.CoreSocketName + "\n")
+// enforcedLayer 生成强制项：工具运行所依赖、mixin 不能覆盖的键。tun 段中除 enable 取自透明代理
+// 开关外都是固定值，工具补充的规则、清理和检测依赖它们；面板临时打开 TUN 时也按这些值工作。
+func enforcedLayer(tun bool) []byte {
+	return fmt.Appendf(nil, `external-controller-unix: %s
+tun:
+  enable: %t
+  auto-route: true
+  auto-redirect: true
+  strict-route: false
+  device: %s
+  iproute2-table-index: %d
+  iproute2-rule-index: %d
+`, paths.CoreSocketName, tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex)
 }
 
 // newSecret 生成 32 个十六进制字符的随机 secret。

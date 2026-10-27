@@ -492,6 +492,51 @@ func TestPlanSummarizesProxies(t *testing.T) {
 	}
 }
 
+func TestTunSwitch(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	ctx := context.Background()
+	mustApply(t, p, mustPlan(t, p))
+	if got, _ := os.ReadFile(p.Layout.CoreConfig()); !strings.Contains(string(got), "tun:\n  enable: false\n") {
+		t.Fatalf("tun is not off by default:\n%s", got)
+	}
+
+	// PlanTun 按开关打开时的样子合成，不看状态文件。
+	plan, err := p.PlanTun(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.Diff, "-  enable: false\n+  enable: true\n") || len(plan.Restart) > 0 {
+		t.Fatalf("diff:\n%s\nrestart: %v", plan.Diff, plan.Restart)
+	}
+	for _, want := range []string{"  device: tunlr0\n", "  auto-redirect: true\n", "  strict-route: false\n", "  iproute2-rule-index: 9000\n"} {
+		if !strings.Contains(string(plan.Config), want) {
+			t.Errorf("config lacks %q", want)
+		}
+	}
+	if same := mustPlan(t, p); same.Changed() {
+		t.Fatal("Plan follows PlanTun instead of the saved switch")
+	}
+
+	st, _ := state.Load(p.Layout.StateFile())
+	st.SetTun(state.TunOn, time.Time{})
+	if err := state.Save(p.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustPlan(t, p); !bytes.Equal(got.Config, plan.Config) {
+		t.Fatal("Plan does not follow the saved switch")
+	}
+	mustApply(t, p, plan)
+
+	// 回滚到开关关闭时的修订：强制项按现在的开关写入，内容与生效的配置相同。
+	rb, err := p.PlanRollback(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rb.Changed() {
+		t.Fatalf("rollback changes the tun switch:\n%s", rb.Diff)
+	}
+}
+
 func TestReloadFailureOnFirstApplyRemovesConfig(t *testing.T) {
 	p, _, r := newPipeline(t)
 	r.fail = true

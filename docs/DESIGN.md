@@ -122,7 +122,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 | `/var/lib/tunlr/kernels/<版本>/mihomo` | 已知可用的内核 | root 所有，保留最近 3 个，见第 7 节 |
 | `/var/lib/tunlr/bin/mihomo` | 运行中的内核，也用于校验配置 | 归内核用户 `tunlr` 所有，面板升级时原地替换 |
 | `/var/lib/tunlr/core/` | mihomo 工作目录（`-d`）：生效的配置、API socket（`api.sock`）、geo 数据、面板、缓存 | 归内核用户 `tunlr` 所有，权限 0750（保护 API socket） |
-| `/etc/systemd/system/tunlr-*.{service,timer}` | 工具生成的 unit：`tunlr-core.service`、`tunlr-rescue.service`、`tunlr-update.service`、`tunlr-update.timer` | 每次 `init` 重写 |
+| `/etc/systemd/system/tunlr-*.{service,timer}` | 工具生成的 unit：`tunlr-core.service`、`tunlr-rescue.service`、`tunlr-update.service`、`tunlr-update.timer`，MVP 3 起还有 `tunlr-check.service`、`tunlr-check.timer` | 每次 `init` 重写 |
 | `/usr/local/bin/tunlr` | 工具自身 | unit 引用这个路径，`init` 时不在这里则复制过来 |
 | `/run/lock/tunlr.lock` | 文件锁 | 放在 `/run` 下，安装前也可用 |
 
@@ -170,7 +170,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
      - 不写入 `mixin.d`：写成文件会让用户以为可以编辑它，改了又被工具覆盖；镜像设置变化时还要同步文件。
      - 放在订阅之后而不是紧接模板：插入规则需要订阅的 `rules` 已经就位；这一层的键模板中都有（`geox-url` 也写在模板里，地址与工具校验下载的 geo 数据一致），合并后位置不变，输出稳定。
   4. mixin：用户的覆盖，可以改任何键（强制项除外），见下文。
-  5. 工具强制项：工具运行所依赖的键（目前是 `external-controller-unix`，将来还有 TUN 阶段与 nft 规则联动的几个 `tun` 键），最后写入，mixin 无法覆盖。
+  5. 工具强制项：工具运行所依赖的键（`external-controller-unix`，以及透明代理开关决定的几个 `tun` 键，见 8.3），最后写入，mixin 无法覆盖。
 - **mixin**（`pkg/core/config/mixin.go`）。参考了 clashctl（单个 mixin.yaml，嵌套的 `prepend`/`append`/`override`/`inject`）和 ShellCrash（按类别分文件、文本拼接、`-t` 失败时静默丢弃全部自定义）后的设计：
   - 场景：改通用设置；加自己的节点、策略组、规则、rule-providers、listeners；改订阅里已有的策略组和节点（塞入自己的节点、改 interval、加 dialer-proxy）；去掉机场的信息节点和不要的组或规则；按用途分文件、可以单独停用。
   - **语法：mihomo 原生写法 + 前缀操作**。不带前缀的键与 mihomo 配置语义完全一致；同一个文件里可以对同一个键做多种操作；一条规则推广到任意层级。没有采用 clashctl 的嵌套写法（`rules` 是列表就替换、是映射就执行操作，语义由类型决定，且只对写死的几个键有效），也没有用 YAML 标签（同一个键在一个文件里只能出现一次，无法既前插又追加）。
@@ -249,7 +249,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 内核退出后 socket 文件仍会留下，连接时被拒绝。socket 不存在和连接被拒绝都视为内核没有运行：配置照常发布，由内核启动时加载。
   - 重载失败（返回错误，或重载后不再响应）时，恢复原配置并让内核重新加载它，退出码 4。重载后内核不再响应时，即使随后连接被拒绝，也不能当作“没有运行”，同样回滚，让内核下次启动时用回原配置。
   - 热重载只调用 `executor.ApplyConfig`，不重建 API 服务；geo 定时器也只在启动时注册（读源码 `hub/hub.go`、`main.go`，并实测改 `secret`、`external-controller` 后重载不生效）。以下键变化时，apply 改为重启内核，plan 中说明“本次会重启内核”：`external-controller`、`external-controller-tls`、`external-controller-unix`、`external-controller-pipe`、`external-controller-cors`、`external-doh-server`、`secret`、`external-ui`、`external-ui-name`、`tls`、`geo-auto-update`、`geo-update-interval`。重启后做健康检查，失败时恢复原配置并再次重启，退出码 4。没有安装服务时照常写入，并提示需要重启内核。
-- **回滚**：`rollback` 不带修订号时，回到最近一个与生效配置不同的修订，所以连续执行两次会在两个版本间来回切换（与 `helm rollback` 相同）。`rollback <号>` 恢复指定修订，`--list` 列出历史。回滚同样经过 `-t` 校验和确认，并记为新修订（来源为 rollback）。修订号递增、不复用。回滚只恢复配置文件，下一次 apply（包括订阅更新）会按当前的订阅和 mixin 重新合成。
+- **回滚**：`rollback` 不带修订号时，回到最近一个与生效配置不同的修订，所以连续执行两次会在两个版本间来回切换（与 `helm rollback` 相同）。`rollback <号>` 恢复指定修订，`--list` 列出历史。回滚同样经过 `-t` 校验和确认，并记为新修订（来源为 rollback）。修订号递增、不复用。回滚恢复修订的内容后，强制项按当前状态重新写入（如透明代理开关，见 8.3）。回滚只恢复配置文件，下一次 apply（包括订阅更新）会按当前的订阅和 mixin 重新合成。
 
 ## 7. 内核管理与救援
 
@@ -283,11 +283,11 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 实测（tunlr-dev）：面板经 `POST /upgrade` 升级时，内核经节点下载 github.com 失败（`io.Copy(): unexpected EOF`），原二进制不受影响；以 `tunlr` 身份换上官方 v1.19.33 后 `_update` 核对通过并记为已知可用；换上末尾多一个字节的官方二进制（仍能运行）后被换成校验过的版本。
 - **救援**：
   - `tunlr-core.service` 配置 `Restart=on-failure`、`RestartSec=3`、`StartLimitIntervalSec=120`、`StartLimitBurst=5`，以及 `OnFailure=tunlr-rescue.service`（执行 `tunlr _rescue`）。达到重启上限后服务进入 failed，触发救援。
-  - `_rescue`：（MVP 3 起先清理透明代理的 nftables 规则，恢复直连和 SSH。）当前二进制不是已知可用版本时，换回最近的已知可用版本，`reset-failed` 后启动并做健康检查。已经是已知可用版本仍然起不来时，多半是配置或环境问题：不循环重启，保持停止，在日志中说明原因。
+  - `_rescue`：透明代理的规则在内核退出时已由 `ExecStopPost` 清理（见 8.4），直连和 SSH 不受影响。当前二进制不是已知可用版本时，换回最近的已知可用版本，`reset-failed` 后启动并做健康检查。已经是已知可用版本仍然起不来时，多半是配置或环境问题：不循环重启，保持停止，在日志中说明原因。
   - `upgrade core` 进行中持有锁并自己处理回滚；`_rescue` 拿不到锁时直接退出，不与它争抢。
   - 代价：面板升级出问题时，会有一个从启动失败到自动回滚的短暂断网窗口；工具升级则没有。README 中说明这一取舍。
   - 实测（tunlr-dev）：把 `bin/mihomo` 换成立即退出的脚本后，systemd 重启 5 次（约 20 秒）进入 failed，触发 `tunlr-rescue.service`，换回已知可用版本并通过健康检查。
-- **unit 的其他设置**：`ExecStart=/var/lib/tunlr/bin/mihomo -d /var/lib/tunlr/core`；`CapabilityBoundingSet` 与 `AmbientCapabilities` 相同；`NoNewPrivileges=yes`、`ProtectSystem=strict`、`ReadWritePaths=` 只含 `bin/` 与 `core/`、`ProtectHome=yes`、`PrivateTmp=yes`；`LimitNOFILE=1048576`。TUN 需要的设备与权限在 MVP 3 实测后调整。实测 Debian 12（systemd 252）上 `AmbientCapabilities` 对非 root 用户生效。
+- **unit 的其他设置**：`ExecStart=/var/lib/tunlr/bin/mihomo -d /var/lib/tunlr/core`；`CapabilityBoundingSet` 与 `AmbientCapabilities` 相同；`NoNewPrivileges=yes`、`ProtectSystem=strict`、`ReadWritePaths=` 只含 `bin/` 与 `core/`、`ProtectHome=yes`、`PrivateTmp=yes`；`LimitNOFILE=1048576`。实测这些设置下 TUN 可以正常工作，不需要额外的设备或 capability（见 8.2）；MVP 3 增加 `ExecStartPre`、`ExecStopPost`（见 8.4）。实测 Debian 12（systemd 252）上 `AmbientCapabilities` 对非 root 用户生效。
 - **定时更新**（`tunlr-update.timer` 触发 `tunlr-update.service`，执行 `tunlr _update`）：每天一次，`OnCalendar=daily`、`RandomizedDelaySec=1h`、`Persistent=true`。`init` 用 `enable --now` 启动 timer：只启用不启动的话要到下次开机才开始计时（实测）；第一次启动不会立即触发。依次：
   1. 更新启用的订阅，失败时保留上一次的内容。
   2. 按当前订阅和 mixin 合成并发布，与 `apply --yes` 相同；有变化才发布，检查不通过则保持当前配置。
@@ -303,14 +303,16 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 
 ## 8. 透明代理
 
-### 8.1 默认方案：TUN + auto-redirect
+> 8.3～8.6 是 MVP 3 的设计，根据 8.2 的实测结果写成，已经实现，实现后的实测见 8.7。MVP 3 只做本机模式，网关模式（`ip_forward`、转发策略等）留到 MVP 5。
 
-- 配置：开启 `auto-route` 与 `auto-redirect`，**关闭 `strict-route`**（它会让本机无法被其他设备访问），用 `route-exclude-address` 排除局域网和保留地址段。
-- 理由：auto-redirect 用 nftables 处理 TCP，避开了 TUN 回包被 rp_filter 丢弃的问题；sing-box 文档称其路由更好、性能优于 tproxy，并能避免与 Docker 网桥冲突。工具不需要自己写一整套 nftables 规则。
-- 已知局限：auto-redirect 只接管 TCP，UDP 仍走 TUN 路由。服务器上的入站 UDP 服务（WireGuard、hysteria2 服务端、DNS 等）可能受影响。
-- 工具负责的前置检查：`net.ipv4.ip_forward`（网关模式）、防火墙 forward 策略（如 UFW 默认 DROP）、53 端口与 systemd-resolved 的冲突。
+### 8.1 方案：TUN + auto-redirect
 
-### 8.2 上线前需要实测
+- 配置：开启 `auto-route` 与 `auto-redirect`，**关闭 `strict-route`**（它会让本机无法被其他设备访问）。**不用 `route-exclude-address` 排除私有地址段**：直连网段本来就不进 TUN，整段排除反而让局域网中的 DNS 服务器绕过劫持（见 8.2）。
+- 理由：auto-redirect 用 nftables 处理 TCP，避开了 TUN 回包被 rp_filter 丢弃的问题；sing-box 文档称其路由更好、性能优于 tproxy。内核自己的规则覆盖了大部分场景，工具只补实测中缺的几条（见 8.4）。
+- 已知局限：auto-redirect 只接管 TCP，UDP 仍走 TUN 路由。绑定 0.0.0.0、又不指定回包源地址的入站 UDP 服务会受影响（见 8.2）。
+- 结论：维持 TUN 方案，不实现 tproxy（第 14 节的待决事项由此关闭）。
+
+### 8.2 实测
 
 1. 从外部 SSH 到服务器
 2. 访问服务器上的 TCP 服务
@@ -319,17 +321,106 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 
 全部通过则维持默认方案；只有入站 UDP 等场景确实不满足时，才实现自写 tproxy（`tun on --mode tproxy`）。
 
-### 8.3 若将来实现 tproxy，需要处理的 Docker 冲突
+**实测结果**（tunlr-dev：Debian 12，Linux 6.1，mihomo v1.19.33，Docker 默认网桥；`stack: mixed`、`auto-route`、`auto-redirect`、`strict-route: false`、`dns-hijack: [any:53, tcp://any:53]`，经 mixin 开启）：
+
+- 热重载即可开关 TUN，无需重启。内核以 `tunlr` 用户运行、只有 `CAP_NET_ADMIN`，就能建立 TUN 网卡 `Meta`、ip rule（优先级 9000～9010，路由表 2022）和 nft 表 `inet mihomo`。关闭 TUN 或正常停止内核时全部清理干净。
+- 直连网段（本机网段、Docker 网桥）不进 TUN：ip rule `lookup main suppress_prefixlength 0` 先查主路由表中默认路由以外的路由。所以不需要用 `route-exclude-address` 排除它们。
+- **用 `route-exclude-address` 排除整个私有地址段有副作用**：DNS 服务器在局域网时（测试机为 192.168.0.11），DNS 请求不经 TUN，`dns-hijack` 不生效，宿主和容器拿到被污染的地址，域名规则全部失效。`inet mihomo` 中排除地址的 `return` 排在 DNS 的 `dnat` 之前。
+- 不排除任何地址（模拟公网 VPS：SSH 客户端经网关进来，回包会被路由进 TUN）：
+
+  | 项目 | 结果 |
+  |---|---|
+  | 1. 外部 SSH | 通过 |
+  | 2. 宿主上的 TCP 服务 | 通过 |
+  | 3. 宿主上的 UDP 服务 | 绑定具体地址的通过；绑定 0.0.0.0 且不指定回包源地址的失败：回包的源地址按 TUN 路由选成 198.18.0.1，与 conntrack 记录对不上，进入 TUN。加 `ip rule sport <端口> lookup main` 后通过。WireGuard、quic-go 等会指定回包源地址的服务应不受影响（未实测） |
+  | 4. Docker 容器出站 | 通过：fake-ip、域名规则命中 |
+  | 4'. Docker 发布的端口（入站） | 失败：容器的回包是转发流量，进入 TUN。用 conntrack 给“从 TUN 以外进入、目标为本机”（`fib daddr type local`，此时尚未 DNAT）的新连接打标记，回包带标记、经 ip rule 查主路由表后通过 |
+
+- 内核被 `SIGKILL`：TUN 网卡随之消失，残留的 ip rule 指向空路由表，无害；残留的 `inet mihomo` 表会把容器的 TCP 和 DNS 重定向到已不存在的监听端口，中断到 systemd 拉起内核为止（拉起后规则重建，不重复）。内核起不来时，救援需要清理这张表。
+
+### 8.3 开关与配置
+
+- **开关**：`tunlr tun on`、`tunlr tun off`；不带子命令的 `tunlr tun` 显示状态。`--mode` 预留给将来的 tproxy，现在不提供。
+- **开关存在状态文件中**（`state.json` 的 `tun`），不放在 `settings.yaml`：手改设置文件打开 TUN 会绕过防失联检测。状态有三种：`off`、`pending`（已发布、检测中，带回滚期限）、`on`。新增的字段可以省略，旧状态文件视为 `off`，不需要迁移。
+- **配置复用分层合成**，`tun on/off` 本身只改开关，然后走与 `apply` 相同的流水线（`-t` 校验、原子写入、热重载、失败回滚、记入历史）。实测热重载即可开关 TUN，`tun` 不加入需要重启的键。
+  - 模板（用户可以用 mixin 覆盖）：`stack: mixed`、`auto-detect-interface: true`、`dns-hijack: [any:53, tcp://any:53]`，附注释说明为什么不排除私有地址段。
+  - 强制项（mixin 无法覆盖，写了就警告并忽略）：`tun.enable`（取自开关：`pending` 与 `on` 为 true）、`auto-route: true`、`auto-redirect: true`、`strict-route: false`、`device: tunlr0`、`iproute2-table-index: 2022`、`iproute2-rule-index: 9000`。工具补的规则、清理和检测都依赖这些值；固定网卡名也让 `doctor` 和日志一眼认出它。
+  - 不写进 `mixin.d`，理由与“工具生成的调整”相同。
+- **回滚与开关**：`rollback` 恢复旧修订的内容后，再按当前开关写入强制项（与合成时最后一层相同）。否则回滚到开关不同的修订，配置就与工具的规则和防失联状态对不上。`plan` 照常显示差异。
+- **面板运行时切换**（见 3.3）：面板打开 TUN 不写回配置，也不经防失联检测。工具的规则不依赖开关（见 8.4），所以面板打开时同样生效。`status` 在内核实际状态与开关不一致时提示，执行 `tun on/off` 即以开关为准。
+
+### 8.4 工具补充的规则及其生命周期
+
+- 规则放在独立的 `inet tunlr` 表中，模板 `templates/nft/tunlr.nft`，经 `nft -f` 原子加载，整表删除即清理：
+  - **入站连接的回包走主路由表**：从 `tunlr0` 以外进入、目标为本机（`fib daddr type local`，此时尚未 DNAT）的连接，在原方向（`ct direction original`）的包经过时打上 conntrack 标记。不限于新连接：加载本表之前已经建立的连接（如执行 `tun on` 的 SSH 会话）在对方发来下一个包时也会标记，所以 `tun on` 在发布前先加载一次本表；属于这些连接的回包（本机进程发出的走 `output` route 链，容器发出的走 `prerouting`）带上包标记，`ip rule fwmark … lookup main`（优先级 8999，早于内核的 9000）。这修好了 Docker 发布的端口，也让 SSH 等所有入站连接不依赖内核规则的细节。
+  - 标记只用一个高位 `0x10000000`，按位设置（`meta mark set meta mark | 0x10000000`），不覆盖其他程序的标记：Tailscale 用 `0xff0000` 段，kube-proxy 用 `0x4000`、`0x8000`，内核的 auto-redirect 用 `0x2023`、`0x2024`。
+  - ip rule 由 iproute2 的 `ip` 命令维护（IPv4、IPv6 各一条）。
+- **与内核服务同生共死**，不依赖开关：规则在 TUN 关闭时无害（标记的回包本来就走主路由表），这样面板临时打开 TUN 也有效。
+  - `tunlr-core.service` 增加 `ExecStartPre=-+/usr/local/bin/tunlr _prestart`：加载 `inet tunlr` 表和 ip rule（`+` 表示以 root 运行，不受 `User=` 和沙箱限制；`-` 表示失败也照常启动内核，不让规则的问题拖垮代理本身）。
+  - 增加 `ExecStopPost=-+/usr/local/bin/tunlr _poststop`：删除 `inet tunlr` 表和工具的 ip rule；内核的 `inet mihomo` 表和优先级 9000～9010 的 ip rule 如果还在（内核被 `SIGKILL` 或崩溃），一并删除。`ExecStopPost` 在进程以任何方式退出后都会执行，所以实测中 `SIGKILL` 后容器断网的问题由此消除，`_rescue` 不必再单独清理。
+  - 这两个命令不取文件锁（`tunlr start` 持锁调用 `systemctl start` 时会死锁），操作本身幂等。
+- **规则被他人清空**：例如重新加载 Debian 的 `nftables.service`，其配置以 `flush ruleset` 开头，会连同内核的表一起清空。增加 `tunlr-check.timer`（每 5 分钟），执行 `_check`：内核在运行而 `inet tunlr` 不见了，重新加载；内核开着 TUN 而 `inet mihomo` 不见了，重启内核由它重建。另外兜底处理回滚定时器没有生效的情况：开关为 `pending` 且过期一分钟以上时关闭 TUN。
+
+### 8.5 开启流程与防失联
+
+`tun on`：
+
+1. 前置检查，不通过则退出码 3：服务已安装且内核在运行（不运行就无法检测，提示先 `start`）；`/dev/net/tun`、`nft`、`ip` 可用；优先级 8999～9010 没有他人的 ip rule；启用了 UFW、firewalld 时给出警告（未实测，见 8.8）。
+2. 显示 `plan`（diff 中是 `tun.enable` 等强制项的变化）并确认；非交互模式需要 `--yes`，`--dry-run` 只预览。
+3. 加锁，开关记为 `pending`（期限为现在加 3 分钟），用 `systemd-run --on-active=3min --unit=tunlr-tun-guard` 布置回滚定时器，执行 `tunlr _tun-guard`。
+4. 加载工具的规则（见 8.4，让已经建立的连接也能标记），发布配置，内核热重载打开 TUN。发布失败时流水线自己回滚，开关恢复原状，退出码 4。然后释放锁，检测不需要持锁，这样卡住的检测不会挡住回滚定时器。
+5. 检测（30 秒内）：
+   - 内核实际已打开 TUN（经 API 查询），`tunlr0`、`inet tunlr`、`inet mihomo` 都在；
+   - 经系统的 DNS 设置能解析测试域名；
+   - 测试地址至少一个能访问，默认一个国内（`https://www.baidu.com`）、一个国外（`https://www.gstatic.com/generate_204`），逐个报告结果；只有全部失败才算失败，国外失败可能只是节点问题；
+   - **SSH 会话仍然通畅**：在 SSH 会话中运行时（有 `SSH_CONNECTION`），用 `ss -Htni state established src <本机> dst <客户端>` 记下这条连接的 `bytes_acked`，向终端（标准错误）输出一行文字，8 秒内 `bytes_acked` 增加即通过（内核不报告它时退回看 Send-Q 归零）。标准错误不是终端、在 tmux 或 screen 中（输出不一定经过这条连接）、找不到这条连接时跳过。SSH 一旦断开，进程收到 SIGHUP 退出，留给回滚定时器处理。
+6. 全部通过：加锁，开关记为 `on`，停止回滚定时器。任何一项失败：立即关闭（开关 `off`、发布、停止定时器），报告失败的项，退出码 4。
+
+- `_tun-guard`：开关仍为 `pending` 且已过期限时，记为 `off` 并发布，记日志；已经是 `on` 或 `off` 时什么都不做。
+- **重启机器的情况**：SSH 断开后，用户很可能从云平台控制台重启服务器，而 `systemd-run` 的临时定时器不会保留。所以 `_prestart` 也检查：开关为 `pending` 且已过期限时，先把配置改为关闭 TUN，再让内核启动。这里只尝试加锁、不等待（锁被占用说明有人正在操作）。
+- `tun off`：加锁，开关记为 `off`，发布，停止可能存在的回滚定时器。不做检测：关闭就是恢复。
+- 用户不需要手动确认。8.2 的实测中 SSH 入站本来就没有受影响，加上 8.4 的回包规则，SSH 失联主要是兜底场景。
+
+### 8.6 与其他功能的关系
+
+- `apply`、`_update`、`sub use` 照常合成，强制项随开关写入，定时更新不会改变 TUN 状态。
+- `status`：开关（`pending` 时显示剩余时间）、内核实际的 TUN 状态、两张表是否存在。
+- `uninstall`：停止服务时 `_poststop` 清理规则（服务没在运行或 unit 是旧版时再直接清理一次）；删除 `tunlr-check.timer`，停止可能存在的回滚定时器；开关记为 `off`，重新 `init` 后 TUN 保持关闭。
+- `doctor`（MVP 4）复用第 1 步的前置检查。
+- 代码：规则模板、加载与清理、前置检查在 `pkg/core/netfilter`；开关与开启流程在 `pkg/core/setup`；CLI 只有 `internal/cli/tun.go`。nft 模板做 golden 测试，规则本身按 CLAUDE.md 在 network namespace 中做集成测试。
+
+### 8.7 实现后的实测
+
+tunlr-dev（环境同 8.2；SSH 客户端 192.168.11.41 不在服务器的直连网段，回包按默认路由本会进 TUN）：
+
+| 项目 | 结果 |
+|---|---|
+| nft 规则（network namespace 集成测试） | 通过：重复加载幂等；模拟内核残留后 `Down` 清理干净，他人的 ip rule 保留 |
+| `init` 升级旧安装 | unit 带上 `_prestart`、`_poststop`，`tunlr-check.timer` 启用，规则随内核启动加载 |
+| `tun on`（SSH 中执行） | 通过：TUN、DNS、HTTP、SSH 四项检测通过，开关为 `on`，回滚定时器撤掉 |
+| 开启前已经建立的 SSH 连接 | 先删掉工具的表和规则，在同一会话中 `tun on`：SSH 检测通过 |
+| SSH 检测的失败路径 | 用 nft 丢弃 sshd 发往客户端的包后 `tun on`：SSH 检测失败，TUN 立即关闭，退出码 4 |
+| 容器出站、Docker 发布的端口（入站） | 通过 |
+| 内核被 `SIGKILL` | 1 秒内 `_poststop` 删除残留的 `inet mihomo` 表和 ip rule；systemd 拉起后重建，规则没有重复 |
+| 两张表都被删除后 `_check` | 重新加载 `inet tunlr`，重启内核重建 `inet mihomo` |
+| `tun on` 在检测阶段被 `SIGKILL` | 开关停在 `pending`，回滚定时器到期后关闭 TUN |
+| 重启机器（回滚定时器丢失，`pending` 已过期） | 撤掉定时器、把期限改到过去后重启内核服务：`_prestart` 先关闭 TUN，内核以关闭状态启动 |
+
+### 8.8 尚未实测
+
+- 真实的 UDP 服务（WireGuard、hysteria2 服务端）：按原理不受影响。若受影响，再加按端口放行的设置（`ip rule sport <端口> lookup main`）。
+- IPv6：测试机没有公网 IPv6。日志显示 TUN 没有 IPv6 地址（`Meta([198.18.0.1/30],[])`），有公网 IPv6 的服务器上 IPv6 流量可能不经 TUN。
+- UFW、firewalld 启用时：auto-redirect 把容器的 TCP 重定向到本机端口，可能被入站策略拦下。
+- Ubuntu 的 systemd-resolved（`127.0.0.53`）：DNS 先到本机的 resolved，再由它向上游查询；内核的 ip rule 对目的端口 53 有专门处理，应当仍能劫持。
+- 以本机方式安装的 Tailscale：它的 ip rule 优先级为 52xx，排在 TUN 之前，应当互不影响。
+
+### 8.9 若将来实现 tproxy，需要处理的 Docker 冲突
 
 - 容器发布端口的回包会被劫持 → `ct direction reply return`
 - tproxy 挂在 mangle（-150），早于 Docker 的 DNAT（-100） → `fib daddr type local return`
 - 显式用 `iifname` 列出要拦截的接口（docker0、`br-*` 是否代理属于策略选择）
 - 用 mihomo 的 `routing-mark` 防止回环；局域网与保留地址直接 return
 - 规则放在独立的 `inet tunlr` 表中，清理时整表删除；`_check` 检测规则是否被他人 flush
-
-### 8.4 防失联
-
-开启透明代理时先创建临时回滚定时器，再自动检测网络（访问若干测试地址、确认 SSH 未中断）。检测通过则自动取消回滚；检测失败或会话中断，则在超时后自动关闭透明代理并清理规则。用户不需要手动确认。
 
 ## 9. 从 ShellCrash 借鉴的功能
 
@@ -380,7 +471,7 @@ tunlr uninstall           完整卸载并清理规则
 tunlr version
 ```
 
-内部命令（供 systemd 调用，不显示在帮助中）：`tunlr _check`、`tunlr _rescue`、`tunlr _update`。
+内部命令（供 systemd 调用，不显示在帮助中）：`tunlr _check`、`tunlr _rescue`、`tunlr _update`，以及透明代理用的 `_prestart`、`_poststop`、`_tun-guard`（见 8.4、8.5）。
 
 服务与安装相关命令的行为：
 
@@ -427,6 +518,5 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 ## 14. 待决事项
 
-- 透明代理是否需要 tproxy 实现（取决于第 8.2 节实测）
 - 开源协议
 - 商标查询

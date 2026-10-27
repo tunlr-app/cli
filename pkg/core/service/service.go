@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/tunlr-app/cli/pkg/core/fsutil"
 	"github.com/tunlr-app/cli/pkg/core/paths"
@@ -30,10 +31,16 @@ const (
 	RescueUnit  = "tunlr-rescue.service"
 	UpdateUnit  = "tunlr-update.service"
 	UpdateTimer = "tunlr-update.timer"
+	CheckUnit   = "tunlr-check.service"
+	CheckTimer  = "tunlr-check.timer"
 )
 
 // Units 是工具生成的全部 unit。
-var Units = []string{CoreUnit, RescueUnit, UpdateUnit, UpdateTimer}
+var Units = []string{CoreUnit, RescueUnit, UpdateUnit, UpdateTimer, CheckUnit, CheckTimer}
+
+// GuardUnit 是开启透明代理时布置的回滚定时器：systemd-run 建立的临时 unit（.timer 与 .service），
+// 不写入磁盘，重启后消失（届时由 _prestart 处理过期的开关）。
+const GuardUnit = "tunlr-tun-guard"
 
 // CoreUser 是运行内核的系统用户（同名用户组）。
 const CoreUser = "tunlr"
@@ -162,14 +169,15 @@ func (s *Systemd) Install(ctx context.Context) error {
 	if _, err := s.systemctl(ctx, "enable", CoreUnit); err != nil {
 		return err
 	}
-	_, err = s.systemctl(ctx, "enable", "--now", UpdateTimer)
+	_, err = s.systemctl(ctx, "enable", "--now", UpdateTimer, CheckTimer)
 	return err
 }
 
 // Uninstall 停止并禁用全部 unit，删除 unit 文件，重新加载 systemd。unit 不存在时不报错。
 func (s *Systemd) Uninstall(ctx context.Context) error {
 	var errs []error
-	if _, err := s.systemctl(ctx, "disable", "--now", UpdateTimer, CoreUnit); err != nil && s.Installed() {
+	s.DisarmGuard(ctx)
+	if _, err := s.systemctl(ctx, "disable", "--now", UpdateTimer, CheckTimer, CoreUnit); err != nil && s.Installed() {
 		errs = append(errs, err)
 	}
 	for _, name := range Units {
@@ -180,11 +188,34 @@ func (s *Systemd) Uninstall(ctx context.Context) error {
 	if _, err := s.systemctl(ctx, "daemon-reload"); err != nil {
 		errs = append(errs, err)
 	}
-	if _, err := s.systemctl(ctx, "reset-failed", CoreUnit, RescueUnit, UpdateUnit); err != nil {
+	if _, err := s.systemctl(ctx, "reset-failed", CoreUnit, RescueUnit, UpdateUnit, CheckUnit); err != nil {
 		// unit 已经删除且没有 failed 状态时 systemctl 报告找不到，不算失败。
 		_ = err
 	}
 	return errors.Join(errs...)
+}
+
+// ArmGuard 布置回滚定时器：after 之后执行 tunlr _tun-guard。已有的定时器先撤掉。
+func (s *Systemd) ArmGuard(ctx context.Context, after time.Duration) error {
+	s.DisarmGuard(ctx)
+	_, err := s.run(ctx, "systemd-run", "--quiet", "--unit="+GuardUnit,
+		"--on-active="+strconv.Itoa(int(after.Seconds())), "--timer-property=AccuracySec=1s",
+		"--description=Turn the transparent proxy off unless confirmed (tunlr)",
+		s.Layout.ToolBinary(), "_tun-guard")
+	return err
+}
+
+// DisarmGuard 撤掉回滚定时器，不存在时什么都不做。只停止 .timer：回滚本身（.service）可能正是调用者。
+func (s *Systemd) DisarmGuard(ctx context.Context) {
+	// 定时器不存在时 systemctl 报告找不到，不算失败。
+	_, _ = s.systemctl(ctx, "stop", GuardUnit+".timer")
+	_, _ = s.systemctl(ctx, "reset-failed", GuardUnit+".timer", GuardUnit+".service")
+}
+
+// GuardArmed 报告回滚定时器是否在计时。
+func (s *Systemd) GuardArmed(ctx context.Context) bool {
+	st, err := s.Status(ctx, GuardUnit+".timer")
+	return err == nil && st.Active()
 }
 
 // Logs 把内核服务的日志（journalctl）写到 stdout。follow 时持续输出，直到 ctx 结束。

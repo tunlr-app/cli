@@ -1,0 +1,33 @@
+# 默认关闭；内核没有运行时照常报告
+exec tunlr tun
+stdout '^Transparent proxy: off$'
+stdout '^mihomo: +not responding$'
+
+exec tunlr tun --json
+stdout '"switch": "off"'
+
+# 非交互模式下没有 --yes 时，在开始工作前报告用法错误
+exitcode 2 tunlr tun on
+stderr 'tun on needs confirmation; pass --yes'
+exitcode 2 tunlr tun off
+stderr 'tun off needs confirmation; pass --yes'
+exitcode 2 tunlr tun on extra
+stderr 'unknown command "extra"|accepts 0 arg'
+
+# 服务没有安装时前置检查不通过：退出码 3
+exitcode 3 tunlr tun on --yes
+stderr 'the mihomo service is not installed'
+
+# 关闭时什么都没发布过，不发布
+exec tunlr tun off --yes
+stdout 'already off'
+! exists $TUNLR_ROOT/var/lib/tunlr/core/config.yaml
+
+# status 中有一行
+exec tunlr status
+stdout '^TUN: +off$'
+
+# 内部命令不出现在帮助中
+exec tunlr --help
+! stdout '_prestart|_poststop|_check|_tun-guard'
+stdout 'tun +Show the transparent proxy'

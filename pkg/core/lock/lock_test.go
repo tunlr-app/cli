@@ -34,6 +34,25 @@ func TestAcquire(t *testing.T) {
 	}
 }
 
+func TestTryAcquire(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tunlr.lock")
+	first, err := TryAcquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TryAcquire(path); !errors.Is(err, ErrBusy) {
+		t.Fatalf("second try: err = %v, want ErrBusy", err)
+	}
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := TryAcquire(path)
+	if err != nil {
+		t.Fatalf("try after release: %v", err)
+	}
+	second.Release()
+}
+
 func TestAcquireCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

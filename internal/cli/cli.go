@@ -150,6 +150,11 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.newRollbackCommand(),
 		a.newEditCommand(),
 		a.newSubCommand(),
+		a.newTunCommand(),
+		a.newPreStartCommand(),
+		a.newPostStopCommand(),
+		a.newTunGuardCommand(),
+		a.newCheckCommand(),
 		a.newVersionCommand(),
 	)
 	return root

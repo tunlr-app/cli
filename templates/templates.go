@@ -10,6 +10,11 @@ import (
 //go:embed systemd
 var Systemd embed.FS
 
+// Nft 是透明代理开启时工具补充的 nftables 规则（text/template），由 nft -f 加载。
+//
+//go:embed nft/tunlr.nft
+var Nft []byte
+
 // Config 是默认的 mihomo 基础配置，即配置合成的第一层（系统部分）。
 //
 //go:embed config.yaml

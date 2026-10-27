@@ -1,0 +1,98 @@
+透明代理：tun 段中由开关决定的键是强制项，mixin 写了只得到警告；其余键（stack、排除地址）可以覆盖。
+-- enforced.yaml --
+external-controller-unix: api.sock
+tun:
+  enable: true
+  auto-route: true
+  auto-redirect: true
+  strict-route: false
+  device: tunlr0
+  iproute2-table-index: 2022
+  iproute2-rule-index: 9000
+-- mixin.d/50-tun.yaml --
+tun:
+  enable: false
+  stack: system
+  strict-route: true
+  route-exclude-address:
+    - 203.0.113.0/24
+-- want.yaml --
+# 本文件由 tunlr 生成，直接修改会在下次 apply 时被覆盖。
+# 自定义设置请写在 mixin 中（tunlr edit）。
+
+# 代理端口只监听本机；允许局域网访问时必须设置认证。
+mixed-port: 7890
+allow-lan: false
+
+# 内核运行参数。
+mode: rule
+log-level: info
+ipv6: true
+unified-delay: true
+tcp-concurrent: true
+find-process-mode: "off"
+
+# 面板通过 SSH 隧道访问，HTTP API 只监听本机，secret 由 tunlr 为每台服务器生成。
+# tunlr 自己经工作目录中的 Unix socket 访问 API。设置了 github-mirror 时，
+# 面板的下载地址由 tunlr 改为经镜像下载。
+external-controller: 127.0.0.1:9090
+external-controller-unix: api.sock
+secret: ""
+external-ui: ui
+external-ui-name: zashboard
+external-ui-url: https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
+
+# 保存面板选择的节点和 fake-ip 映射。
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+# geo 数据由 tunlr 每天的定时更新让内核下载，再按官方 sha256 核对。
+# 内核自己的定时更新下载后不做校验，因此关闭。
+geo-auto-update: false
+
+# geo 数据的下载地址。设置了 github-mirror 时由 tunlr 改为经镜像下载。
+geox-url:
+  geoip: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat
+  geosite: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat
+  mmdb: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
+  asn: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb
+
+dns:
+  enable: true
+  listen: 127.0.0.1:1053
+  ipv6: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+
+# 透明代理（TUN），用 tunlr tun on/off 开关。enable、auto-route、auto-redirect、strict-route、
+# device 和 iproute2 的索引由 tunlr 决定，mixin 改不了。不要用 route-exclude-address 排除整个
+# 私有地址段：直连网段本来就不进 TUN，排除后局域网中的 DNS 服务器会绕过劫持。
+tun:
+  enable: true
+  stack: system
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53
+    - tcp://any:53
+  strict-route: false
+  route-exclude-address:
+    - 203.0.113.0/24
+  auto-route: true
+  auto-redirect: true
+  device: tunlr0
+  iproute2-table-index: 2022
+  iproute2-rule-index: 9000
+-- warnings --
+50-tun.yaml:1: tun.enable is managed by tunlr; the value in the mixin is ignored
+50-tun.yaml:1: tun.strict-route is managed by tunlr; the value in the mixin is ignored
+secret is empty: anyone who can reach external-controller can control mihomo

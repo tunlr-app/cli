@@ -28,6 +28,8 @@ type Status struct {
 	Revision *config.Revision `json:"revision,omitempty"`
 	// NextUpdate 是下次定时更新的时间。
 	NextUpdate time.Time `json:"next_update,omitzero"`
+	// Tun 是透明代理的状态。
+	Tun *TunStatus `json:"tun"`
 }
 
 // Status 返回当前状态。
@@ -67,6 +69,9 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 			s.Revision = &r
 			break
 		}
+	}
+	if s.Tun, err = i.TunStatus(ctx); err != nil {
+		return nil, err
 	}
 	return s, nil
 }

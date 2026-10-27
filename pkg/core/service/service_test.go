@@ -26,6 +26,8 @@ func TestRenderUnits(t *testing.T) {
 		"ExecStart=/var/lib/tunlr/bin/mihomo -d /var/lib/tunlr/core\n",
 		"ReadWritePaths=/var/lib/tunlr/bin /var/lib/tunlr/core\n",
 		"OnFailure=" + RescueUnit + "\n",
+		"ExecStartPre=-+/usr/local/bin/tunlr _prestart\n",
+		"ExecStopPost=-+/usr/local/bin/tunlr _poststop\n",
 	} {
 		if !strings.Contains(core, want) {
 			t.Errorf("%s lacks %q:\n%s", CoreUnit, want, core)
@@ -36,6 +38,9 @@ func TestRenderUnits(t *testing.T) {
 	}
 	if !strings.Contains(string(units[UpdateUnit]), "ExecStart=/usr/local/bin/tunlr _update\n") {
 		t.Errorf("%s:\n%s", UpdateUnit, units[UpdateUnit])
+	}
+	if !strings.Contains(string(units[CheckUnit]), "ExecStart=/usr/local/bin/tunlr _check\n") {
+		t.Errorf("%s:\n%s", CheckUnit, units[CheckUnit])
 	}
 	for name, data := range units {
 		if strings.Contains(string(data), "{{") || strings.Contains(string(data), "<no value>") {
@@ -89,7 +94,7 @@ func TestInstallAndUninstall(t *testing.T) {
 	want := [][]string{
 		{"systemctl", "daemon-reload"},
 		{"systemctl", "enable", CoreUnit},
-		{"systemctl", "enable", "--now", UpdateTimer},
+		{"systemctl", "enable", "--now", UpdateTimer, CheckTimer},
 	}
 	if !slices.EqualFunc(f.calls, want, slices.Equal) {
 		t.Errorf("calls = %v", f.calls)

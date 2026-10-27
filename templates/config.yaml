@@ -54,3 +54,14 @@ dns:
   nameserver:
     - https://dns.alidns.com/dns-query
     - https://doh.pub/dns-query
+
+# 透明代理（TUN），用 tunlr tun on/off 开关。enable、auto-route、auto-redirect、strict-route、
+# device 和 iproute2 的索引由 tunlr 决定，mixin 改不了。不要用 route-exclude-address 排除整个
+# 私有地址段：直连网段本来就不进 TUN，排除后局域网中的 DNS 服务器会绕过劫持。
+tun:
+  enable: false
+  stack: mixed
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53
+    - tcp://any:53

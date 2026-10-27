@@ -75,6 +75,20 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	return v.Version, nil
 }
 
+// TunEnabled 报告内核实际是否开启了 TUN（GET /configs 的 tun.enable）。面板可以在运行时切换它，
+// 所以与配置文件不一定一致。
+func (c *Client) TunEnabled(ctx context.Context) (bool, error) {
+	var v struct {
+		Tun struct {
+			Enable bool `json:"enable"`
+		} `json:"tun"`
+	}
+	if err := c.do(ctx, apiTimeout, http.MethodGet, "/configs", nil, &v); err != nil {
+		return false, err
+	}
+	return v.Tun.Enable, nil
+}
+
 // ReloadConfig 让内核重新加载 path（绝对路径，须位于内核工作目录内）的配置。
 // 使用 force，端口等监听设置的变化也会生效。内核解析失败时返回 *APIError，并继续运行原来的配置。
 //

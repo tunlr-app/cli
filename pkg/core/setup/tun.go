@@ -1,0 +1,380 @@
+package setup
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"strings"
+	"time"
+
+	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/pkg/core/config"
+	"github.com/tunlr-app/cli/pkg/core/lock"
+	"github.com/tunlr-app/cli/pkg/core/mihomo"
+	"github.com/tunlr-app/cli/pkg/core/netfilter"
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
+	"github.com/tunlr-app/cli/pkg/core/service"
+	"github.com/tunlr-app/cli/pkg/core/state"
+)
+
+// GuardTimeout 是开启透明代理后等待确认的期限：检测没有在期限内通过（例如 SSH 断开、tunlr 被杀），
+// 回滚定时器关闭 TUN。
+const GuardTimeout = 3 * time.Minute
+
+// TunStatus 是透明代理的状态。开关以状态文件为准，其余以实际情况为准。
+type TunStatus struct {
+	// Switch 是开关：off、pending（已开启、等待检测通过）或 on。
+	Switch string `json:"switch"`
+	// Deadline 是 pending 的期限，过期仍未确认时关闭。
+	Deadline time.Time `json:"deadline,omitzero"`
+	// Running 报告内核实际是否开启了 TUN（面板可以临时切换）；内核没有响应时为 nil。
+	Running *bool `json:"running,omitempty"`
+	// Device 报告 TUN 网卡是否存在。
+	Device bool `json:"device"`
+	// Rules 报告工具的 inet tunlr 表是否存在，KernelRules 报告内核的 inet mihomo 表是否存在。
+	Rules       bool `json:"rules"`
+	KernelRules bool `json:"kernel_rules"`
+}
+
+// TunCheck 是开启透明代理后一项检测的结果。
+type TunCheck struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+// TunResult 是开关透明代理的结果。
+type TunResult struct {
+	// Revision 是发布的配置修订；配置已经是目标状态（如上次开启被中断）时为 nil。
+	Revision *config.Revision `json:"revision,omitempty"`
+	// Checks 是开启后的检测结果（仅 tun on）。
+	Checks []TunCheck `json:"checks,omitempty"`
+}
+
+// TunOptions 是 tun on 的参数。
+type TunOptions struct {
+	// SSHConnection 是 $SSH_CONNECTION，在 SSH 会话中运行时用于检测会话是否仍然通畅；为空时跳过。
+	SSHConnection string
+	// SkipSSH 不为空时跳过 SSH 检测，说明原因（如在 tmux 中运行，输出不一定经过 $SSH_CONNECTION 那条连接）。
+	SkipSSH string
+	// Probe 在检测 SSH 会话时调用，须向用户的终端输出一些文字，让 sshd 有数据要发。
+	Probe func()
+	// Progress 在每一步开始时调用，可为空。
+	Progress func(step string)
+}
+
+// TunStatus 返回透明代理的状态。
+func (i *Installer) TunStatus(ctx context.Context) (*TunStatus, error) {
+	s := &TunStatus{Switch: "off", Device: netfilter.DeviceUp()}
+	st, err := state.Load(i.Layout.StateFile())
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	if st != nil && st.Tun != "" {
+		s.Switch, s.Deadline = st.Tun, st.TunDeadline
+	}
+	if on, err := mihomo.NewClient(i.Layout.CoreSocket()).TunEnabled(ctx); err == nil {
+		s.Running = &on
+	}
+	if tables, err := i.rules().Tables(ctx); err == nil {
+		s.Rules, s.KernelRules = tables[netfilter.Table], tables[netfilter.KernelTable]
+	}
+	return s, nil
+}
+
+// TunPreflight 检查能否开启透明代理：服务已安装、内核在运行（否则无法检测）、系统具备 TUN、nft、ip，
+// 需要的 ip rule 优先级没有被占用。不满足时返回满足 errors.Is(err, core.ErrCheckFailed) 的错误；
+// warnings 是不阻止开启、但可能影响使用的情况。
+func (i *Installer) TunPreflight(ctx context.Context) (warnings []string, err error) {
+	if !i.systemd().Installed() {
+		return nil, fmt.Errorf("%w: %w", core.ErrCheckFailed, mihomo.ErrServiceNotInstalled)
+	}
+	if _, err := mihomo.NewClient(i.Layout.CoreSocket()).Version(ctx); err != nil {
+		return nil, fmt.Errorf("%w: mihomo is not responding (%v); start it first: tunlr start", core.ErrCheckFailed, err)
+	}
+	problems, warnings := i.rules().Preflight(ctx)
+	if len(problems) > 0 {
+		return warnings, fmt.Errorf("%w: %s", core.ErrCheckFailed, strings.Join(problems, "; "))
+	}
+	return warnings, nil
+}
+
+// TunOn 开启透明代理并发布 plan（pipeline.PlanTun(ctx, true) 的结果，已经用户确认）：
+// 加锁 → 开关记为 pending 并布置回滚定时器 → 发布 → 释放锁并检测 → 通过则记为 on、撤掉定时器；
+// 检测失败立即关闭，返回满足 errors.Is(err, core.ErrRolledBack) 的错误，结果中有各项检测的情况。
+// 发布失败时开关恢复原状，配置由流水线回滚。
+func (i *Installer) TunOn(ctx context.Context, plan *pipeline.Plan, opts TunOptions) (*TunResult, error) {
+	p := i.pipeline(nil)
+	progress := opts.Progress
+	if progress == nil {
+		progress = func(string) {}
+	}
+	res := &TunResult{}
+	sd := i.systemd()
+
+	l, err := i.lock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	st, _, err := state.LoadOrNew(i.Layout.StateFile(), i.now())
+	if err != nil {
+		l.Release()
+		return nil, err
+	}
+	previous, previousDeadline := st.Tun, st.TunDeadline
+	st.SetTun(state.TunPending, i.now().Add(GuardTimeout))
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		l.Release()
+		return nil, err
+	}
+	progress(fmt.Sprintf("Arming the rollback timer (TUN is turned off in %s unless the checks pass)", GuardTimeout))
+	err = sd.ArmGuard(ctx, GuardTimeout)
+	if err == nil {
+		// 通常 _prestart 已经加载过；内核服务由旧版 unit 启动时还没有。在开启 TUN 之前加载，
+		// 已经建立的连接（如这个 SSH 会话）在对方发来下一个包时就会标记，回包不进 TUN。
+		err = i.rules().Up(ctx)
+	}
+	if err == nil {
+		progress("Publishing the configuration")
+		var applied *pipeline.ApplyResult
+		if applied, err = p.ApplyLocked(ctx, plan); applied != nil {
+			res.Revision = applied.Revision
+		}
+	}
+	if err != nil {
+		st.SetTun(previous, previousDeadline)
+		if serr := state.Save(i.Layout.StateFile(), st); serr != nil {
+			err = errors.Join(err, serr)
+		}
+		if previous != state.TunPending {
+			sd.DisarmGuard(ctx)
+		}
+		l.Release()
+		return nil, err
+	}
+	l.Release()
+
+	progress("Checking the network")
+	check := i.CheckNetwork
+	if check == nil {
+		check = i.checkNetwork
+	}
+	res.Checks = check(ctx, opts)
+	var failed []string
+	for _, c := range res.Checks {
+		if c.Status == StepFailed {
+			failed = append(failed, c.Name+": "+c.Message)
+		}
+	}
+	if len(failed) > 0 {
+		progress("Turning TUN off again")
+		if err := i.tunGuard(ctx, true); err != nil {
+			return res, fmt.Errorf("the checks failed (%s), and turning TUN off failed: %w", strings.Join(failed, "; "), err)
+		}
+		return res, fmt.Errorf("%w: TUN is off again because the checks failed: %s", core.ErrRolledBack, strings.Join(failed, "; "))
+	}
+
+	l, err = i.lock(ctx)
+	if err != nil {
+		return res, err
+	}
+	defer l.Release()
+	if st, err = state.Load(i.Layout.StateFile()); err != nil {
+		return res, err
+	}
+	if st.Tun != state.TunPending {
+		return res, fmt.Errorf("%w: the rollback timer turned TUN off before the checks finished", core.ErrRolledBack)
+	}
+	st.SetTun(state.TunOn, time.Time{})
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		return res, err
+	}
+	sd.DisarmGuard(ctx)
+	return res, nil
+}
+
+// TunOff 关闭透明代理并发布 plan（pipeline.PlanTun(ctx, false) 的结果，已经用户确认），
+// 撤掉可能存在的回滚定时器。发布失败时开关恢复原状，配置由流水线回滚。
+func (i *Installer) TunOff(ctx context.Context, plan *pipeline.Plan) (*TunResult, error) {
+	p := i.pipeline(nil)
+	l, err := i.lock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer l.Release()
+	st, _, err := state.LoadOrNew(i.Layout.StateFile(), i.now())
+	if err != nil {
+		return nil, err
+	}
+	previous, previousDeadline := st.Tun, st.TunDeadline
+	st.SetTun("", time.Time{})
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		return nil, err
+	}
+	applied, err := p.ApplyLocked(ctx, plan)
+	if err != nil {
+		st.SetTun(previous, previousDeadline)
+		return nil, errors.Join(err, state.Save(i.Layout.StateFile(), st))
+	}
+	i.systemd().DisarmGuard(ctx)
+	res := &TunResult{}
+	if applied != nil {
+		res.Revision = applied.Revision
+	}
+	return res, nil
+}
+
+// TunGuard 是回滚定时器执行的 _tun-guard：开关仍为 pending（检测没有在期限内通过）时关闭透明代理。
+// reverted 报告是否关闭了。
+func (i *Installer) TunGuard(ctx context.Context) (reverted bool, err error) {
+	st, err := state.Load(i.Layout.StateFile())
+	if err != nil || st.Tun != state.TunPending {
+		return false, ignoreNotExist(err)
+	}
+	return true, i.tunGuard(ctx, true)
+}
+
+// tunGuard 在开关为 pending 时关闭透明代理：开关记为 off，只改写生效配置中的强制项并发布。
+// 发布失败时停止内核，由 _poststop 清理规则，保证网络恢复直连。
+//
+// wait 为 false 用于内核服务启动前（_prestart）：只尝试一次加锁，锁被占用（有人正在操作）就什么都
+// 不做；发布失败时也不停止内核服务，在 ExecStartPre 中停止自己所在的服务会被 systemd 终止。
+func (i *Installer) tunGuard(ctx context.Context, wait bool) error {
+	var l *lock.Lock
+	var err error
+	if wait {
+		l, err = i.lock(ctx)
+	} else {
+		l, err = lock.TryAcquire(i.Layout.LockFile())
+		if errors.Is(err, lock.ErrBusy) {
+			i.log().Info("skip turning the unconfirmed TUN off: another tunlr operation is in progress")
+			return nil
+		}
+	}
+	if err != nil {
+		return err
+	}
+	defer l.Release()
+
+	st, err := state.Load(i.Layout.StateFile())
+	if err != nil || st.Tun != state.TunPending {
+		return ignoreNotExist(err)
+	}
+	st.SetTun("", time.Time{})
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		return err
+	}
+	i.systemd().DisarmGuard(ctx)
+	p := i.pipeline(nil)
+	plan, err := p.PlanEnforce(ctx)
+	if err == nil && plan != nil {
+		_, err = p.ApplyLocked(ctx, plan)
+	}
+	if err != nil && !wait {
+		return fmt.Errorf("publishing the configuration without TUN failed: %w", err)
+	}
+	if err != nil {
+		i.log().Error("turn the unconfirmed TUN off: publishing failed, stopping mihomo", "err", err)
+		if serr := i.systemd().Stop(ctx, service.CoreUnit); serr != nil {
+			return errors.Join(err, serr)
+		}
+		return fmt.Errorf("publishing the configuration without TUN failed, so mihomo is stopped: %w", err)
+	}
+	i.log().Info("turned the unconfirmed TUN off")
+	return nil
+}
+
+// PreStart 是内核服务启动前（ExecStartPre，以 root）执行的 _prestart：开关仍为 pending 且已过期限时
+// 先关闭 TUN（重启机器会丢掉回滚定时器），再加载工具的规则。不等待文件锁：tunlr start 等命令持锁调用
+// systemctl start 时会死锁。
+func (i *Installer) PreStart(ctx context.Context) error {
+	st, err := state.Load(i.Layout.StateFile())
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	var errs []error
+	if st != nil && st.Tun == state.TunPending && i.now().After(st.TunDeadline) {
+		errs = append(errs, i.tunGuard(ctx, false))
+	}
+	errs = append(errs, i.rules().Up(ctx))
+	return errors.Join(errs...)
+}
+
+// PostStop 是内核以任何方式退出后（ExecStopPost，以 root）执行的 _poststop：删除工具的规则，以及内核
+// 没能自己清理的规则（被 SIGKILL 或崩溃时）。
+func (i *Installer) PostStop(ctx context.Context) error {
+	left, err := i.rules().Down(ctx)
+	if left {
+		i.log().Warn("removed the nftables table mihomo left behind (it did not exit cleanly)")
+	}
+	return err
+}
+
+// CheckResult 是定时检查（_check）的结果。
+type CheckResult struct {
+	// Actions 是采取的修复动作，没有问题时为空。
+	Actions []string `json:"actions,omitempty"`
+}
+
+// Check 是 tunlr-check.timer 每 5 分钟执行的 _check：内核在运行而工具的表不见了时重新加载；内核开着
+// TUN 而它的表不见了（例如重新加载 nftables.service 时 flush ruleset）时重启内核，由内核重建；开关为
+// pending 且已过期限一分钟以上（回滚定时器没有生效）时关闭 TUN。
+func (i *Installer) Check(ctx context.Context) (*CheckResult, error) {
+	res := &CheckResult{}
+	st, err := state.Load(i.Layout.StateFile())
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	if st != nil && st.Tun == state.TunPending && i.now().After(st.TunDeadline.Add(time.Minute)) {
+		if err := i.tunGuard(ctx, true); err != nil {
+			return res, err
+		}
+		res.Actions = append(res.Actions, "turned off the TUN that was never confirmed")
+	}
+
+	status, err := i.systemd().Status(ctx, service.CoreUnit)
+	if err != nil || !status.Active() {
+		return res, err
+	}
+	tables, err := i.rules().Tables(ctx)
+	if err != nil {
+		return res, err
+	}
+	if !tables[netfilter.Table] {
+		if err := i.rules().Up(ctx); err != nil {
+			return res, err
+		}
+		res.Actions = append(res.Actions, "reloaded the nftables table inet "+netfilter.Table)
+	}
+	on, err := mihomo.NewClient(i.Layout.CoreSocket()).TunEnabled(ctx)
+	if err != nil || !on || tables[netfilter.KernelTable] {
+		return res, nil
+	}
+	if _, err := i.kernels(nil, mihomo.Arch{}).Restart(ctx); err != nil {
+		return res, fmt.Errorf("mihomo's nftables table is gone; restarting mihomo failed: %w", err)
+	}
+	res.Actions = append(res.Actions, "restarted mihomo: its nftables table inet "+netfilter.KernelTable+" was gone")
+	return res, nil
+}
+
+func (i *Installer) rules() *netfilter.Rules {
+	if i.Rules != nil {
+		return i.Rules
+	}
+	return &netfilter.Rules{}
+}
+
+func (i *Installer) now() time.Time {
+	if i.Now != nil {
+		return i.Now()
+	}
+	return time.Now()
+}
+
+func ignoreNotExist(err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
