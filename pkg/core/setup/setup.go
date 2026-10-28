@@ -86,6 +86,8 @@ type InitResult struct {
 	// Started 是启动后的健康检查结果；没有启动时为 nil，原因见 NotStarted。
 	Started    *mihomo.Health `json:"started,omitempty"`
 	NotStarted string         `json:"not_started,omitempty"`
+	// PanelLAN 报告面板的局域网访问是否开启（局域网设备可以直接打开面板）。
+	PanelLAN bool `json:"panel_lan"`
 }
 
 // Init 安装或修复 tunlr，可以重复执行：检查环境 → 把自身复制到 /usr/local/bin/tunlr → 创建内核用户 →
@@ -167,6 +169,7 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
+	res.PanelLAN = st != nil && st.PanelLAN != nil
 	if st != nil && st.Active != "" {
 		progress("Publishing the configuration")
 		p := i.pipeline(owner)

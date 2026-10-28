@@ -146,7 +146,7 @@ func (a *app) newInitCommand() *cobra.Command {
 				return err
 			}
 			hint := !usage.any() && !configured && res.Started != nil
-			if err := a.renderInit(res, hint); err != nil || !usage.any() {
+			if err := a.renderInit(res, hint, usage.panel); err != nil || !usage.any() {
 				return err
 			}
 			return a.initLAN(ctx, res, usage)
@@ -283,8 +283,9 @@ func (a *app) askUsage(ctx context.Context, cands []setup.LANInterface, u *lanUs
 	}
 }
 
-// renderInit 输出 init 的结果。hint 为 true 时提示以后怎样让本机全部流量或局域网设备经过代理。
-func (a *app) renderInit(res *setup.InitResult, hint bool) error {
+// renderInit 输出 init 的结果。hint 为 true 时提示以后怎样让本机全部流量或局域网设备经过代理；
+// panelNext 为 true 时接下来开启面板的局域网访问，那一步会给出链接，这里不提示怎样打开面板。
+func (a *app) renderInit(res *setup.InitResult, hint, panelNext bool) error {
 	return a.render(res, func() error {
 		w := a.stdout
 		fmt.Fprintln(w)
@@ -299,7 +300,13 @@ func (a *app) renderInit(res *setup.InitResult, hint bool) error {
 		}
 		if res.Started != nil {
 			fmt.Fprintf(w, "mihomo %s is running (pid %d) and passed the health check.\n", res.Started.Version, res.Started.MainPID)
-			fmt.Fprintln(w, "Open the panel (zashboard): tunlr panel shows the SSH tunnel and the link.")
+			switch {
+			case panelNext:
+			case res.PanelLAN:
+				fmt.Fprintln(w, "Open the panel (zashboard): LAN access is on; tunlr panel shows the links.")
+			default:
+				fmt.Fprintln(w, "Open the panel (zashboard): tunlr panel shows the SSH tunnel and the link.")
+			}
 		} else {
 			fmt.Fprintf(w, "mihomo is not started: %s.\n", res.NotStarted)
 		}
