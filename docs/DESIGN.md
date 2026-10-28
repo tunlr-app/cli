@@ -515,7 +515,7 @@ tunlr-dev（环境同 8.2，装有 Docker：`ip_forward` 由 Docker 在运行时
 
 局域网设备把这台服务器设为默认网关（以及 DNS），它们的流量经 mihomo 分流，即常说的旁路由。按 8.9 的实测，开启 TUN 后 auto-redirect 和 `dns-hijack` 已经处理了转发来的 TCP 和 DNS，网关模式只需要补：IPv4 转发、转发链策略为 drop 时的放行，以及内核不在时不让局域网流量直接出去。不需要 NAT，不改 mihomo 的配置。
 
-- **命令**：`tunlr gateway` 显示状态；`tunlr gateway on [--interface <网卡>]`；`tunlr gateway off`。菜单放在“Transparent proxy”分类中。不放进 `init`：网关依赖 TUN，`init` 时往往还没有订阅，无法检测。
+- **命令**：`tunlr gateway` 显示状态；`tunlr gateway on [--interface <网卡>]`；`tunlr gateway off`。菜单放在“Transparent proxy”分类中。`init` 的用途问题选“当网关和代理”时，在 init 成功、内核已经运行之后走同一个流程；没有订阅时不问（内核不会启动，TUN 无法检测），见第 10 节“家庭网络中的用法”。
 - **开关**存在 `state.json` 的 `gateway`（局域网网卡、开启前 `ip_forward` 的值），理由同 TUN 开关（8.3）。字段可以省略，旧状态文件视为关闭，不需要迁移。
 - **局域网网卡**：默认取 IPv4 默认路由所在的网卡（旁路由的情形，局域网与上行是同一块网卡），可用 `--interface` 指定。不能是 `lo`、`tunlr0`。
 - **只做 IPv4**：测试机没有 IPv6（见 8.8），`ip6` 转发不开启也不放行。
@@ -580,8 +580,8 @@ tunlr-dev（环境同 8.2，装有 Docker：`ip_forward` 由 Docker 在运行时
 
 纳入：
 
-1. **本机模式与网关模式**：二者需要的 sysctl、防火墙设置不同。（MVP 5，用 `tunlr gateway on/off` 切换，不在 `init` 中选择，见 8.10）
-2. **端口访问安全**：代理端口只监听 127.0.0.1，或在允许局域网访问时强制设置认证，避免成为开放代理。（MVP 5，见第 6 节“端口安全”）
+1. **本机模式与网关模式**：二者需要的 sysctl、防火墙设置不同。（MVP 5，用 `tunlr gateway on/off` 切换，见 8.10；`init` 询问这台服务器的用途时可以一并开启，见第 10 节“家庭网络中的用法”）
+2. **端口访问安全**：代理端口默认只给本机用；允许局域网访问（`tunlr proxy lan on`）时由 `lan-allowed-ips` 只放行私有地址段，其他来源必须设置认证，避免成为开放代理。（MVP 5，见第 6 节“端口安全”）
 3. 流量过滤开关：按 IP/网段过滤局域网设备、只代理常用端口、屏蔽 QUIC、容器与虚拟机流量独立开关（翻译为 TUN 排除地址或 mihomo 规则）
 4. 自定义保留地址段 → `route-exclude-address`
 5. 开机联网检测与防自启死循环 → `network-online.target` + `StartLimitBurst`
@@ -788,7 +788,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 其余功能在此之后按需求排期。
 
-进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）。
+进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）、面板（`tunlr panel`，含局域网访问）、受管 mixin（第 6 节），以及家庭网络的用法：代理端口的局域网访问（`tunlr proxy lan`）和 `init` 的用途问题（第 10 节）。
 
 ### 13.1 已设计、尚未实现
 
