@@ -268,7 +268,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
     - `external-ui-url`、`geox-url` 仍写成经镜像的地址，用于 `_update` 触发的更新和用户在面板上主动点“更新”。
   - 实测：zashboard 与 meta-rules-dat 的发布资产都带有 GitHub 提供的 sha256 digest。
 - **充分利用内核已有能力**，由工具写入模板默认开启：
-  - `external-ui` / `external-ui-url` / `external-ui-name`：面板的位置和更新地址（首次由工具校验安装，之后可在面板上手动更新）
+  - `external-ui` / `external-ui-url`：面板的位置（`ui/zashboard`，挂在 `/ui`）和更新地址（首次由工具校验安装，之后可在面板上手动更新）
   - proxy-providers / rule-providers 的 `interval`：订阅与规则集热更新
   - `profile.store-selected` / `store-fake-ip`：保存面板选择的节点和 fake-ip 映射
   - `ntp`：时间同步（或交给系统的 timesyncd）
@@ -611,6 +611,7 @@ tunlr upgrade             升级 tunlr 自身（只能手动执行，不做定�
 tunlr upgrade core        升级内核（--rollback 回退）
 
 tunlr panel               面板的 SSH 隧道命令与链接（--reset-secret 换新的 API secret）
+tunlr panel lan on | off  允许局域网设备直接打开面板（默认关闭）
 tunlr config              查看和修改工具设置（交互式，或 config set <key> <value>）
 tunlr backup | restore    备份与还原
 tunlr shell-init          输出 shell 函数
@@ -633,7 +634,7 @@ tunlr version
 
 | 命令 | 问题 | 说明 |
 |---|---|---|
-| `apply`、`rollback`、`tun on/off` | 是否发布 | diff 之后确认，下方给出节点变化 |
+| `apply`、`rollback`、`tun on/off`、`panel lan on/off` | 是否发布 | diff 之后确认，下方给出节点变化 |
 | `init` | Set up tunlr now? | 按现状列出将做的事（复制自身、建用户、装哪个内核、启用 unit、加订阅、发布、启动还是重启内核） |
 | `stop` | Stop mihomo? | 代理停止；TUN 开着时本机流量改为直连 |
 | `restart` | Restart mihomo? | 连接会断开几秒 |
@@ -693,12 +694,27 @@ tunlr version
 
 - 从**生效的配置**读取 `external-controller` 和 `secret`（mixin 改过端口或 secret 时也对得上），不读状态文件。没有发布过配置、`external-controller` 为空时说明面板不可用。
 - 输出在用户电脑上执行的 SSH 隧道命令：`ssh -N -L <端口>:127.0.0.1:<端口> [-p <SSH 端口>] <用户>@<服务器>`，两端都用 API 的端口（默认 9090）。服务器地址和 SSH 端口取自 `$SSH_CONNECTION` 中本机的一端，用户取 `$SUDO_USER`，没有则取 `$USER`；不在 SSH 会话中时写成 `<server>`。经别名、跳板机或 NAT 连接时这个地址不对，所以总附上一句“用平时连接的主机名”，以及 `~/.ssh/config` 中 `LocalForward` 的一次性写法。
-- 输出浏览器中打开的链接：`http://127.0.0.1:<端口>/ui/#/setup?hostname=127.0.0.1&port=<端口>&secret=<secret>`（zashboard README 中的写法），打开即自动连上后端。secret 默认完整显示：命令需要 root，这正是用户要的东西。
-- `external-controller` 被 mixin 改为对外监听时，直接给出该地址的链接，并重复 lint 的警告。
+- 输出浏览器中打开的链接：`http://127.0.0.1:<端口>/ui/#/setup?hostname=127.0.0.1&label=<主机名> (SSH tunnel)&port=<端口>&secret=<secret>`（zashboard README 中的写法），打开即自动连上后端。secret 默认完整显示：命令需要 root，这正是用户要的东西。
+  - 模板写 `external-ui: ui/zashboard`，不用 `external-ui-name`：内核把 `external-ui` 指向的目录挂在 `/ui`，`external-ui-name` 只决定把下载解压到其中的哪个子目录，用它时 `/ui/` 是一个目录列表，要再点一级。没有 `external-ui-name` 时内核直接解压到 `external-ui`（读源码 `component/updater/update_ui.go`：zip 里唯一的顶层目录 `dist/` 被展开），面板中的“更新面板”照常工作。
+  - `label` 是 zashboard 后端列表中的名称，取主机名，经隧道的另加 `(SSH tunnel)`。zashboard 的 `addBackend` 只在各项（含 label、secret）完全相同时复用已有的后端，否则新增一个，所以 label 保持固定，重复打开链接不会多出后端；`--reset-secret` 之后旧的后端留在浏览器中，提示用户去面板的设置里删除。
+  - 后端存在浏览器的 localStorage 中，第一次用链接打开之后直接打开 `http://<地址>:<端口>/ui/` 即可，输出中一并给出这个地址。
+  - zashboard 可以从 `./zashboard-settings.json`（键为 localStorage 的键）或内核的 `/storage/zashboard` 导入设置，但都要用户先在浏览器里打开“自动导入”或手动导入；暂不预置，等有确定要预置的设置再做。
+- API 不只监听本机时（局域网访问开启，或 mixin 改了 `external-controller`），另外给出直接打开的链接：监听所有地址时，取默认路由网卡的 IPv4 地址，以及 SSH 会话进来的地址（如 Tailscale）。隧道照样列出，在外网时用。
 - 显示面板是否已安装（`external-ui` 目录）、内核是否在运行，不满足时给出 `tunlr apply`、`tunlr start` 的提示。
 - 不使用 zashboard 的 `disableTunMode`、`disableUpgradeCore` 参数：不限制面板能力（见第 3 节）。
 - `--reset-secret`：生成新的 secret 并发布（diff、确认，同 `apply`；`secret` 需要重启内核才生效）。用户在 mixin 中设置了 `secret` 时拒绝，提示去改 mixin。用于 secret 可能泄漏时。
-- 主菜单第一级“查看状态”之后是“Open the panel”；`init` 成功后最后一行提示 `tunlr panel`。
+- 主菜单第一级“查看状态”之后是分类“Panel”：查看打开方式、开启或关闭局域网访问、更换 secret；`init` 成功后最后一行提示 `tunlr panel`。
+
+**面板的局域网访问（`tunlr panel lan on | off`）**：家庭网络中，其他设备（手机、平板）要能直接打开面板调整，不便每台都建 SSH 隧道。默认关闭。
+
+- 开关存在状态文件中（`panel_lan`），像透明代理开关一样作为合成的输入：开启时工具生成的调整中写 `external-controller: 0.0.0.0:9090`（实测内核按 `*:9090` 双栈监听，所以 nft 表也限制 IPv6 来源；链接只给 IPv4 地址）。经流水线发布：diff、确认、`mihomo -t`；`external-controller` 需要重启内核才生效，失败时回滚，开关恢复原状。
+- mixin 设置了 `external-controller` 时 `lan on` 拒绝，提示去改 mixin：工具的值不起作用。`secret` 不能为空由端口安全检查保证（第 5 节）。面板经明文 HTTP 访问，secret 在局域网中可见，`lan on` 时说明。
+- 内核 API 不能限制来源，只监听 `0.0.0.0` 在公网 VPS 上等于把面板交给整个互联网。所以开关开启时另外加载 nft 表 `inet tunlr_panel`：input 链（优先级 `filter - 1`，策略 accept）中，目标为 API 端口、来源不在私有地址段（`127.0.0.0/8`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`100.64.0.0/10`（含 Tailscale）、`169.254.0.0/16`；IPv6 为 `::1`、`fe80::/10`、`fc00::/7`）的 TCP 包丢弃。在 tunlr-dev 上实测：从私有地址访问返回 200，从临时加在 lo 上的 `198.51.100.77` 访问超时。
+  - 先加载表再发布配置，关闭时先发布再删表，API 对外的任何时刻都有这层保护。
+  - 规则不跨重启保存：`_prestart` 在内核启动前补上；`_check` 只随透明代理运行，所以 `nft flush ruleset` 之后要到下次启动内核才补上，`doctor` 和 `tunlr panel` 会指出缺失。`_poststop` 保留它。`uninstall` 删除。
+  - 这张表只能多挡一层，不能放行：机器上其他防火墙挡了这个端口时，它照样打不开，`lan on` 完成后提示检查已有的防火墙。
+- 默认路由网卡的 IPv4 地址不是私有地址时（服务器很可能直接在公网上），`lan on` 先给出警告，再单独确认一次（`--yes` 时两次都视为同意）。nft 表仍然只放行私有地址段。
+- 回滚、自动关闭透明代理只改写强制项，不改 `external-controller`：回滚到开启前的修订时，面板实际只监听本机，`tunlr panel` 以生效配置为准报告；下次发布恢复。
 
 设计思路：高频的服务控制放在顶层，与 `systemctl` 的直觉一致；只保留 `sub`、`tun`、`env` 三组子命令（`sub use` 的说法与 `kubectl config use-context`、`nvm use` 一致）；合并含义重叠的命令。检验标准：没看过文档的人能猜对大部分常用操作。
 

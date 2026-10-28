@@ -29,6 +29,8 @@ type Status struct {
 	Updates []Schedule `json:"updates"`
 	// Tun 是透明代理的状态。
 	Tun *TunStatus `json:"tun"`
+	// PanelLAN 是面板的局域网访问开关。
+	PanelLAN bool `json:"panel_lan"`
 }
 
 // Status 返回当前状态。
@@ -54,7 +56,7 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	if st != nil {
-		s.Subscription = st.Active
+		s.Subscription, s.PanelLAN = st.Active, st.PanelLAN != nil
 	}
 	revs, current, err := i.pipeline(nil).Revisions()
 	if err != nil {

@@ -370,6 +370,13 @@ func (i *Installer) Uninstall(ctx context.Context, purge bool) (*UninstallResult
 	} else if left {
 		res.Removed = append(res.Removed, "nftables table inet "+netfilter.KernelTable)
 	}
+	// 内核已经停止，面板的表不再需要；开关留在状态文件中，重新 init 后 _prestart 照样加载。
+	if tables, err := i.rules().Tables(ctx); err == nil && tables[netfilter.PanelTable] {
+		if err := i.rules().PanelDown(ctx); err != nil {
+			return nil, err
+		}
+		res.Removed = append(res.Removed, "nftables table inet "+netfilter.PanelTable)
+	}
 	res.Removed = append(res.Removed, filepath.Join(i.Layout.UnitDir(), "tunlr-*"))
 
 	lay := i.Layout

@@ -368,6 +368,9 @@ func (a *app) printStatus(s *setup.Status) {
 	if s.Tun != nil {
 		fmt.Fprintf(w, "TUN:           %s\n", a.describeTun(s.Tun))
 	}
+	if s.Installed {
+		fmt.Fprintf(w, "Panel:         %s (open it with: tunlr panel)\n", a.describePanelLAN(s.PanelLAN))
+	}
 }
 
 func (a *app) newUninstallCommand() *cobra.Command {

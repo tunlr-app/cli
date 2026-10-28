@@ -10,5 +10,24 @@ stderr 'panel --reset-secret needs confirmation; pass --yes'
 exitcode 2 tunlr panel --dry-run
 stderr 'only applies to --reset-secret'
 
+# 局域网访问默认关闭
+exec tunlr panel lan
+stdout '^Panel LAN access: this server only$'
+exec tunlr panel lan --json
+stdout '"on": false'
+
+exitcode 2 tunlr panel lan on
+stderr 'panel lan on needs confirmation; pass --yes'
+exitcode 2 tunlr panel lan off
+stderr 'panel lan off needs confirmation; pass --yes'
+
+# 服务没有安装时前置检查不通过：退出码 3
+exitcode 3 tunlr panel lan on --yes
+stderr 'the mihomo service is not installed'
+
+# 关闭时什么都不做
+exec tunlr panel lan off --yes
+stdout 'already off'
+
 exec tunlr --help
 stdout 'panel +Show how to open the panel'

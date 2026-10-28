@@ -124,12 +124,12 @@ find-process-mode: "off"
 
 # 面板通过 SSH 隧道访问，HTTP API 只监听本机，secret 由 tunlr 为每台服务器生成。
 # tunlr 自己经工作目录中的 Unix socket 访问 API。设置了 github-mirror 时，
-# 面板的下载地址由 tunlr 改为经镜像下载。
+# 面板的下载地址由 tunlr 改为经镜像下载。external-ui 指向 zashboard 本身的目录，
+# /ui/ 直接打开它（external-ui-name 只决定解压到的子目录，/ui 仍挂在上一级）。
 external-controller: 127.0.0.1:9090
 external-controller-unix: api.sock
 secret: generated
-external-ui: ui
-external-ui-name: zashboard
+external-ui: ui/zashboard
 external-ui-url: https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
 
 # 保存面板选择的节点和 fake-ip 映射。

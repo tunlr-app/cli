@@ -77,6 +77,9 @@ func (h *fakeHost) netfilter(_ context.Context, stdin []byte, name string, args 
 			}
 			table = netfilter.GatewayTable
 		}
+		if strings.Contains(string(stdin), "table inet "+netfilter.PanelTable+" {") {
+			table = netfilter.PanelTable
+		}
 		if !slices.Contains(h.tables, table) {
 			h.tables = append(h.tables, table)
 		}

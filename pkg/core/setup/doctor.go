@@ -19,6 +19,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/fsutil"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/netfilter"
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/state"
@@ -192,6 +193,7 @@ func (i *Installer) installChecks(ctx context.Context, h *doctor.Host, quick boo
 	i.checkTun(ctx, c, st, running != "")
 	i.checkGateway(ctx, c, st)
 	i.checkExposure(c)
+	i.checkPanelLAN(ctx, c, st)
 	i.checkPorts(ctx, h, c, running != "")
 	i.checkSubscriptions(c, st)
 	return c.List
@@ -411,6 +413,33 @@ func (i *Installer) checkExposure(c *doctor.Checker) {
 	default:
 		c.Add("exposure", doctor.OK, "Port security", "no port is open to other hosts without authentication", "")
 	}
+}
+
+// checkPanelLAN 在面板对局域网开放时检查 nft 表是否在、生效的配置是否按开关监听；开关关闭时不出现。
+func (i *Installer) checkPanelLAN(ctx context.Context, c *doctor.Checker, st *state.State) {
+	if st == nil || st.PanelLAN == nil {
+		return
+	}
+	tables, err := i.rules().Tables(ctx)
+	switch {
+	case err != nil:
+		c.Add("panel", doctor.Fail, "Panel LAN access", err.Error(), "")
+		return
+	case !tables[netfilter.PanelTable]:
+		c.Add("panel", doctor.Fail, "Panel LAN access", "the nftables table inet "+netfilter.PanelTable+
+			" is missing, so the panel accepts connections from any address", "tunlr panel lan on restores it")
+		return
+	}
+	cfg, err := i.pipeline(nil).Current()
+	if err != nil || cfg == nil {
+		return
+	}
+	if api, err := config.API(cfg); err == nil && api.Controller != pipeline.LANController {
+		c.Add("panel", doctor.Warn, "Panel LAN access", "the switch is on but the published configuration has external-controller "+
+			strconv.Quote(api.Controller)+" (rolled back, or set in a mixin)", "tunlr apply")
+		return
+	}
+	c.Add("panel", doctor.OK, "Panel LAN access", "on; port "+strconv.Itoa(pipeline.APIPort)+" only accepts private addresses", "")
 }
 
 // checkPorts 检查配置中的端口有没有被其他程序占用：内核在运行时它们应当归内核，没有运行时应当空闲。

@@ -349,7 +349,8 @@ func TestMenuItems(t *testing.T) {
 	}
 
 	for group, want := range map[string]string{
-		"":                 "tunlr: Show status|Open the panel|Subscriptions|Configuration|Transparent proxy|mihomo service|Scheduled updates|Run diagnostics|Quit",
+		"":                 "tunlr: Show status|Panel|Subscriptions|Configuration|Transparent proxy|mihomo service|Scheduled updates|Run diagnostics|Quit",
+		groupPanel:         "tunlr › Panel: Show how to open it|Let LAN devices open it|Replace the API secret|← Back",
 		groupUpdates:       "tunlr › Scheduled updates: Show the schedule|Change the geo data update|Update everything now|← Back",
 		groupSubscriptions: "tunlr › Subscriptions: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|Change how often one is fetched|Remove subscriptions|← Back",
 		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|Roll back|List revisions|← Back",

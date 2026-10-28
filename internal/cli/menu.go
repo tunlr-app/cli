@@ -25,6 +25,7 @@ const (
 	groupSubscriptions = "Subscriptions"
 	groupConfiguration = "Configuration"
 	groupTun           = "Transparent proxy"
+	groupPanel         = "Panel"
 	groupService       = "mihomo service"
 	groupUpdates       = "Scheduled updates"
 )
@@ -437,7 +438,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 	case "":
 		return "tunlr", []menuItem{
 			status,
-			{label: "Open the panel", args: []string{"panel"}},
+			{label: groupPanel, group: groupPanel, note: a.describePanelLAN(s.PanelLAN)},
 			{label: groupSubscriptions, group: groupSubscriptions, note: a.describeSubscriptions(s, d.subs)},
 			{label: groupConfiguration, group: groupConfiguration, note: a.describeRevision(s)},
 			{label: groupTun, group: groupTun, note: a.describeTun(s.Tun)},
@@ -485,6 +486,14 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		items = append(items,
 			menuItem{label: "Show details", args: []string{"tun"}},
 			menuItem{label: "Show gateway details", args: []string{"gateway"}})
+	case groupPanel:
+		items = append(items, menuItem{label: "Show how to open it", args: []string{"panel"}})
+		if s.PanelLAN {
+			items = append(items, menuItem{label: "Stop LAN access (only this server)", args: []string{"panel", "lan", "off"}})
+		} else {
+			items = append(items, menuItem{label: "Let LAN devices open it", args: []string{"panel", "lan", "on"}})
+		}
+		items = append(items, menuItem{label: "Replace the API secret", args: []string{"panel", "--reset-secret"}})
 	case groupService:
 		if s.Service != nil && s.Service.Active() {
 			items = append(items,

@@ -305,8 +305,8 @@ func (i *Installer) tunGuard(ctx context.Context, wait bool) error {
 }
 
 // PreStart 是内核服务启动前（ExecStartPre，以 root）执行的 _prestart：开关仍为 pending 且已过期限时
-// 先关闭 TUN（重启机器会丢掉回滚定时器），再加载工具的规则；网关开启时重新加载网关的规则（nft 规则
-// 不跨重启保存）。不等待文件锁：tunlr start 等命令持锁调用 systemctl start 时会死锁。
+// 先关闭 TUN（重启机器会丢掉回滚定时器），再加载工具的规则；网关开启、面板对局域网开放时重新加载
+// 它们的规则（nft 规则不跨重启保存），面板的表在内核开始监听之前就位。不等待文件锁：tunlr start 等命令持锁调用 systemctl start 时会死锁。
 func (i *Installer) PreStart(ctx context.Context) error {
 	st, err := state.Load(i.Layout.StateFile())
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -324,6 +324,11 @@ func (i *Installer) PreStart(ctx context.Context) error {
 		errs = append(errs, err)
 	} else if len(actions) > 0 {
 		i.log().Info("gateway: " + strings.Join(actions, "; "))
+	}
+	if action, err := i.repairPanel(ctx, st); err != nil {
+		errs = append(errs, err)
+	} else if action != "" {
+		i.log().Info("panel: " + action)
 	}
 	return errors.Join(errs...)
 }
@@ -363,6 +368,12 @@ func (i *Installer) Check(ctx context.Context) (*CheckResult, error) {
 		}
 		res.Actions = append(res.Actions, "turned off the TUN that was never confirmed")
 		st.SetTun("", time.Time{})
+	}
+	// 面板的表与透明代理无关，但 _check 只随透明代理运行，顺便补上。
+	if action, err := i.repairPanel(ctx, st); err != nil {
+		return res, fmt.Errorf("repairing the panel rules: %w", err)
+	} else if action != "" {
+		res.Actions = append(res.Actions, action)
 	}
 	if st == nil || !st.TunEnabled() {
 		if err := i.systemd().SetTimer(ctx, service.CheckTimer, false); err != nil {

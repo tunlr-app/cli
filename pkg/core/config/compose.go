@@ -143,7 +143,7 @@ func Compose(l Layers) (*Result, error) {
 	if enforced != nil {
 		mergeMapping(root, enforced.Content[0])
 	}
-	res.Warnings = append(res.Warnings, lint(root)...)
+	res.Warnings = append(res.Warnings, lint(root, m.setBy)...)
 	res.Facts = factsOf(root)
 
 	out, err := encode(doc)

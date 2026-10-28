@@ -142,6 +142,8 @@ type Plan struct {
 type Generated struct {
 	// Secret 是 API secret，第一次发布时生成并保存在状态文件中。
 	Secret string `yaml:"secret" json:"secret"`
+	// ExternalController 是面板的局域网访问开启时 API 的监听地址（LANController），关闭时为空（模板中只监听本机）。
+	ExternalController string `yaml:"external-controller,omitempty" json:"external-controller,omitempty"`
 	// ExternalUIURL 是配置了 GitHub 镜像时经镜像的面板下载地址。
 	ExternalUIURL string `yaml:"external-ui-url,omitempty" json:"external-ui-url,omitempty"`
 	// GeoxURL 是配置了 GitHub 镜像时经镜像的 geo 数据下载地址。
@@ -173,6 +175,32 @@ func (p *Pipeline) PlanTun(ctx context.Context, on bool) (*Plan, error) {
 	return p.plan(ctx, planOptions{tun: &on})
 }
 
+// APIPort 是内核 API（面板）的端口，与模板中的 external-controller 一致。
+const APIPort = 9090
+
+// LANController 是面板的局域网访问开启时 external-controller 的值：监听所有 IPv4 地址，
+// 来源由 nft 表 inet tunlr_panel 限制为私有地址段。
+var LANController = fmt.Sprintf("0.0.0.0:%d", APIPort)
+
+// ErrControllerInMixin 表示 mixin 设置了 external-controller，工具生成的值不起作用。
+var ErrControllerInMixin = errors.New("a mixin sets external-controller")
+
+// PlanPanelLAN 同 Plan，但按面板局域网访问开关为 on 时的样子合成，不看状态文件中的开关。调用方在发布前
+// 保存开关。开启时 mixin 设置了 external-controller 返回满足 errors.Is(err, ErrControllerInMixin) 和
+// errors.Is(err, core.ErrInvalidArgument) 的错误。
+func (p *Pipeline) PlanPanelLAN(ctx context.Context, on bool) (*Plan, error) {
+	plan, err := p.plan(ctx, planOptions{lan: &on})
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range plan.Overrides {
+		if on && o.Path == "external-controller" {
+			return nil, fmt.Errorf("%w: %w (%s); change it there", core.ErrInvalidArgument, ErrControllerInMixin, o.File)
+		}
+	}
+	return plan, nil
+}
+
 // ErrSecretInMixin 表示 mixin 设置了 secret，工具生成的 secret 不起作用，换新的没有意义。
 var ErrSecretInMixin = errors.New("a mixin sets secret")
 
@@ -198,6 +226,8 @@ type planOptions struct {
 	tun *bool
 	// resetSecret 换用新生成的 API secret。
 	resetSecret bool
+	// lan 不为 nil 时代替状态文件中的面板局域网访问开关。
+	lan *bool
 }
 
 func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
@@ -219,7 +249,11 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		}
 		plan.newSecret, plan.oldSecret = secret, st.APISecret
 	}
-	plan.Generated = generate(secret, set.GitHubMirror)
+	lan := st.PanelLAN != nil
+	if opts.lan != nil {
+		lan = *opts.lan
+	}
+	plan.Generated = generate(secret, set.GitHubMirror, lan)
 	generated, err := yaml.Marshal(plan.Generated)
 	if err != nil {
 		return nil, err
@@ -703,10 +737,13 @@ func (p *Pipeline) now() time.Time {
 	return time.Now()
 }
 
-// generate 生成工具的调整：API secret，以及配置了 GitHub 镜像时经镜像的面板和 geo 数据地址、
-// 让镜像直连的规则。
-func generate(secret, mirror string) *Generated {
+// generate 生成工具的调整：API secret，面板的局域网访问开启时 API 的监听地址，以及配置了 GitHub 镜像时
+// 经镜像的面板和 geo 数据地址、让镜像直连的规则。
+func generate(secret, mirror string, lan bool) *Generated {
 	g := &Generated{Secret: secret, GeoxURL: mihomo.GeoxURL(mirror), PrependRules: mirrorRules(mirror)}
+	if lan {
+		g.ExternalController = LANController
+	}
 	if mirror != "" {
 		g.ExternalUIURL = download.MirrorURL(mirror, mihomo.ZashboardURL)
 	}

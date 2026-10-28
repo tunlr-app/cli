@@ -48,6 +48,9 @@ type State struct {
 	// Gateway 是网关模式的开关，nil 为关闭。只由 gateway on/off、tun off 和防失联回滚修改。
 	Gateway *Gateway `json:"gateway,omitempty"`
 
+	// PanelLAN 是面板的局域网访问开关，nil 为关闭（只有本机能访问）。只由 panel lan on/off 修改。
+	PanelLAN *PanelLAN `json:"panel_lan,omitempty"`
+
 	// Updates 记录定时更新任务（键为任务名，目前只有 geo；订阅的记在各自的 FetchedAt、LastErrorAt 中）
 	// 最近一次执行的情况，用来判断下次何时到期。只记最近一次，历次的情况在 journal 中。
 	Updates map[string]UpdateRun `json:"updates,omitempty"`
@@ -86,6 +89,12 @@ type Gateway struct {
 	Interface string `json:"interface"`
 	// ForwardBefore 是开启前 net.ipv4.ip_forward 的值（"0" 或 "1"），关闭时据此决定是否恢复。
 	ForwardBefore string `json:"forward_before"`
+	// Since 是开启的时间。
+	Since time.Time `json:"since"`
+}
+
+// PanelLAN 是开启面板局域网访问时的设置。
+type PanelLAN struct {
 	// Since 是开启的时间。
 	Since time.Time `json:"since"`
 }
