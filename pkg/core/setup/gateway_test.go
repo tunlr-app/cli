@@ -74,11 +74,16 @@ func TestGatewayOnOff(t *testing.T) {
 		t.Errorf("tun status gateway = %q", ts.Gateway)
 	}
 
-	// 内核停止时网关的表保留（失败时关闭）。
+	// 记录设备的表随网关加载，集合 lan 是局域网网卡。
+	if !strings.Contains(h.devicesSync, `add element inet tunlr_devices lan { "ens3" }`) || strings.Contains(h.devicesSync, "add element inet tunlr_devices ports") {
+		t.Errorf("devices sync:\n%s", h.devicesSync)
+	}
+
+	// 内核停止时网关和记录设备的表保留（失败时关闭）。
 	if err := i.PostStop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(h.tables, []string{netfilter.GatewayTable}) {
+	if !slices.Equal(h.tables, []string{netfilter.GatewayTable, netfilter.DevicesTable}) {
 		t.Fatalf("after poststop: %v", h.tables)
 	}
 
@@ -169,13 +174,14 @@ func TestCheckRepairsGateway(t *testing.T) {
 	i, h := newGatewayInstaller(t, "0")
 	gatewayOn(t, i, "ens3")
 	h.docker = []string{"-j RETURN"} // Docker 在网关开启后才启动
-	h.tables = slices.DeleteFunc(h.tables, func(t string) bool { return t == netfilter.GatewayTable })
+	h.tables = slices.DeleteFunc(h.tables, func(t string) bool { return t == netfilter.GatewayTable || t == netfilter.DevicesTable })
 	writeForward(t, i, "0")
 	res, err := i.Check(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Actions) != 2 || !slices.Contains(h.tables, netfilter.GatewayTable) || len(h.docker) != 3 || i.ipForward() != "1" {
+	if len(res.Actions) != 3 || !slices.Contains(h.tables, netfilter.GatewayTable) || !slices.Contains(h.tables, netfilter.DevicesTable) ||
+		len(h.docker) != 3 || i.ipForward() != "1" {
 		t.Fatalf("actions %q, tables %v, docker %q, forward %q", res.Actions, h.tables, h.docker, i.ipForward())
 	}
 	// 都在时什么都不做。

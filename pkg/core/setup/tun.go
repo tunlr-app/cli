@@ -330,6 +330,10 @@ func (i *Installer) PreStart(ctx context.Context) error {
 	} else if action != "" {
 		i.log().Info("panel: " + action)
 	}
+	// 记录设备的表：同时按生效配置更新代理端口（mixin 可能改了 mixed-port）。失败不阻止内核启动。
+	if err := i.syncDevices(ctx, st); err != nil {
+		i.log().Warn("load the nftables table that records LAN devices", "err", err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -372,6 +376,11 @@ func (i *Installer) Check(ctx context.Context) (*CheckResult, error) {
 	// 面板的表与透明代理无关，但 _check 只随透明代理运行，顺便补上。
 	if action, err := i.repairPanel(ctx, st); err != nil {
 		return res, fmt.Errorf("repairing the panel rules: %w", err)
+	} else if action != "" {
+		res.Actions = append(res.Actions, action)
+	}
+	if action, err := i.repairDevices(ctx, st); err != nil {
+		return res, fmt.Errorf("repairing the table that records LAN devices: %w", err)
 	} else if action != "" {
 		res.Actions = append(res.Actions, action)
 	}

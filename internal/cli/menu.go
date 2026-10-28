@@ -28,6 +28,7 @@ const (
 	groupTun           = "Transparent proxy"
 	groupPanel         = "Panel"
 	groupProxy         = "Proxy port"
+	groupDevices       = "LAN devices"
 	groupService       = "mihomo service"
 	groupUpdates       = "Scheduled updates"
 )
@@ -445,6 +446,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 			{label: groupSubscriptions, group: groupSubscriptions, note: a.describeSubscriptions(s, d.subs)},
 			{label: groupConfiguration, group: groupConfiguration, note: a.describeRevision(s)},
 			{label: groupTun, group: groupTun, note: a.describeTun(s.Tun)},
+			{label: groupDevices, group: groupDevices, note: a.describeDevicesNote(s.Devices)},
 			{label: groupService, group: groupService, note: a.describeService(s)},
 			{label: groupUpdates, group: groupUpdates, note: a.describeUpdates(s.Updates)},
 			diagnose,
@@ -504,6 +506,13 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		} else {
 			items = append(items, menuItem{label: "Let LAN devices use it (HTTP/SOCKS5 proxy)", args: []string{"proxy", "lan", "on"}})
 		}
+	case groupDevices:
+		items = append(items,
+			menuItem{label: "List devices", args: []string{"devices"}},
+			menuItem{label: "List all devices on the LAN", args: []string{"devices", "--all"}},
+			menuItem{label: "Set a device to go through proxies or directly", args: []string{"devices", "set"}},
+			menuItem{label: "Name a device", args: []string{"devices", "name"}},
+			menuItem{label: "Forget a device", args: []string{"devices", "forget"}})
 	case groupService:
 		if s.Service != nil && s.Service.Active() {
 			items = append(items,
@@ -601,6 +610,14 @@ func (a *app) describeUpdates(scheds []setup.Schedule) string {
 		part = a.style.bad(fmt.Sprintf("%s (%d failed)", part, failed))
 	}
 	return part + a.style.dim(" · ") + geo
+}
+
+// describeDevicesNote 是局域网设备分类右侧的状态；网关和代理端口的局域网访问都关闭时没有设备会使用本机。
+func (a *app) describeDevicesNote(d *setup.DeviceSummary) string {
+	if d == nil {
+		return a.style.dim("gateway and proxy LAN access off")
+	}
+	return a.describeDevices(d)
 }
 
 func (a *app) describeService(s *setup.Status) string {

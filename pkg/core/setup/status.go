@@ -37,6 +37,8 @@ type Status struct {
 	ProxyLAN bool `json:"proxy_lan"`
 	// Drift 是生效的配置与现在发布会得到的配置是否一致，没有发布过时为 nil。
 	Drift *pipeline.Drift `json:"drift,omitempty"`
+	// Devices 汇总使用本机的局域网设备，网关和代理端口的局域网访问都关闭时为 nil。
+	Devices *DeviceSummary `json:"devices,omitempty"`
 }
 
 // driftCache 缓存最近一次计算的漂移：合成一次配置要解析整份订阅，主菜单每 10 秒刷新一次状态，
@@ -111,5 +113,6 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 	if s.Drift, err = i.drift(ctx); err != nil {
 		return nil, err
 	}
+	s.Devices = i.deviceSummary(ctx, st)
 	return s, nil
 }

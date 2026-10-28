@@ -592,6 +592,25 @@ func (a *app) printStatus(s *setup.Status) {
 		fmt.Fprintf(w, "Panel:         %s (open it with: tunlr panel)\n", a.describePanelLAN(s.PanelLAN))
 		fmt.Fprintf(w, "Proxy port:    %s (details: tunlr proxy)\n", a.describeProxyLAN(s.ProxyLAN))
 	}
+	if s.Devices != nil {
+		fmt.Fprintf(w, "LAN devices:   %s (list them: tunlr devices)\n", a.describeDevices(s.Devices))
+	}
+}
+
+// describeDevices 用于 status 和菜单的设备摘要，如 "3 online, 1 idle · 1 direct"。
+func (a *app) describeDevices(d *setup.DeviceSummary) string {
+	parts := []string{fmt.Sprintf("%d online", d.Online)}
+	if d.Idle > 0 {
+		parts = append(parts, fmt.Sprintf("%d idle", d.Idle))
+	}
+	s := strings.Join(parts, ", ")
+	if d.Online > 0 {
+		s = a.style.good(s)
+	}
+	if d.Direct > 0 {
+		s += a.style.dim(fmt.Sprintf(" · %d direct", d.Direct))
+	}
+	return s
 }
 
 func (a *app) newUninstallCommand() *cobra.Command {

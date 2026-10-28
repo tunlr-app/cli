@@ -46,6 +46,11 @@ type fakeHost struct {
 	docker []string
 	// failGateway 让加载网关的 nft 表失败。
 	failGateway bool
+	// devicesSync 是最近一次更新记录设备的表的脚本；seen 是该表中各集合的 nft -j 输出，neigh 是
+	// ip -j neigh show 的输出。
+	devicesSync string
+	seen        map[string]string
+	neigh       string
 }
 
 func (h *fakeHost) systemd(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -80,11 +85,23 @@ func (h *fakeHost) netfilter(_ context.Context, stdin []byte, name string, args 
 		if strings.Contains(string(stdin), "table inet "+netfilter.PanelTable+" {") {
 			table = netfilter.PanelTable
 		}
+		if strings.Contains(string(stdin), "set inet "+netfilter.DevicesTable+" lan") {
+			// 记录设备的表：只更新集合时表须已存在。
+			table = netfilter.DevicesTable
+			h.devicesSync = string(stdin)
+			if !strings.Contains(string(stdin), "table inet "+netfilter.DevicesTable+" {") && !slices.Contains(h.tables, table) {
+				return nil, errors.New("nft: Error: No such file or directory")
+			}
+		}
 		if !slices.Contains(h.tables, table) {
 			h.tables = append(h.tables, table)
 		}
 	case strings.HasPrefix(cmd, "nft delete table inet "):
 		h.tables = slices.DeleteFunc(h.tables, func(t string) bool { return t == args[3] })
+	case strings.HasPrefix(cmd, "nft -j list set inet "+netfilter.DevicesTable+" "):
+		return []byte(h.seen[args[len(args)-1]]), nil
+	case cmd == "ip -j -4 neigh show":
+		return []byte(h.neigh), nil
 	case cmd == "ip -4 route show default":
 		return []byte("default via 192.0.2.1 dev ens3 proto dhcp src 192.0.2.10 metric 100\n"), nil
 	case name == "iptables":

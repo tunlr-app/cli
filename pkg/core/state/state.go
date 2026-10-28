@@ -54,6 +54,9 @@ type State struct {
 	// ProxyLAN 是代理端口的局域网访问开关，nil 为关闭（代理端口只监听本机）。只由 proxy lan on/off 修改。
 	ProxyLAN *ProxyLAN `json:"proxy_lan,omitempty"`
 
+	// Devices 是用户起过名称或设置过走法的局域网设备。只由 tunlr devices 修改。
+	Devices []Device `json:"devices,omitempty"`
+
 	// Updates 记录定时更新任务（键为任务名，目前只有 geo；订阅的记在各自的 FetchedAt、LastErrorAt 中）
 	// 最近一次执行的情况，用来判断下次何时到期。只记最近一次，历次的情况在 journal 中。
 	Updates map[string]UpdateRun `json:"updates,omitempty"`
@@ -106,6 +109,31 @@ type PanelLAN struct {
 type ProxyLAN struct {
 	// Since 是开启的时间。
 	Since time.Time `json:"since"`
+}
+
+// RouteDirect 是设备的走法“全部直连”；空为默认的“按规则分流”。
+const RouteDirect = "direct"
+
+// Device 是一台记录下来的局域网设备。
+type Device struct {
+	// MAC 用来在地址变化后认出设备；预先按地址设置、还没见过的设备为空。
+	MAC string `json:"mac,omitempty"`
+	// IP 是分流规则按来源匹配的地址（内核没有按 MAC 匹配的规则）。
+	IP   string `json:"ip"`
+	Name string `json:"name,omitempty"`
+	// Route 为 RouteDirect 或空。
+	Route string `json:"route,omitempty"`
+}
+
+// DirectIPs 返回走法为直连的设备的地址，按记录的顺序。
+func (s *State) DirectIPs() []string {
+	var ips []string
+	for _, d := range s.Devices {
+		if d.Route == RouteDirect {
+			ips = append(ips, d.IP)
+		}
+	}
+	return ips
 }
 
 // Kernel 是一个已知可用的内核版本，二进制存放在 paths.Layout.KernelBinary(Version)。

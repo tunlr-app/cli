@@ -1,0 +1,34 @@
+# 由 tunlr 生成：记下经网关、用代理端口的局域网设备，供 tunlr devices 列出（DESIGN.md 8.12）。
+# 只记录，不改动任何包。集合 lan、ports 由 tunlr 随开关更新（不重建表，已记下的设备保留）。
+# 先建后删再建，整个文件在一个事务中替换旧表。
+table inet tunlr_devices
+delete table inet tunlr_devices
+table inet tunlr_devices {
+	# 网关开启时为局域网网卡。
+	set lan {
+		type ifname
+	}
+	# 代理端口对局域网开放时为 mixed-port。
+	set ports {
+		type inet_service
+	}
+	# 每个包都刷新计时，24h 没有流量即过期。
+	set gateway {
+		type ether_addr . ipv4_addr
+		flags dynamic, timeout
+		timeout 24h
+		size 4096
+	}
+	set proxy {
+		type ether_addr . ipv4_addr
+		flags dynamic, timeout
+		timeout 24h
+		size 4096
+	}
+	chain prerouting {
+		# 早于内核的 TCP 重定向（dstnat），看到的是原始的目标地址。
+		type filter hook prerouting priority raw; policy accept;
+		ether type ip iifname @lan fib daddr type != local update @gateway { ether saddr . ip saddr }
+		ether type ip ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } fib daddr type local tcp dport @ports update @proxy { ether saddr . ip saddr }
+	}
+}

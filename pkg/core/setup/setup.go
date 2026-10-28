@@ -57,6 +57,10 @@ type Installer struct {
 	Interfaces func(name string) (*netfilter.Interface, error)
 	// InterfaceNames 列出本机的网卡名，为空时使用 net.Interfaces（测试时替换）。
 	InterfaceNames func() ([]string, error)
+	// LookupNames 按地址查询设备名称，为空时向路由器反向解析（测试时替换）。
+	LookupNames func(ctx context.Context, ips []string) map[string]string
+	// Connections 返回内核当前连接按来源地址的计数，为空时经 API 获取（测试时替换）。
+	Connections func(ctx context.Context) (map[string]int, error)
 }
 
 // InitOptions 是 init 的参数。
@@ -381,6 +385,12 @@ func (i *Installer) Uninstall(ctx context.Context, purge bool) (*UninstallResult
 			return nil, err
 		}
 		res.Removed = append(res.Removed, "nftables table inet "+netfilter.PanelTable)
+	}
+	if tables, err := i.rules().Tables(ctx); err == nil && tables[netfilter.DevicesTable] {
+		if err := i.rules().DevicesDown(ctx); err != nil {
+			return nil, err
+		}
+		res.Removed = append(res.Removed, "nftables table inet "+netfilter.DevicesTable)
 	}
 	res.Removed = append(res.Removed, filepath.Join(i.Layout.UnitDir(), "tunlr-*"))
 

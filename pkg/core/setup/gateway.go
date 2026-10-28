@@ -180,6 +180,10 @@ func (i *Installer) GatewayOn(ctx context.Context, iface string) (*GatewayResult
 		}
 		return nil, fmt.Errorf("%w: turning the gateway on failed, the changes are undone: %w", core.ErrRolledBack, err)
 	}
+	// 设备列表是附带的：记录设备的表加载失败不影响网关，_prestart 和 _check 会再补。
+	if err := i.syncDevices(ctx, st); err != nil {
+		i.log().Warn("load the nftables table that records LAN devices", "err", err)
+	}
 	res := &GatewayResult{Interface: iface}
 	if ifi, err := i.lookupInterface(iface); err == nil {
 		res.Addresses = ifi.IPv4
@@ -220,6 +224,9 @@ func (i *Installer) gatewayOffLocked(ctx context.Context, st *state.State) error
 	st.Gateway = nil
 	if err := state.Save(i.Layout.StateFile(), st); err != nil {
 		return err
+	}
+	if err := i.syncDevices(ctx, st); err != nil {
+		i.log().Warn("update the nftables table that records LAN devices", "err", err)
 	}
 	i.log().Debug("gateway off", "interface", iface)
 	return nil

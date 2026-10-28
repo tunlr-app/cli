@@ -101,6 +101,27 @@ func (c *Client) ReloadConfig(ctx context.Context, path string) error {
 	return c.do(ctx, reloadTimeout, http.MethodPut, "/configs?force=true", map[string]string{"path": abs}, nil)
 }
 
+// ConnectionsBySource 返回当前连接按来源地址的计数（GET /connections）。
+func (c *Client) ConnectionsBySource(ctx context.Context) (map[string]int, error) {
+	var v struct {
+		Connections []struct {
+			Metadata struct {
+				SourceIP string `json:"sourceIP"`
+			} `json:"metadata"`
+		} `json:"connections"`
+	}
+	if err := c.do(ctx, apiTimeout, http.MethodGet, "/connections", nil, &v); err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	for _, conn := range v.Connections {
+		if ip := conn.Metadata.SourceIP; ip != "" {
+			counts[ip]++
+		}
+	}
+	return counts, nil
+}
+
 // geoUpdateTimeout 是 UpdateGeo 的时限。内核逐个下载 geo 文件，单个文件的时限是 90 秒。
 const geoUpdateTimeout = 10 * time.Minute
 

@@ -25,6 +25,11 @@ var GatewayNft []byte
 //go:embed nft/panel.nft
 var PanelNft []byte
 
+// DevicesNft 是记录局域网设备的 nftables 表（text/template），由 nft -f 加载。
+//
+//go:embed nft/devices.nft
+var DevicesNft []byte
+
 // Config 是默认的 mihomo 基础配置，即配置合成的第一层（系统部分）。
 //
 //go:embed config.yaml

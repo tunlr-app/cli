@@ -92,6 +92,10 @@ func (i *Installer) SetProxyLAN(ctx context.Context, on bool, plan *pipeline.Pla
 	if applied != nil {
 		res.Revision = applied.Revision
 	}
+	// 设备列表是附带的：记录设备的表加载失败不影响开关，_prestart 会再补。
+	if err := i.syncDevices(ctx, st); err != nil {
+		i.log().Warn("update the nftables table that records LAN devices", "err", err)
+	}
 	i.log().Debug("proxy lan", "on", on)
 	return res, nil
 }

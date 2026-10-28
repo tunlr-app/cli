@@ -286,7 +286,7 @@ func TestMenuAddSubscription(t *testing.T) {
 func TestMenuRefresh(t *testing.T) {
 	mt := newMenuTest(t, menuWith(runningStatus, 2, 3))
 	mt.record = true
-	mt.keys("down", "down", "down", "down", "down", "down", "enter", "down", "down") // mihomo service › Show recent logs
+	mt.keys("down", "down", "down", "down", "down", "down", "down", "enter", "down", "down") // mihomo service › Show recent logs
 	if mt.hovered() != "Show recent logs" {
 		t.Fatalf("hovered %q", mt.hovered())
 	}
@@ -349,7 +349,8 @@ func TestMenuItems(t *testing.T) {
 	}
 
 	for group, want := range map[string]string{
-		"":                 "tunlr: Show status|Panel|Proxy port|Subscriptions|Configuration|Transparent proxy|mihomo service|Scheduled updates|Run diagnostics|Quit",
+		"":                 "tunlr: Show status|Panel|Proxy port|Subscriptions|Configuration|Transparent proxy|LAN devices|mihomo service|Scheduled updates|Run diagnostics|Quit",
+		groupDevices:       "tunlr › LAN devices: List devices|List all devices on the LAN|Set a device to go through proxies or directly|Name a device|Forget a device|← Back",
 		groupPanel:         "tunlr › Panel: Show how to open it|Let LAN devices open it|Replace the API secret|← Back",
 		groupProxy:         "tunlr › Proxy port: Show the proxy address|Let LAN devices use it (HTTP/SOCKS5 proxy)|← Back",
 		groupUpdates:       "tunlr › Scheduled updates: Show the schedule|Change the geo data update|Update everything now|← Back",
