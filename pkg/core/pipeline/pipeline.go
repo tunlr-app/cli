@@ -131,8 +131,8 @@ type Plan struct {
 	// 配置有误时为 *mihomo.CheckError，内核未安装时满足 errors.Is(err, mihomo.ErrNotInstalled)。
 	Check error
 
-	// newSecret 是本次生成、尚未保存的 API secret。
-	newSecret string
+	// newSecret 是本次生成、尚未保存的 API secret，oldSecret 是生成时状态文件中的 secret（第一次发布时为空）。
+	newSecret, oldSecret string
 	// facts 是从 Config 中提取的信息。
 	facts *config.Facts
 }
@@ -158,22 +158,50 @@ func (p *Plan) Changed() bool {
 // Plan 用启用的订阅、mixin 和工具设置合成新配置，与生效的配置比较并校验。
 // mixin 有错时返回 *config.MixinError。
 func (p *Pipeline) Plan(ctx context.Context) (*Plan, error) {
-	return p.plan(ctx, nil, nil)
+	return p.plan(ctx, planOptions{})
 }
 
 // PlanWithMixin 同 Plan，但用 m 代替磁盘上的同名 mixin 文件（不存在时按文件名顺序加入），
 // 用于在保存编辑结果之前检查它。
 func (p *Pipeline) PlanWithMixin(ctx context.Context, m config.Mixin) (*Plan, error) {
-	return p.plan(ctx, &m, nil)
+	return p.plan(ctx, planOptions{edited: &m})
 }
 
 // PlanTun 同 Plan，但按透明代理开关为 on 时的样子合成，不看状态文件中的开关。
 // 用于开关之前预览和校验；调用方在发布前保存开关。
 func (p *Pipeline) PlanTun(ctx context.Context, on bool) (*Plan, error) {
-	return p.plan(ctx, nil, &on)
+	return p.plan(ctx, planOptions{tun: &on})
 }
 
-func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin, tun *bool) (*Plan, error) {
+// ErrSecretInMixin 表示 mixin 设置了 secret，工具生成的 secret 不起作用，换新的没有意义。
+var ErrSecretInMixin = errors.New("a mixin sets secret")
+
+// PlanResetSecret 同 Plan，但换用新生成的 API secret，发布时保存。mixin 设置了 secret 时返回满足
+// errors.Is(err, ErrSecretInMixin) 和 errors.Is(err, core.ErrInvalidArgument) 的错误。
+func (p *Pipeline) PlanResetSecret(ctx context.Context) (*Plan, error) {
+	plan, err := p.plan(ctx, planOptions{resetSecret: true})
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range plan.Overrides {
+		if o.Path == "secret" {
+			return nil, fmt.Errorf("%w: %w (%s); change it there", core.ErrInvalidArgument, ErrSecretInMixin, o.File)
+		}
+	}
+	return plan, nil
+}
+
+type planOptions struct {
+	// edited 不为 nil 时代替磁盘上的同名 mixin 文件。
+	edited *config.Mixin
+	// tun 不为 nil 时代替状态文件中的透明代理开关。
+	tun *bool
+	// resetSecret 换用新生成的 API secret。
+	resetSecret bool
+}
+
+func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
+	edited, tun := opts.edited, opts.tun
 	set, err := settings.Load(p.Layout.SettingsFile())
 	if err != nil {
 		return nil, err
@@ -185,11 +213,11 @@ func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin, tun *bool) (*
 	plan := &Plan{Kind: KindApply, Subscription: st.Active}
 
 	secret := st.APISecret
-	if secret == "" {
+	if secret == "" || opts.resetSecret {
 		if secret, err = newSecret(); err != nil {
 			return nil, err
 		}
-		plan.newSecret = secret
+		plan.newSecret, plan.oldSecret = secret, st.APISecret
 	}
 	plan.Generated = generate(secret, set.GitHubMirror)
 	generated, err := yaml.Marshal(plan.Generated)
@@ -414,7 +442,7 @@ func (p *Pipeline) ApplyLocked(ctx context.Context, plan *Plan) (*ApplyResult, e
 		return nil, ErrStale
 	}
 	if plan.newSecret != "" {
-		if err := p.saveSecret(plan.newSecret); err != nil {
+		if err := p.saveSecret(plan.newSecret, plan.oldSecret); err != nil {
 			return nil, err
 		}
 	}
@@ -541,9 +569,9 @@ func (p *Pipeline) Revisions() ([]config.Revision, int, error) {
 	return revs, 0, nil
 }
 
-// saveSecret 保存第一次发布时生成的 API secret。并发的另一次发布已经保存了不同的 secret 时，
-// 本次计划中的配置已经过时。
-func (p *Pipeline) saveSecret(secret string) error {
+// saveSecret 保存生成的 API secret（第一次发布或换新时），old 是生成时状态文件中的值。期间并发的
+// 另一次发布已经保存了别的 secret 时，本次计划中的配置已经过时。
+func (p *Pipeline) saveSecret(secret, old string) error {
 	st, _, err := state.LoadOrNew(p.Layout.StateFile(), p.now())
 	if err != nil {
 		return err
@@ -551,7 +579,7 @@ func (p *Pipeline) saveSecret(secret string) error {
 	switch st.APISecret {
 	case secret:
 		return nil
-	case "":
+	case old:
 		st.APISecret = secret
 		return state.Save(p.Layout.StateFile(), st)
 	}

@@ -437,6 +437,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 	case "":
 		return "tunlr", []menuItem{
 			status,
+			{label: "Open the panel", args: []string{"panel"}},
 			{label: groupSubscriptions, group: groupSubscriptions, note: a.describeSubscriptions(s, d.subs)},
 			{label: groupConfiguration, group: groupConfiguration, note: a.describeRevision(s)},
 			{label: groupTun, group: groupTun, note: a.describeTun(s.Tun)},

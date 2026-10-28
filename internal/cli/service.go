@@ -104,7 +104,7 @@ func (a *app) newInitCommand() *cobra.Command {
 				}
 				if res.Started != nil {
 					fmt.Fprintf(w, "mihomo %s is running (pid %d) and passed the health check.\n", res.Started.Version, res.Started.MainPID)
-					fmt.Fprintln(w, "Open the panel through an SSH tunnel to 127.0.0.1:9090 (tunlr status shows the details).")
+					fmt.Fprintln(w, "Open the panel (zashboard): tunlr panel shows the SSH tunnel and the link.")
 				} else {
 					fmt.Fprintf(w, "mihomo is not started: %s.\n", res.NotStarted)
 				}

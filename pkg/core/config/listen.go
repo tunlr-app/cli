@@ -59,6 +59,29 @@ func Listen(cfg []byte) (*Listening, error) {
 	return l, nil
 }
 
+// APIAccess 是配置中内核 HTTP API（面板经它访问）的地址和 secret。
+type APIAccess struct {
+	// Controller 是 external-controller 的值，如 127.0.0.1:9090；没有设置时为空。
+	Controller string
+	Secret     string
+}
+
+// API 从配置中读取 external-controller 和 secret。
+func API(cfg []byte) (*APIAccess, error) {
+	doc, err := parseNode(cfg)
+	if err != nil || doc == nil {
+		return &APIAccess{}, err
+	}
+	root := doc.Content[0]
+	str := func(key string) string {
+		if n := lookup(root, []string{key}); n != nil && n.Kind == yaml.ScalarNode && !isNull(n) {
+			return n.Value
+		}
+		return ""
+	}
+	return &APIAccess{Controller: str("external-controller"), Secret: str("secret")}, nil
+}
+
 // addrPort 返回 host:port 形式的值中的端口，不是这种形式时为 0。
 func addrPort(n *yaml.Node) int {
 	if n == nil || n.Kind != yaml.ScalarNode {

@@ -232,7 +232,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - **端口安全**（MVP 5）：合成的结果会让其他主机无需凭据就能使用代理或 DNS 时不发布，避免公网服务器成为开放代理、开放 DNS 解析器。由 `pkg/core/config.CheckExposure` 检查：
     - `allow-lan: true` 而 `authentication` 为空：代理端口（`mixed-port`、`port`、`socks-port` 等）对外开放且没有认证。
     - `listeners` 中 `mixed`、`http`、`socks` 类型的项监听在非回环地址（不写 `listen` 即为 `0.0.0.0`），且没有认证：写了 `users: []`，或没写 `users`（这时沿用全局的 `authentication`）而全局也为空。
-    - `dns.enable` 时 `dns.listen` 不在回环地址：在公网上会被用于 DNS 反射放大。局域网设备经网关模式（8.11）使用时由 TUN 劫持，不需要它。
+    - `dns.enable` 时 `dns.listen` 不在回环地址：在公网上会被用于 DNS 反射放大。局域网设备经网关模式（8.10）使用时由 TUN 劫持，不需要它。
     - `external-controller` 有值而 `secret` 为空（`secret` 由 tunlr 生成，只有 mixin 把它改成空串时才会出现）。
     - 只检查重新合成的配置（`plan`、`apply`、`edit`、`sub use`、`tun on/off`、定时更新）。回滚到历史修订、自动关闭 TUN 时只重写强制项、不重新合成，不检查：这些是已经发布过的内容，拦下它们只会让恢复失败。定时更新遇到这种错误时保持当前配置，与 mixin 出错相同。
     - 认证的用户名和密码由用户写在 mixin 里，tunlr 不生成、不保存。`doctor` 对生效的配置做同样的检查（`install.exposure`）。
@@ -610,7 +610,7 @@ tunlr update set geo [period] --by tunlr|mihomo   设置 geo 数据的更新周�
 tunlr upgrade             升级 tunlr 自身（只能手动执行，不做定时任务）
 tunlr upgrade core        升级内核（--rollback 回退）
 
-tunlr panel               面板地址与 SSH 隧道命令
+tunlr panel               面板的 SSH 隧道命令与链接（--reset-secret 换新的 API secret）
 tunlr config              查看和修改工具设置（交互式，或 config set <key> <value>）
 tunlr backup | restore    备份与还原
 tunlr shell-init          输出 shell 函数
@@ -642,6 +642,7 @@ tunlr version
 | `uninstall` | Uninstall tunlr …? | |
 | `update set geo --by`（切换到或离开 mihomo） | Apply this configuration? | 同 `apply`：diff 之后确认，内核会重启；回答否则设置改回去 |
 | `edit` 放弃修改 | Discard your edits? | 在“What now?”选择放弃或按 Esc 时再问一次，回答否回到选项 |
+| `panel --reset-secret` | Replace the API secret? | 同 `apply`：diff（secret 隐去）之后确认；内核会重启，已打开的面板要用新链接重新连接 |
 
 - 不确认的：`start`、`sub add`、`sub set`、`sub update`、不带 `--apply` 的 `sub use`、`update`、不改配置的 `update set`、只读命令和下划线开头的内部命令。它们要么只是新增、可以撤回，要么由 systemd 调用、不能提问；`update` 做的就是定时任务会自动做的事。
 - `--yes` 跳过确认。非交互模式下没有 `--yes` 时在开始工作前报用法错误（退出码 2）。`apply` 等支持 `--dry-run` 的命令可以只预览；其余命令带 `--dry-run` 报用法错误，不把它当作已确认。
@@ -688,6 +689,17 @@ tunlr version
 - huh 的提问用 `ThemeBase16`，跟随终端的 16 色，与其余输出一致。
 - 其他情况（管道、重定向、systemd 运行的内部命令、`--json`）输出与不加样式时逐字相同：步骤为 `==> 步骤`，结果为 `ok`、`failed`、`skipped` 文字列，脚本照常解析。
 
+**面板（`tunlr panel`）**：运行时交互全部交给 zashboard，但面板只监听服务器的 `127.0.0.1`，API 的 secret 由 tunlr 生成，用户无从得知。`tunlr panel` 一次给出打开面板的全部步骤：
+
+- 从**生效的配置**读取 `external-controller` 和 `secret`（mixin 改过端口或 secret 时也对得上），不读状态文件。没有发布过配置、`external-controller` 为空时说明面板不可用。
+- 输出在用户电脑上执行的 SSH 隧道命令：`ssh -N -L <端口>:127.0.0.1:<端口> [-p <SSH 端口>] <用户>@<服务器>`，两端都用 API 的端口（默认 9090）。服务器地址和 SSH 端口取自 `$SSH_CONNECTION` 中本机的一端，用户取 `$SUDO_USER`，没有则取 `$USER`；不在 SSH 会话中时写成 `<server>`。经别名、跳板机或 NAT 连接时这个地址不对，所以总附上一句“用平时连接的主机名”，以及 `~/.ssh/config` 中 `LocalForward` 的一次性写法。
+- 输出浏览器中打开的链接：`http://127.0.0.1:<端口>/ui/#/setup?hostname=127.0.0.1&port=<端口>&secret=<secret>`（zashboard README 中的写法），打开即自动连上后端。secret 默认完整显示：命令需要 root，这正是用户要的东西。
+- `external-controller` 被 mixin 改为对外监听时，直接给出该地址的链接，并重复 lint 的警告。
+- 显示面板是否已安装（`external-ui` 目录）、内核是否在运行，不满足时给出 `tunlr apply`、`tunlr start` 的提示。
+- 不使用 zashboard 的 `disableTunMode`、`disableUpgradeCore` 参数：不限制面板能力（见第 3 节）。
+- `--reset-secret`：生成新的 secret 并发布（diff、确认，同 `apply`；`secret` 需要重启内核才生效）。用户在 mixin 中设置了 `secret` 时拒绝，提示去改 mixin。用于 secret 可能泄漏时。
+- 主菜单第一级“查看状态”之后是“Open the panel”；`init` 成功后最后一行提示 `tunlr panel`。
+
 设计思路：高频的服务控制放在顶层，与 `systemctl` 的直觉一致；只保留 `sub`、`tun`、`env` 三组子命令（`sub use` 的说法与 `kubectl config use-context`、`nvm use` 一致）；合并含义重叠的命令。检验标准：没看过文档的人能猜对大部分常用操作。
 
 全局参数、非交互模式与退出码见 `CLAUDE.md`。
@@ -733,7 +745,6 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 |---|---|---|
 | `tunlr upgrade`（自身升级） | 第 10 节 | 现在 `upgrade` 只有 `core` 子命令。正式发布前必须实现：从 GitHub release 下载，按官方 sha256 校验，原子替换 `/usr/local/bin/tunlr`，必要时重写 unit。不做定时任务 |
 | `status` 的漂移 | 5.3、第 10 节 | 现场计算生效配置与“现在 apply 会生成的配置”是否一致（订阅更新后未发布、mixin 改了未发布、配置被手改等）。目前 `status` 不报告 |
-| `panel` | 第 10 节 | 面板地址与 SSH 隧道命令 |
 | `config` | 第 10 节 | 查看和修改 `settings.yaml`（交互式，或 `config set <key> <value>`）。目前 `github-mirror`、`user-agent` 只能在 `init` 时给出或手改文件 |
 | `backup`、`restore` | 第 9 节 9、第 10 节 | 备份与还原 |
 | `shell-init`、`env on/off` | 第 10 节 | 输出 shell 函数；当前 shell 的代理变量 |

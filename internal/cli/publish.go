@@ -84,7 +84,7 @@ func newPlanView(p *pipeline.Plan, full bool) planView {
 	v := planView{
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
 		Subscription: p.Subscription, Dropped: p.Dropped, Mixins: p.Mixins,
-		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, Proxies: p.Proxies, Diff: p.Diff,
+		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, Proxies: p.Proxies, Diff: hideSecretInDiff(p.Diff),
 		DiffSections: p.DiffSections,
 	}
 	if p.Generated != nil {
@@ -195,6 +195,18 @@ func (a *app) writePlan(w io.Writer, v planView) {
 	default:
 		fmt.Fprintf(w, "Check (mihomo -t): %s %s\n", a.style.warn("could not complete:"), v.Check.Messages[0])
 	}
+}
+
+// hideSecretInDiff 把差异中顶层 secret 行的值换成 hiddenSecret（如 panel --reset-secret 的差异），
+// 终端滚动记录和 --json 输出里都不出现 secret；查看它用 tunlr panel。
+func hideSecretInDiff(diff string) string {
+	lines := strings.SplitAfter(diff, "\n")
+	for i, l := range lines {
+		if len(l) > 1 && strings.ContainsRune(" -+", rune(l[0])) && strings.HasPrefix(l[1:], "secret:") {
+			lines[i] = l[:1] + "secret: " + hiddenSecret + "\n"
+		}
+	}
+	return strings.Join(lines, "")
 }
 
 // maxDiffLines 是完整显示差异的最大行数，更长的差异（如换了机场）按顶层键汇总，用 --full-diff 查看全部。

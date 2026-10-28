@@ -597,6 +597,42 @@ func TestRollback(t *testing.T) {
 	}
 }
 
+func TestPlanResetSecret(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	ctx := context.Background()
+	mustApply(t, p, mustPlan(t, p))
+	st, _ := state.Load(p.Layout.StateFile())
+	old := st.APISecret
+
+	plan, err := p.PlanResetSecret(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.newSecret == old || len(plan.newSecret) != 32 || !slices.Contains(plan.Restart, "secret") {
+		t.Fatalf("new %q (old %q), restart %v", plan.newSecret, old, plan.Restart)
+	}
+	mustApply(t, p, plan)
+	if st, _ = state.Load(p.Layout.StateFile()); st.APISecret != plan.newSecret {
+		t.Fatalf("saved %q", st.APISecret)
+	}
+	if cfg, _ := os.ReadFile(p.Layout.CoreConfig()); !strings.Contains(string(cfg), "\nsecret: "+plan.newSecret+"\n") {
+		t.Error("new secret not in the configuration")
+	}
+
+	// 两份换新的计划：先发布的那份生效，另一份已经过时。
+	a, _ := p.PlanResetSecret(ctx)
+	b, _ := p.PlanResetSecret(ctx)
+	mustApply(t, p, a)
+	if _, err := p.Apply(ctx, b); !errors.Is(err, ErrStale) {
+		t.Errorf("stale reset: %v", err)
+	}
+
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "secret: mine\n")
+	if _, err := p.PlanResetSecret(ctx); !errors.Is(err, ErrSecretInMixin) || !errors.Is(err, core.ErrInvalidArgument) {
+		t.Errorf("mixin secret: %v", err)
+	}
+}
+
 // 重新合成的配置会开放无需认证的端口时拒绝发布；回滚不检查，旧配置总能恢复。
 func TestExposureRejected(t *testing.T) {
 	p, _, _ := newPipeline(t)
