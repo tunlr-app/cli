@@ -125,8 +125,8 @@ stdout '"name": "tunlr:mirror"'
 rm root/etc/tunlr/settings.yaml
 
 # edit 需要终端
-exitcode 2 tunlr edit 20-home
-stderr 'edit needs a terminal'
+exitcode 2 tunlr mixin edit 20-home
+stderr 'mixin edit needs a terminal'
 
 # 回滚：不指定修订时回到上一个不同的版本，连续回滚在两个版本间切换
 exec tunlr rollback --list

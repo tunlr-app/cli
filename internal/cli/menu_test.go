@@ -241,7 +241,7 @@ func TestMenuResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	et.prompt.picks = []string{""}
-	if got := run("edit"); got != "– Cancelled" {
+	if got := run("mixin", "edit"); got != "– Cancelled" {
 		t.Errorf("cancelled edit: %q", got)
 	}
 }

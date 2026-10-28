@@ -70,7 +70,7 @@ type mixinListView struct {
 func (a *app) newMixinCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mixin",
-		Short: "List the mixin files and the mixins tunlr manages (edit them with: tunlr edit)",
+		Short: "List the mixin files and the mixins tunlr manages; edit changes a file",
 		Args:  usageArgs(cobra.NoArgs),
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.listMixins() },
 	}
@@ -83,7 +83,7 @@ func (a *app) newMixinCommand() *cobra.Command {
 			"the command that changes the key instead. tunlr:mirror only gives defaults you can override.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.listMixins() },
-	})
+	}, a.withFullDiff(a.newMixinEditCommand()))
 	return cmd
 }
 
@@ -102,7 +102,7 @@ func (a *app) listMixins() error {
 	}
 	return a.render(v, func() error {
 		if len(v.Files) == 0 {
-			fmt.Fprintf(a.stdout, "No mixin files in %s (create one with: tunlr edit).\n", v.Dir)
+			fmt.Fprintf(a.stdout, "No mixin files in %s (create one with: tunlr mixin edit).\n", v.Dir)
 		} else {
 			fmt.Fprintf(a.stdout, "Mixin files in %s (in order):\n", v.Dir)
 			for _, f := range v.Files {

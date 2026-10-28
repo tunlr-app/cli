@@ -198,7 +198,6 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.withFullDiff(a.newPlanCommand()),
 		a.withFullDiff(a.newApplyCommand()),
 		a.withFullDiff(a.newRollbackCommand()),
-		a.withFullDiff(a.newEditCommand()),
 		a.newConfigCommand(),
 		a.newMixinCommand(),
 		a.newSubCommand(),

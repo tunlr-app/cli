@@ -26,7 +26,7 @@ func (a *app) newConfigCommand() *cobra.Command {
 		Short: "Show tunlr's own settings; edit changes them",
 		Long: "tunlr's own settings live in /etc/tunlr/settings.yaml: the GitHub mirror, the default\n" +
 			"User-Agent for subscriptions, and how the geo data is updated. They are not part of the\n" +
-			"mihomo configuration (change that with tunlr edit). tunlr config edit opens the file in an\n" +
+			"mihomo configuration (change that with tunlr mixin edit). tunlr config edit opens the file in an\n" +
 			"editor, checks it, and applies the configuration when a change affects it.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {

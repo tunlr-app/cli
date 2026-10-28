@@ -6,7 +6,7 @@
 # tunlr 的命令管理的键（TUN 开关、API 的监听地址和 secret、geo 数据的自动更新等）这里不能写，
 # 写了会被拒绝并提示改用哪个命令；tunlr mixin list 列出它们。经 GitHub 镜像的下载地址和直连
 # 规则只是默认值，在所有文件之前应用，可以在这里覆盖。
-# 用 tunlr edit 编辑会在保存时自动检查；直接改文件的，用 tunlr plan 预览、tunlr apply 发布。
+# 用 tunlr mixin edit 编辑会在保存时自动检查；直接改文件的，用 tunlr plan 预览、tunlr apply 发布。
 #
 # 写法与 mihomo 配置相同，另有几种前缀操作：
 #   键: 值                    映射逐层合并，标量和列表整体替换

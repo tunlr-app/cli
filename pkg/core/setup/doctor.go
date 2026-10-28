@@ -307,7 +307,7 @@ func (i *Installer) checkMixins(ctx context.Context, c *doctor.Checker) {
 	var me *config.MixinError
 	switch err := i.pipeline(nil).CheckMixins(ctx); {
 	case errors.As(err, &me):
-		c.Add("mixins", doctor.Fail, "Mixins", err.Error(), "tunlr edit "+me.File+", then tunlr apply")
+		c.Add("mixins", doctor.Fail, "Mixins", err.Error(), "tunlr mixin edit "+me.File+", then tunlr apply")
 	case err != nil:
 		c.Add("mixins", doctor.Warn, "Mixins", "could not compose the configuration: "+err.Error(), "")
 	default:
@@ -423,7 +423,7 @@ func (i *Installer) checkExposure(c *doctor.Checker) {
 	var ee *config.ExposureError
 	switch err := config.CheckExposure(cfg); {
 	case errors.As(err, &ee):
-		c.Add("exposure", doctor.Fail, "Port security", strings.Join(ee.Problems, "; "), "fix it in a mixin (tunlr edit), then tunlr apply")
+		c.Add("exposure", doctor.Fail, "Port security", strings.Join(ee.Problems, "; "), "fix it in a mixin (tunlr mixin edit), then tunlr apply")
 	case err != nil:
 		c.Add("exposure", doctor.Fail, "Port security", err.Error(), "")
 	default:
@@ -507,7 +507,7 @@ func (i *Installer) checkPorts(ctx context.Context, h *doctor.Host, c *doctor.Ch
 		}
 	}
 	if len(taken) > 0 {
-		c.Add("ports", doctor.Fail, "Ports", strings.Join(taken, "; "), "stop that program, or change the port in a mixin (tunlr edit)")
+		c.Add("ports", doctor.Fail, "Ports", strings.Join(taken, "; "), "stop that program, or change the port in a mixin (tunlr mixin edit)")
 		return
 	}
 	if running {

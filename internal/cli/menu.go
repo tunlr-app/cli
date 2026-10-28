@@ -473,7 +473,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		items = append(items,
 			menuItem{label: "Preview changes", args: []string{"plan"}},
 			menuItem{label: "Preview and apply", args: []string{"apply"}},
-			menuItem{label: "Edit a mixin", args: []string{"edit"}})
+			menuItem{label: "Edit a mixin", args: []string{"mixin", "edit"}})
 		if d.revisions > 0 {
 			items = append(items,
 				menuItem{label: "Roll back", args: []string{"rollback"}},

@@ -141,7 +141,7 @@ const (
 	choiceDiscard = "Discard my changes"
 )
 
-func (a *app) newEditCommand() *cobra.Command {
+func (a *app) newMixinEditCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "edit [name]",
 		Short: "Edit a mixin file, check it, then apply",
@@ -154,7 +154,7 @@ func (a *app) newEditCommand() *cobra.Command {
 		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !a.interactive() {
-				return usageErrorf("edit needs a terminal; edit the files in %s directly, then run tunlr apply", a.layout.MixinDir())
+				return usageErrorf("mixin edit needs a terminal; edit the files in %s directly, then run tunlr apply", a.layout.MixinDir())
 			}
 			var name string
 			var err error
