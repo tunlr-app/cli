@@ -716,7 +716,7 @@ tunlr panel lan on | off  允许局域网设备直接打开面板（默认关闭
 tunlr proxy               局域网设备要填的代理地址
 tunlr proxy lan on | off  允许局域网设备使用代理端口（默认关闭，只放行私有地址）
 tunlr proxy env [--unset] 当前 shell 的代理变量：输出 export 语句，eval "$(tunlr proxy env)"
-tunlr config              查看和修改工具设置（交互式，或 config set <key> <value>）
+tunlr config [edit]       查看工具设置；edit 用 $EDITOR 编辑 settings.yaml，校验通过才保存，然后发布
 tunlr backup | restore    备份与还原
 tunlr completion          shell 自动补全
 tunlr uninstall           完整卸载并清理规则
@@ -741,6 +741,10 @@ tunlr version
 - `proxy env`：输出让当前 shell 使用代理端口的变量（子进程改不了父 shell 的环境变量，由用户 `eval`；同类做法如 `eval "$(ssh-agent)"`）。不做 `env on/off` 和 `shell-init`：要先在 shell 配置中装函数，且与 `tun on` 等持久开关同名而行为不同（只影响当前 shell）。
   - `http_proxy`、`https_proxy` 为 `http://127.0.0.1:<mixed-port>`，`all_proxy` 为 `socks5h://…`（域名交给代理解析），大小写各一份（curl 不认大写的 `HTTP_PROXY`，有的工具只认大写）；`no_proxy` 为本机与私有地址段（不认 CIDR 的工具忽略网段）。只输出 POSIX 写法，第一行是说明用法的注释。`--unset` 输出 `unset`，不需要配置。
   - 端口取自生效的配置；没有发布过、没有 `mixed-port`、代理端口需要认证时退出码 3。生效的配置含节点密码和 API secret，普通用户读不到，此时提示 `eval "$(sudo tunlr proxy env)"`：`sudo` 只生成语句，变量仍设在用户自己的 shell 中，工具因此不必为它放开 root 的约束。
+- `config`：工具自己的设置（`/etc/tunlr/settings.yaml`：`github-mirror`、`user-agent`、`geo-update`、`geo-updater`），与 mihomo 配置（mixin）分开。
+  - `tunlr config` 列出每项生效的值、是否为默认值和一句说明（何时生效），`--json` 中为 `file` 与 `settings`（`key`、`value`、`default`、`help`）。文件有错时报告错误。
+  - `config edit` 同 `edit` 的流程：在临时副本上编辑（文件不存在时从带说明、默认值全部注释掉的模板开始）→ 解析校验（未知的键、取值不合法），不通过时可以回到编辑器或放弃 → 保存（编辑期间文件被改过时不覆盖，保留副本并给出位置）→ 按新的 geo 设置启用或停用 timer → 合成配置，有变化（镜像、geo 数据改由内核更新）时 diff、确认、发布；还没有发布过时提示由 `apply` 生效。不发布时设置仍保存，与 mixin 一致，`status` 的漂移会提示。`--dry-run` 只预览，不保存。需要终端，非交互时提示直接改文件再 `apply`。
+  - 不做 `config set/unset <key>`：只有四项，编辑器配合模板中的说明足够；geo 两项另有 `update set geo`。四项不常改，命令越多越难记。
   - 不做 `--lan`（局域网地址见 `tunlr proxy`）；透明代理开启时不提示（变量用不上但无害）。
 - `sub use [名称]`：交互模式下询问是否立即发布，`--apply` 直接发布（同 `apply`，非交互时需配合 `--yes`）。
 
@@ -882,7 +886,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 其余功能在此之后按需求排期。
 
-进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）、面板（`tunlr panel`，含局域网访问）、受管 mixin（第 6 节），以及家庭网络的用法：代理端口的局域网访问（`tunlr proxy lan`）和 `init` 的用途问题（第 10 节），`status` 的漂移（第 10 节），局域网设备的列表与分流（`tunlr devices`，8.12），流量过滤（`tunlr filter`，8.13），代理变量（`tunlr proxy env`，第 10 节）。
+进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）、面板（`tunlr panel`，含局域网访问）、受管 mixin（第 6 节），以及家庭网络的用法：代理端口的局域网访问（`tunlr proxy lan`）和 `init` 的用途问题（第 10 节），`status` 的漂移（第 10 节），局域网设备的列表与分流（`tunlr devices`，8.12），流量过滤（`tunlr filter`，8.13），代理变量（`tunlr proxy env`，第 10 节），工具设置（`tunlr config`，第 10 节）。
 
 ### 13.1 待实现（按顺序）
 
@@ -894,7 +898,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 | 2 | ~~局域网设备的列表与分流~~ | 8.12 | 已完成 | 见 8.12；内核没有按 MAC 的规则，按地址匹配 |
 | 3 | ~~流量过滤~~ | 8.13 | 已完成 | 设备直连（从 `devices set` 移来）、来源地址段直连（含容器网段）、拒绝 QUIC、只代理常用端口；目标地址不进 TUN 用 mixin |
 | 4 | ~~代理变量~~ | 第 10 节 | 已完成 | `tunlr proxy env [--unset]` 输出 `export`/`unset` 语句，用法 `eval "$(tunlr proxy env)"`；不做 `shell-init`、`env on/off` |
-| 5 | `config` | 第 10 节 | 草案 | `tunlr config` 列出全部设置（标出默认值）；`config set/unset <key>` 校验后保存。改 `github-mirror` 时同 `apply`（diff、确认、发布），geo 两项走 `update set geo` 的同一个 core 函数 |
+| 5 | ~~工具设置~~ | 第 10 节 | 已完成 | `tunlr config` 列出设置，`config edit` 在编辑器中修改；不做 `set/unset` |
 | 6 | `backup`、`restore` | 第 9 节 9、第 10 节 | 草案，待确认 | 打包设置、mixin、订阅（含最近一次抓取的内容）、API secret 和开关记录（`--history` 附历史），不含内核与 geo 数据，0600。还原要求已 `init`，先自动备份当前内容，合并状态（保留实例 ID、内核、开关），再 diff 确认发布；TUN、网关、代理端口和面板的局域网访问不自动开启（待定：逐项询问还是只列命令） |
 | 7 | `tunlr upgrade`（自身升级） | 第 10 节 | 待补全 | 正式发布前必须有：查询最新版本、下载（可经镜像，只认官方 sha256）、用新文件跑 `version` 确认、原子替换 `/usr/local/bin/tunlr`、必要时重写 unit 和 timer。待定：是否保留旧版本以便回退、开发版如何处理。不做定时任务 |
 | 8 | 发布 | 第 12 节 | 待补全 | `.goreleaser.yaml`（amd64、arm64，带 checksum）还没跑过真正的发布，没有 CI；`install.sh` 与官网未做 |

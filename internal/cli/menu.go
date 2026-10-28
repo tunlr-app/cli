@@ -479,6 +479,9 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 				menuItem{label: "Roll back", args: []string{"rollback"}},
 				menuItem{label: "List revisions", args: []string{"rollback", "--list"}})
 		}
+		items = append(items,
+			menuItem{label: "Show tool settings", args: []string{"config"}},
+			menuItem{label: "Edit tool settings", args: []string{"config", "edit"}})
 	case groupTun:
 		if s.Tun != nil && s.Tun.Switch != "off" {
 			items = append(items, menuItem{label: "Turn TUN off", args: []string{"tun", "off"}})

@@ -1,10 +1,14 @@
 package settings
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/templates"
 )
 
 func TestLoad(t *testing.T) {
@@ -46,4 +50,94 @@ func TestLoad(t *testing.T) {
 			t.Errorf("%q: err = %v, want %q", tt.content, err, tt.want)
 		}
 	}
+}
+
+func TestTemplateIsDefault(t *testing.T) {
+	s, err := Parse(templates.Settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *s != (Settings{Version: Version}) {
+		t.Errorf("template sets %+v, want only defaults", *s)
+	}
+}
+
+func TestWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "etc", "settings.yaml")
+	read := func() string {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	if err := Write(path, []byte("geo-update: soon\n"), nil, false); !errors.Is(err, core.ErrInvalidArgument) {
+		t.Fatalf("invalid: err = %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid content was written: %v", err)
+	}
+
+	v1 := []byte("geo-update: 1d\n")
+	if err := Write(path, v1, nil, false); err != nil || read() != string(v1) {
+		t.Fatalf("create: %v", err)
+	}
+	// 编辑时文件还不存在，此后被别人创建了。
+	if err := Write(path, []byte("geo-update: 2d\n"), nil, false); !errors.Is(err, ErrChanged) {
+		t.Fatalf("created meanwhile: err = %v", err)
+	}
+	// 编辑期间文件内容变了。
+	if err := Write(path, []byte("geo-update: 2d\n"), []byte("other\n"), true); !errors.Is(err, ErrChanged) {
+		t.Fatalf("changed meanwhile: err = %v", err)
+	}
+	v2 := []byte("geo-update: 2d\n")
+	if err := Write(path, v2, v1, true); err != nil || read() != string(v2) {
+		t.Fatalf("update: %v", err)
+	}
+
+	if err := Restore(path, v1, true); err != nil || read() != string(v1) {
+		t.Fatalf("restore: %v", err)
+	}
+	if err := Restore(path, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restore to missing: %v", err)
+	}
+	// 编辑时文件存在，此后被删除了。
+	if err := Write(path, v2, v1, true); !errors.Is(err, ErrChanged) {
+		t.Fatalf("removed meanwhile: err = %v", err)
+	}
+}
+
+func TestEntries(t *testing.T) {
+	got := (&Settings{Version: Version}).Entries("ua/1")
+	want := []Entry{
+		{Key: "github-mirror", Value: "", Default: true},
+		{Key: "user-agent", Value: "ua/1", Default: true},
+		{Key: KeyGeoUpdate, Value: DefaultGeoUpdate, Default: true},
+		{Key: KeyGeoUpdater, Value: DefaultGeoUpdater, Default: true},
+	}
+	check := func(got, want []Entry) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("got %d entries, want %d", len(got), len(want))
+		}
+		for i := range want {
+			got[i].Help = ""
+			if got[i] != want[i] {
+				t.Errorf("entry %d = %+v, want %+v", i, got[i], want[i])
+			}
+		}
+	}
+	check(got, want)
+
+	set := &Settings{Version: Version, GitHubMirror: "https://m/", UserAgent: "x", GeoUpdate: "off", GeoUpdater: "mihomo"}
+	check(set.Entries("ua/1"), []Entry{
+		{Key: "github-mirror", Value: "https://m/"},
+		{Key: "user-agent", Value: "x"},
+		{Key: KeyGeoUpdate, Value: "off"},
+		{Key: KeyGeoUpdater, Value: "mihomo"},
+	})
 }

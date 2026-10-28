@@ -356,7 +356,7 @@ func TestMenuItems(t *testing.T) {
 		groupProxy:         "tunlr › Proxy port: Show the proxy address|Let LAN devices use it (HTTP/SOCKS5 proxy)|← Back",
 		groupUpdates:       "tunlr › Scheduled updates: Show the schedule|Change the geo data update|Update everything now|← Back",
 		groupSubscriptions: "tunlr › Subscriptions: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|Change how often one is fetched|Remove subscriptions|← Back",
-		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|Roll back|List revisions|← Back",
+		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|Roll back|List revisions|Show tool settings|Edit tool settings|← Back",
 		groupTun:           "tunlr › Transparent proxy: Turn TUN off|Turn gateway mode on (LAN devices route through mihomo)|Show details|Show gateway details|← Back",
 		groupService:       "tunlr › mihomo service: Restart mihomo|Stop mihomo|Show recent logs|Upgrade mihomo to the latest release|← Back",
 	} {
@@ -371,7 +371,7 @@ func TestMenuItems(t *testing.T) {
 
 	for group, want := range map[string]string{
 		groupSubscriptions: "tunlr › Subscriptions: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|Change how often one is fetched|← Back",
-		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|← Back",
+		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|Show tool settings|Edit tool settings|← Back",
 		groupTun:           "tunlr › Transparent proxy: Turn TUN on|Turn gateway mode on (LAN devices route through mihomo)|Show details|Show gateway details|← Back",
 		groupService:       "tunlr › mihomo service: Start mihomo|Show recent logs|Upgrade mihomo to the latest release|← Back",
 	} {

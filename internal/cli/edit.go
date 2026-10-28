@@ -276,7 +276,7 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 		}
 
 		if choices != nil {
-			choice, err := a.chooseAfterCheck(ctx, choices)
+			choice, err := a.chooseAfterCheck(ctx, choices, "The mixin was not saved.", "The mixin file stays as it was.")
 			if err != nil {
 				return err
 			}
@@ -312,16 +312,16 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 
 // chooseAfterCheck 询问检查未通过后怎么办。选择放弃（或按 Esc 取消）时再确认一次，免得误按丢掉编辑的
 // 内容；回答否时重新选择。
-func (a *app) chooseAfterCheck(ctx context.Context, choices []string) (string, error) {
+func (a *app) chooseAfterCheck(ctx context.Context, choices []string, notSaved, keeps string) (string, error) {
 	for {
-		i, err := a.prompt.Choose(ctx, "The mixin was not saved. What now?", choices, 0)
+		i, err := a.prompt.Choose(ctx, notSaved+" What now?", choices, 0)
 		if err != nil && !errors.Is(err, huh.ErrUserAborted) {
 			return "", err
 		}
 		if err == nil && choices[i] != choiceDiscard {
 			return choices[i], nil
 		}
-		ok, err := a.confirm(ctx, "Discard your edits?", "The mixin file stays as it was.")
+		ok, err := a.confirm(ctx, "Discard your edits?", keeps)
 		if err != nil || ok {
 			return choiceDiscard, err
 		}

@@ -119,23 +119,91 @@ func (s *Settings) GeoAutoUpdate() (on bool, intervalHours int) {
 
 // Load 读取设置文件。文件不存在时返回默认设置；未知的键视为错误，避免拼写错误被静默忽略。
 func Load(path string) (*Settings, error) {
-	s := &Settings{Version: Version}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return s, nil
+		return &Settings{Version: Version}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(s); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("settings %s: %w", path, err)
-	}
-	if err := s.validate(); err != nil {
+	s, err := Parse(data)
+	if err != nil {
 		return nil, fmt.Errorf("settings %s: %w", path, err)
 	}
 	return s, nil
+}
+
+// Parse 解析并校验设置文件的内容。只有注释或为空时是默认设置。
+func Parse(data []byte) (*Settings, error) {
+	s := &Settings{Version: Version}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(s); err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// ErrChanged 表示设置文件在编辑期间被改动了。
+var ErrChanged = errors.New("the settings file changed while you were editing it")
+
+// Write 把编辑后的内容 data 校验后原子写入设置文件。previous、existed 是开始编辑时文件的内容和是否存在；
+// 文件此后被改动过时不覆盖，返回 ErrChanged。
+func Write(path string, data, previous []byte, existed bool) error {
+	if _, err := Parse(data); err != nil {
+		return fmt.Errorf("%w: %w", core.ErrInvalidArgument, err)
+	}
+	current, err := os.ReadFile(path)
+	switch {
+	case err == nil && (!existed || !bytes.Equal(current, previous)):
+		return ErrChanged
+	case errors.Is(err, fs.ErrNotExist) && existed:
+		return ErrChanged
+	case err != nil && !errors.Is(err, fs.ErrNotExist):
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return fsutil.WriteFile(path, data, 0o644)
+}
+
+// Restore 把设置文件恢复为 original；existed 为 false 时删除它。
+func Restore(path string, original []byte, existed bool) error {
+	if !existed {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return fsutil.WriteFile(path, original, 0o644)
+}
+
+// Entry 是 tunlr config 列出的一项设置。
+type Entry struct {
+	Key string `json:"key"`
+	// Value 是生效的值；Default 报告文件中没有设置，Value 为默认值（github-mirror 的默认值为空：直连）。
+	Value   string `json:"value"`
+	Default bool   `json:"default"`
+	// Help 说明这项设置的作用和何时生效。
+	Help string `json:"help"`
+}
+
+// Entries 列出全部设置，按设置文件模板中的顺序。defaultUA 是内置的 User-Agent。
+func (s *Settings) Entries(defaultUA string) []Entry {
+	return []Entry{
+		{Key: "github-mirror", Value: s.GitHubMirror, Default: s.GitHubMirror == "",
+			Help: "GitHub mirror for mihomo, geo data and the panel (checked against the official sha256); published with the configuration"},
+		{Key: "user-agent", Value: cmp.Or(s.UserAgent, defaultUA), Default: s.UserAgent == "",
+			Help: "User-Agent for fetching subscriptions without their own; used from the next fetch"},
+		{Key: KeyGeoUpdate, Value: s.GeoPeriod(), Default: s.GeoUpdate == "",
+			Help: "how often the geo data is updated: 6h, 1d, 7d ... or off"},
+		{Key: KeyGeoUpdater, Value: s.GeoUpdaterValue(), Default: s.GeoUpdater == "",
+			Help: "who updates the geo data: tunlr (verified) or mihomo (also: tunlr update set geo)"},
+	}
 }
 
 func (s *Settings) validate() error {

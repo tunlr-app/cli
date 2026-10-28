@@ -1,0 +1,20 @@
+# tunlr 工具设置。下面全是注释掉的默认值，按需取消注释再修改。
+#
+# 用 tunlr config edit 编辑会在保存时检查；改动涉及配置时（GitHub 镜像、geo 数据由内核自己更新）
+# 随即给出 diff，确认后发布。直接改文件的，用 tunlr plan 预览、tunlr apply 发布。
+# tunlr config 列出各项当前的值。
+
+# GitHub 下载镜像的前缀：下载内核、geo 数据和面板时经过它，仍按官方 sha256 校验。
+# 不设置时直连 GitHub。配置中 geo 数据和面板的下载地址随之改变，发布后生效。
+# github-mirror: https://gh-proxy.com/
+
+# 抓取订阅时默认的 User-Agent，机场按它决定返回的格式。单个订阅可以另设：
+# tunlr sub set <名称> --user-agent <值>。默认为 "clash.meta mihomo tunlr/<版本>"。下次抓取时生效。
+# user-agent: clash.meta mihomo
+
+# geo 数据自动更新的周期：小时或天（6h、1d、7d，最多 365d），off 为不自动更新。默认 7d。
+# geo-update: 7d
+
+# 由谁更新 geo 数据：tunlr（下载后按官方 sha256 核对，默认）或 mihomo（内核自己下载，不校验）。
+# 改为 mihomo 或从 mihomo 改回时要发布配置。这两项也可以用 tunlr update set geo 修改。
+# geo-updater: tunlr

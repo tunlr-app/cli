@@ -189,6 +189,11 @@ func (p *Pipeline) PlanDevices(ctx context.Context, devices []state.Device) (*Pl
 	return p.plan(ctx, planOptions{devices: devices})
 }
 
+// PlanWithSettings 同 Plan，但按工具设置为 set 时的样子合成，不读设置文件。用于编辑设置时预览。
+func (p *Pipeline) PlanWithSettings(ctx context.Context, set *settings.Settings) (*Plan, error) {
+	return p.plan(ctx, planOptions{settings: set})
+}
+
 // PlanFilter 同 Plan，但按全局过滤项为 f 时的样子合成，不看状态文件中的过滤项。调用方在发布前保存它。
 func (p *Pipeline) PlanFilter(ctx context.Context, f state.Filter) (*Plan, error) {
 	return p.plan(ctx, planOptions{filter: &f})
@@ -247,6 +252,8 @@ type planOptions struct {
 	devices []state.Device
 	// filter 不为 nil 时代替状态文件中的全局过滤项。
 	filter *state.Filter
+	// settings 不为 nil 时代替设置文件。
+	settings *settings.Settings
 	// composeOnly 只合成，不检查端口安全，不比较也不校验。
 	composeOnly bool
 	// noValidate 合成、检查端口安全并与生效的配置比较，但不校验（不运行 mihomo -t）。
@@ -255,9 +262,12 @@ type planOptions struct {
 
 func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	edited := opts.edited
-	set, err := settings.Load(p.Layout.SettingsFile())
-	if err != nil {
-		return nil, err
+	set := opts.settings
+	if set == nil {
+		var err error
+		if set, err = settings.Load(p.Layout.SettingsFile()); err != nil {
+			return nil, err
+		}
 	}
 	st, _, err := state.LoadOrNew(p.Layout.StateFile(), p.now())
 	if err != nil {
@@ -842,7 +852,7 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 		{Name: ManagedGeo, Command: "tunlr update set geo", Data: []byte(geo), Owns: []string{"geo-auto-update", "geo-update-interval"}},
 		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel --reset-secret", Data: panel},
 		{Name: ManagedProxy, Command: "tunlr proxy lan on/off", Data: proxy, Owns: []string{"allow-lan", "lan-allowed-ips"}},
-		{Name: ManagedMirror, Command: "tunlr init --mirror", Default: true, Data: mirrorData},
+		{Name: ManagedMirror, Command: "tunlr config edit", Default: true, Data: mirrorData},
 	}
 	if rules := filterRules(sw); len(rules) > 0 {
 		list = append(list, config.Managed{Name: ManagedFilter, Command: "tunlr filter", Default: true,

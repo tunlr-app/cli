@@ -114,7 +114,7 @@ rm root/etc/tunlr/mixin.d/20-mine.yaml
 # 配置了 GitHub 镜像：面板和 geo 数据经镜像下载，镜像主机直连的规则插在订阅规则前面，plan 中列出
 cp mirror-settings.yaml root/etc/tunlr/settings.yaml
 exec tunlr plan
-stdout '^Defaults from tunlr:mirror \(tunlr init --mirror; a mixin can override these, remove rules with delete-rules\):$'
+stdout '^Defaults from tunlr:mirror \(tunlr config edit; a mixin can override these, remove rules with delete-rules\):$'
 stdout '^  external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip$'
 stdout '^    mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb$'
 stdout '^    - DOMAIN,gh-proxy.com,DIRECT$'

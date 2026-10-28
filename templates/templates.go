@@ -39,3 +39,8 @@ var Config []byte
 //
 //go:embed mixin.yaml
 var Mixin []byte
+
+// Settings 是还没有设置文件时 tunlr config edit 的起始内容：各项的说明和注释掉的默认值。
+//
+//go:embed settings.yaml
+var Settings []byte

@@ -133,7 +133,7 @@ func Network(ctx context.Context, opts NetworkOptions) []Check {
 		c.Add("mirror", Skip, "GitHub mirror", "no mirror configured", "")
 	} else if mirrorErr != nil {
 		c.Add("mirror", Fail, "GitHub mirror", fmt.Sprintf("cannot reach %s: %v", opts.Mirror, mirrorErr),
-			"change it with tunlr init --mirror <url>, or --mirror '' to download directly")
+			"change or remove it with tunlr config edit")
 	} else {
 		c.Add("mirror", OK, "GitHub mirror", fmt.Sprintf("%s answered HTTP %d", opts.Mirror, mirrorStatus), "")
 	}
