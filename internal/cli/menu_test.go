@@ -353,7 +353,7 @@ func TestMenuItems(t *testing.T) {
 		groupUpdates:       "tunlr › Scheduled updates: Show the schedule|Change the geo data update|Update everything now|← Back",
 		groupSubscriptions: "tunlr › Subscriptions: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|Change how often one is fetched|Remove subscriptions|← Back",
 		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|Roll back|List revisions|← Back",
-		groupTun:           "tunlr › Transparent proxy: Turn TUN off|Show details|← Back",
+		groupTun:           "tunlr › Transparent proxy: Turn TUN off|Turn gateway mode on (LAN devices route through mihomo)|Show details|Show gateway details|← Back",
 		groupService:       "tunlr › mihomo service: Restart mihomo|Stop mihomo|Show recent logs|Upgrade mihomo to the latest release|← Back",
 	} {
 		if got := labels(group, runningStatus, 2, 3); got != want {
@@ -368,7 +368,7 @@ func TestMenuItems(t *testing.T) {
 	for group, want := range map[string]string{
 		groupSubscriptions: "tunlr › Subscriptions: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|Change how often one is fetched|← Back",
 		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|← Back",
-		groupTun:           "tunlr › Transparent proxy: Turn TUN on|Show details|← Back",
+		groupTun:           "tunlr › Transparent proxy: Turn TUN on|Turn gateway mode on (LAN devices route through mihomo)|Show details|Show gateway details|← Back",
 		groupService:       "tunlr › mihomo service: Start mihomo|Show recent logs|Upgrade mihomo to the latest release|← Back",
 	} {
 		if got := labels(group, stoppedStatus, 1, 0); got != want {

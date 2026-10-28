@@ -597,6 +597,27 @@ func TestRollback(t *testing.T) {
 	}
 }
 
+// 重新合成的配置会开放无需认证的端口时拒绝发布；回滚不检查，旧配置总能恢复。
+func TestExposureRejected(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	ctx := context.Background()
+	mustApply(t, p, mustPlan(t, p))
+	useSubscription(t, p.Layout, "main", subscriptionV1)
+	mustApply(t, p, mustPlan(t, p))
+
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "allow-lan: true\n")
+	var ee *config.ExposureError
+	if _, err := p.Plan(ctx); !errors.As(err, &ee) || !errors.Is(err, core.ErrCheckFailed) {
+		t.Fatalf("plan: %v", err)
+	}
+	if _, err := p.PlanRollback(ctx, 0); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "allow-lan: true\nauthentication: [\"u:p\"]\n")
+	mustPlan(t, p)
+}
+
 func TestMirrorDefaults(t *testing.T) {
 	p, _, _ := newPipeline(t)
 	writeFile(t, p.Layout.SettingsFile(), "github-mirror: https://gh-proxy.com\n")

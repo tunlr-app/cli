@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -79,6 +80,11 @@ func (a *app) printTunStatus(s *setup.TunStatus) {
 	}
 	fmt.Fprintf(w, "Interface:         %s %s\n", netfilter.Device, yes(s.Device))
 	fmt.Fprintf(w, "nftables:          inet %s %s, inet %s %s\n", netfilter.Table, yes(s.Rules), netfilter.KernelTable, yes(s.KernelRules))
+	if s.Gateway != "" {
+		fmt.Fprintf(w, "Gateway mode:      on, LAN interface %s (details: tunlr gateway)\n", s.Gateway)
+	} else {
+		fmt.Fprintf(w, "Gateway mode:      %s\n", a.style.dim("off"))
+	}
 }
 
 func (a *app) newTunOnCommand() *cobra.Command {
@@ -91,89 +97,98 @@ func (a *app) newTunOnCommand() *cobra.Command {
 			"systemd timer turns TUN off after 3 minutes, and so does a reboot.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
 			if err := a.requireConfirmation("tun on"); err != nil {
 				return err
 			}
-			inst := a.installer()
-			warnings, err := inst.TunPreflight(ctx)
+			warnings, err := a.installer().TunPreflight(cmd.Context())
 			if err != nil {
 				return err
 			}
-			if !a.opts.JSON {
-				for _, w := range warnings {
-					fmt.Fprintf(a.stdout, "%s %s\n", a.style.warn("Warning:"), w)
-				}
-			}
-			s, err := inst.TunStatus(ctx)
-			if err != nil {
-				return err
-			}
-			plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().PlanTun(ctx, true) })
-			if err != nil {
-				return err
-			}
-			v := tunView{Plan: newPlanView(plan, false), Warnings: warnings}
-			if s.Switch == state.TunOn && !plan.Changed() {
-				return a.render(v, func() error {
-					_, err := fmt.Fprintln(a.stdout, "The transparent proxy is already on.")
-					return err
-				})
-			}
-			if !a.opts.JSON {
-				a.printPlan(v.Plan)
-			}
-			if err := checkExit(plan, false); err != nil || a.opts.DryRun {
-				if a.opts.JSON {
-					if rerr := a.render(v, nil); rerr != nil {
-						return rerr
-					}
-				} else if err != nil {
-					fmt.Fprintln(a.stdout, "\nTUN not turned on.")
-				} else {
-					fmt.Fprintln(a.stdout, "\nDry run: nothing changed.")
-				}
-				return err
-			}
-			if ok, err := a.ask(ctx, "Turn the transparent proxy (TUN) on?", "", "TUN not turned on."); !ok {
-				return err
-			}
-
-			opts := a.sshProbe()
-			if !a.opts.JSON {
-				fmt.Fprintln(a.stdout)
-			}
-			var done func(error)
-			opts.Progress, done = a.stepper()
-			res, err := inst.TunOn(ctx, plan, opts)
-			// 检测失败时 TunOn 已经关闭了 TUN，最后一步（关闭）本身是成功的，失败的项在下面列出。
-			if res == nil {
-				done(err)
-			} else {
-				done(nil)
-			}
-			v.Applied, v.Result = res != nil && err == nil, res
-			if res == nil {
-				return err
-			}
-			rerr := a.render(v, func() error {
-				for _, c := range res.Checks {
-					a.printCheck(c.Status, c.Name, 6, c.Message)
-				}
-				if err == nil {
-					fmt.Fprintf(a.stdout, "\n%s\n", a.style.good("The transparent proxy is on."))
-				}
-				return nil
-			})
-			if err != nil {
-				if a.opts.JSON {
-					return renderedError{err}
-				}
-				return err
-			}
-			return rerr
+			a.printWarnings(warnings)
+			return a.tunOn(cmd.Context(), warnings)
 		},
 	}
+}
+
+func (a *app) printWarnings(warnings []string) {
+	if a.opts.JSON {
+		return
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(a.stdout, "%s %s\n", a.style.warn("Warning:"), w)
+	}
+}
+
+// tunOn 是 tun on 在前置检查之后的流程：预览、确认、开启并检测。gateway on 在 TUN 关闭时也走它。
+func (a *app) tunOn(ctx context.Context, warnings []string) error {
+	inst := a.installer()
+	s, err := inst.TunStatus(ctx)
+	if err != nil {
+		return err
+	}
+	plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().PlanTun(ctx, true) })
+	if err != nil {
+		return err
+	}
+	v := tunView{Plan: newPlanView(plan, false), Warnings: warnings}
+	if s.Switch == state.TunOn && !plan.Changed() {
+		return a.render(v, func() error {
+			_, err := fmt.Fprintln(a.stdout, "The transparent proxy is already on.")
+			return err
+		})
+	}
+	if !a.opts.JSON {
+		a.printPlan(v.Plan)
+	}
+	if err := checkExit(plan, false); err != nil || a.opts.DryRun {
+		if a.opts.JSON {
+			if rerr := a.render(v, nil); rerr != nil {
+				return rerr
+			}
+		} else if err != nil {
+			fmt.Fprintln(a.stdout, "\nTUN not turned on.")
+		} else {
+			fmt.Fprintln(a.stdout, "\nDry run: nothing changed.")
+		}
+		return err
+	}
+	if ok, err := a.ask(ctx, "Turn the transparent proxy (TUN) on?", "", "TUN not turned on."); !ok {
+		return err
+	}
+
+	opts := a.sshProbe()
+	if !a.opts.JSON {
+		fmt.Fprintln(a.stdout)
+	}
+	var done func(error)
+	opts.Progress, done = a.stepper()
+	res, err := inst.TunOn(ctx, plan, opts)
+	// 检测失败时 TunOn 已经关闭了 TUN，最后一步（关闭）本身是成功的，失败的项在下面列出。
+	if res == nil {
+		done(err)
+	} else {
+		done(nil)
+	}
+	v.Applied, v.Result = res != nil && err == nil, res
+	if res == nil {
+		return err
+	}
+	rerr := a.render(v, func() error {
+		for _, c := range res.Checks {
+			a.printCheck(c.Status, c.Name, 6, c.Message)
+		}
+		if err == nil {
+			fmt.Fprintf(a.stdout, "\n%s\n", a.style.good("The transparent proxy is on."))
+		}
+		return nil
+	})
+	if err != nil {
+		if a.opts.JSON {
+			return renderedError{err}
+		}
+		return err
+	}
+	return rerr
 }
 
 // sshProbe 给出 SSH 检测需要的参数：$SSH_CONNECTION，以及向用户的终端输出文字的 Probe。
@@ -245,6 +260,10 @@ func (a *app) newTunOffCommand() *cobra.Command {
 					fmt.Fprintln(a.stdout, "\nDry run: nothing changed.")
 				}
 				return err
+			}
+			if s.Gateway != "" && !a.opts.JSON {
+				fmt.Fprintf(a.stdout, "\nGateway mode (%s) needs TUN and is turned off too; devices using this server as\n"+
+					"their gateway lose internet access.\n", s.Gateway)
 			}
 			if ok, err := a.ask(ctx, "Turn the transparent proxy (TUN) off?", "", "TUN not turned off."); !ok {
 				return err
@@ -361,6 +380,9 @@ func (a *app) describeTun(s *setup.TunStatus) string {
 		} else {
 			b.WriteString(" (mihomo runs with TUN disabled: switched in the panel)")
 		}
+	}
+	if s.Gateway != "" {
+		fmt.Fprintf(&b, ", gateway mode on %s", s.Gateway)
 	}
 	return b.String()
 }

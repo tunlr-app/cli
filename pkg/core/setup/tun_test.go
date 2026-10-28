@@ -37,11 +37,15 @@ func (r *fakeReloader) Reload(context.Context) error {
 	return nil
 }
 
-// fakeHost 记录 systemctl、systemd-run、nft、ip 的调用。tables 是 nft list tables 报告的表。
+// fakeHost 记录 systemctl、systemd-run、nft、ip、iptables 的调用。tables 是 nft list tables 报告的表。
 type fakeHost struct {
 	calls  []string
 	tables []string
 	active bool
+	// docker 为 nil 时没有 DOCKER-USER 链；否则是链中的规则。
+	docker []string
+	// failGateway 让加载网关的 nft 表失败。
+	failGateway bool
 }
 
 func (h *fakeHost) systemd(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -55,19 +59,45 @@ func (h *fakeHost) systemd(_ context.Context, name string, args ...string) ([]by
 	return nil, nil
 }
 
-func (h *fakeHost) netfilter(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+func (h *fakeHost) netfilter(_ context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
 	cmd := name + " " + strings.Join(args, " ")
 	h.calls = append(h.calls, cmd)
-	switch cmd {
-	case "nft list tables inet":
+	switch {
+	case cmd == "nft list tables inet":
 		var b strings.Builder
 		for _, t := range h.tables {
 			b.WriteString("table inet " + t + "\n")
 		}
 		return []byte(b.String()), nil
-	case "nft -f -":
-		if !slices.Contains(h.tables, netfilter.Table) {
-			h.tables = append(h.tables, netfilter.Table)
+	case cmd == "nft -f -":
+		table := netfilter.Table
+		if strings.Contains(string(stdin), "table inet "+netfilter.GatewayTable+" {") {
+			if h.failGateway {
+				return nil, errors.New("nft: Error: Could not process rule")
+			}
+			table = netfilter.GatewayTable
+		}
+		if !slices.Contains(h.tables, table) {
+			h.tables = append(h.tables, table)
+		}
+	case strings.HasPrefix(cmd, "nft delete table inet "):
+		h.tables = slices.DeleteFunc(h.tables, func(t string) bool { return t == args[3] })
+	case cmd == "ip -4 route show default":
+		return []byte("default via 192.0.2.1 dev ens3 proto dhcp src 192.0.2.10 metric 100\n"), nil
+	case name == "iptables":
+		if h.docker == nil {
+			return nil, errors.New("iptables: No chain/target/match by that name.")
+		}
+		rule := strings.Join(args[2:], " ")
+		switch args[0] {
+		case "-C":
+			if !slices.Contains(h.docker, rule) {
+				return nil, errors.New("iptables: Bad rule")
+			}
+		case "-I":
+			h.docker = slices.Insert(h.docker, 0, rule)
+		case "-D":
+			h.docker = slices.DeleteFunc(h.docker, func(r string) bool { return r == rule })
 		}
 	}
 	return nil, nil

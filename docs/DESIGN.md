@@ -149,7 +149,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 | 路径 | 内容 | 说明 |
 |---|---|---|
 | `/etc/tunlr/` | mixin（`mixin.d/*.yaml`，目录 0700、文件 0600）、工具设置（`settings.yaml`） | 用户可编辑，备份时最需要保留 |
-| `/var/lib/tunlr/state.json` | 状态文件：结构版本号、安装实例 ID、订阅、已知可用内核、TUN 开关、各定时更新最近一次的执行情况 | 工具维护，权限 0600。只存最新状态，不存会增长的历史（配置历史在 `history/`，历次更新在 journal） |
+| `/var/lib/tunlr/state.json` | 状态文件：结构版本号、安装实例 ID、订阅、已知可用内核、TUN 开关、网关开关、各定时更新最近一次的执行情况 | 工具维护，权限 0600。只存最新状态，不存会增长的历史（配置历史在 `history/`，历次更新在 journal） |
 | `/var/lib/tunlr/subscriptions/` | 每个订阅最近一次成功抓取的内容 | 含机场凭据 |
 | `/var/lib/tunlr/history/` | 已发布配置的历史：每个修订一份配置（`<号>.yaml`）和一份记录（`<号>.json`） | 用于回滚，保留最近 10 个，权限 0600 |
 | `/var/lib/tunlr/kernels/<版本>/mihomo` | 已知可用的内核 | root 所有，保留最近 3 个，见第 7 节 |
@@ -157,6 +157,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 | `/var/lib/tunlr/core/` | mihomo 工作目录（`-d`）：生效的配置、API socket（`api.sock`）、geo 数据、面板、缓存 | 归内核用户 `tunlr` 所有，权限 0750（保护 API socket） |
 | `/etc/systemd/system/tunlr-*.{service,timer}` | 工具生成的 unit：`tunlr-core.service`、`tunlr-rescue.service`、`tunlr-update.service`、`tunlr-update.timer`，MVP 3 起还有 `tunlr-check.service`、`tunlr-check.timer` | 每次 `init` 重写 |
 | `/usr/local/bin/tunlr` | 工具自身 | unit 引用这个路径，`init` 时不在这里则复制过来 |
+| `/etc/sysctl.d/90-tunlr-gateway.conf` | 网关模式的 `net.ipv4.ip_forward = 1`（MVP 5，见 8.10） | 只在网关开启时存在，`gateway off`、`uninstall` 时删除 |
 | `/run/lock/tunlr.lock` | 文件锁 | 放在 `/run` 下，安装前也可用 |
 
 - `/var/lib/tunlr` 为 0711：内核用户只能进入它拥有的 `bin/`、`core/`，不能列出或读取其他内容（订阅、历史、状态文件都是 root 的 0600/0700）。
@@ -226,8 +227,15 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - mixin 可能含有节点密码，目录 0700，文件 0600。
 - **范围与检查**：
   - 强制项：mixin 写了会被忽略并给出警告，不报错，避免工具升级新增强制项后定时更新突然失败。
-  - 允许但警告：数字前缀位数不同导致的意外顺序；`secret` 为空；`external-controller` 不在回环地址；`allow-lan` 开启且没有 `authentication`；用不带前缀的 `rules`/`proxies`/`proxy-groups` 整体替换订阅的内容；`patch-`、`delete-` 没有匹配的项。
-  - 报错（退出码 3，不发布）：YAML 解析失败；前缀操作的值不是列表，或目标的类型不对（如 `prepend-dns`）；`patch-` 的项没有 `name`；正则无效；以及 `mihomo -t` 不通过。
+  - 允许但警告：数字前缀位数不同导致的意外顺序；`external-controller` 不在回环地址；用不带前缀的 `rules`/`proxies`/`proxy-groups` 整体替换订阅的内容；`patch-`、`delete-` 没有匹配的项。
+  - 报错（退出码 3，不发布）：YAML 解析失败；前缀操作的值不是列表，或目标的类型不对（如 `prepend-dns`）；`patch-` 的项没有 `name`；正则无效；端口安全检查不通过（见下）；以及 `mihomo -t` 不通过。
+  - **端口安全**（MVP 5）：合成的结果会让其他主机无需凭据就能使用代理或 DNS 时不发布，避免公网服务器成为开放代理、开放 DNS 解析器。由 `pkg/core/config.CheckExposure` 检查：
+    - `allow-lan: true` 而 `authentication` 为空：代理端口（`mixed-port`、`port`、`socks-port` 等）对外开放且没有认证。
+    - `listeners` 中 `mixed`、`http`、`socks` 类型的项监听在非回环地址（不写 `listen` 即为 `0.0.0.0`），且没有认证：写了 `users: []`，或没写 `users`（这时沿用全局的 `authentication`）而全局也为空。
+    - `dns.enable` 时 `dns.listen` 不在回环地址：在公网上会被用于 DNS 反射放大。局域网设备经网关模式（8.11）使用时由 TUN 劫持，不需要它。
+    - `external-controller` 有值而 `secret` 为空（`secret` 由 tunlr 生成，只有 mixin 把它改成空串时才会出现）。
+    - 只检查重新合成的配置（`plan`、`apply`、`edit`、`sub use`、`tun on/off`、定时更新）。回滚到历史修订、自动关闭 TUN 时只重写强制项、不重新合成，不检查：这些是已经发布过的内容，拦下它们只会让恢复失败。定时更新遇到这种错误时保持当前配置，与 mixin 出错相同。
+    - 认证的用户名和密码由用户写在 mixin 里，tunlr 不生成、不保存。`doctor` 对生效的配置做同样的检查（`install.exposure`）。
   - mixin 有错时绝不丢掉它去发布（ShellCrash 的做法）：丢掉用户写的直连或拦截规则可能让流量走错路。定时更新遇到 mixin 错误同样保持当前配置。
 - **`tunlr edit [名称]`**：同 visudo、`kubectl edit`，在临时副本上编辑，保存后合成并运行 `-t`，有错就显示原因并让用户选择重新编辑或放弃，**通过后才写回 `mixin.d`**，然后显示 diff、确认后发布。有错的编辑因此不会进入 `mixin.d`，定时任务读不到。
   - 新文件以带完整说明、全部注释掉的示例开始（`templates/mixin.yaml`），未修改就不保存。省略名称时从已有文件中选择或新建。
@@ -353,7 +361,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 
 ## 8. 透明代理
 
-> 8.3～8.6 是 MVP 3 的设计，根据 8.2 的实测结果写成，已经实现，实现后的实测见 8.7。MVP 3 只做本机模式，网关模式（`ip_forward`、转发策略等）留到 MVP 5。
+> 8.3～8.6 是 MVP 3 的设计，根据 8.2 的实测结果写成，已经实现，实现后的实测见 8.7。MVP 3 只做本机模式，网关模式是 MVP 5，实测见 8.9，设计见 8.10。
 
 ### 8.1 方案：TUN + auto-redirect
 
@@ -464,7 +472,91 @@ tunlr-dev（环境同 8.2；SSH 客户端 192.168.11.41 不在服务器的直连
 - Ubuntu 的 systemd-resolved（`127.0.0.53`）：DNS 先到本机的 resolved，再由它向上游查询；内核的 ip rule 对目的端口 53 有专门处理，应当仍能劫持。
 - 以本机方式安装的 Tailscale：它的 ip rule 优先级为 52xx，排在 TUN 之前，应当互不影响。
 
-### 8.9 若将来实现 tproxy，需要处理的 Docker 冲突
+### 8.9 网关模式实测（MVP 5 设计前，设计见 8.10）
+
+tunlr-dev（环境同 8.2，装有 Docker：`ip_forward` 由 Docker 在运行时设为 1，`ip filter FORWARD` 策略为 drop）。用 network namespace 加 veth 模拟一台局域网设备（10.77.0.2，网关 10.77.0.1，DNS 设为 223.5.5.5）。模拟网段不做 NAT，所以 TUN 关闭时出站本来就不通。
+
+内核的 `inet mihomo` 表决定了转发流量怎么走：
+
+- 来自本机直连网段（`inet4_local_address_set`，含局域网网段）的 53 端口请求，`dnat` 到 TUN 中的 DNS 地址 `198.18.0.2`，因此成为转发流量。
+- 目标为直连网段的流量 `return`，不进 TUN。
+- 其余 TCP 在 `prerouting` 被 `redirect` 到内核的本机端口，成为本机入站，不经过转发链。
+- UDP、ICMP 按内核的 ip rule 路由进 `tunlr0`，经过转发链。
+
+| 项目 | TUN 关闭 | TUN 开启 | TUN 开启 + 放行转发 |
+|---|---|---|---|
+| DNS（发往 223.5.5.5） | 失败 | 失败（`dnat` 后被转发链丢弃） | fake-ip，被劫持 |
+| DNS（发往网关自身） | 失败 | 失败 | fake-ip，被劫持 |
+| TCP（用 IP 访问） | 失败 | 通过（被 redirect） | 通过 |
+| TCP（用域名访问） | 失败 | 失败（DNS 不通） | 国内、国外都通过 |
+| UDP（NTP，国内、国外） | 失败 | 失败 | 通过 |
+| ping | 失败 | 失败 | 通过 |
+| 访问网关自身的 SSH | 通过 | 通过 | 通过 |
+
+“放行转发”是按 Docker 文档的做法，在 `DOCKER-USER` 链中加入两条规则：`-i <局域网网卡> -o tunlr0 -j ACCEPT` 及反方向。在自己的 nft 表中 accept 无效：同一个 hook 上任何一张表 drop 就会丢包。
+
+结论：开启 TUN 后，网关模式缺的只有两样：`ip_forward`，以及转发链策略为 drop 时的放行。auto-redirect 和 `dns-hijack` 已经覆盖了 TCP 和 DNS，不需要 NAT，也不需要改 `dns.listen`。
+
+尚未实测：没有 Docker（转发链策略为 accept）的机器、局域网设备与网关在同一网段（旁路由的实际情形，实测用的是单独的 veth 网段）、rp_filter 为严格模式、IPv6。
+
+### 8.10 网关模式（MVP 5）
+
+局域网设备把这台服务器设为默认网关（以及 DNS），它们的流量经 mihomo 分流，即常说的旁路由。按 8.9 的实测，开启 TUN 后 auto-redirect 和 `dns-hijack` 已经处理了转发来的 TCP 和 DNS，网关模式只需要补：IPv4 转发、转发链策略为 drop 时的放行，以及内核不在时不让局域网流量直接出去。不需要 NAT，不改 mihomo 的配置。
+
+- **命令**：`tunlr gateway` 显示状态；`tunlr gateway on [--interface <网卡>]`；`tunlr gateway off`。菜单放在“Transparent proxy”分类中。不放进 `init`：网关依赖 TUN，`init` 时往往还没有订阅，无法检测。
+- **开关**存在 `state.json` 的 `gateway`（局域网网卡、开启前 `ip_forward` 的值），理由同 TUN 开关（8.3）。字段可以省略，旧状态文件视为关闭，不需要迁移。
+- **局域网网卡**：默认取 IPv4 默认路由所在的网卡（旁路由的情形，局域网与上行是同一块网卡），可用 `--interface` 指定。不能是 `lo`、`tunlr0`。
+- **只做 IPv4**：测试机没有 IPv6（见 8.8），`ip6` 转发不开启也不放行。
+
+**`gateway on`**：
+
+1. 前置检查，不通过则退出码 3：TUN 的前置检查（8.5 第 1 步）；局域网网卡存在且已启用。该网卡的 `rp_filter` 为严格模式（1）时警告（未实测）。
+2. TUN 没开时，先走 `tun on` 的完整流程（plan、确认、防失联检测），通过后再继续；TUN 开启失败则网关也不开启。
+3. 显示将要做的改动并确认；非交互模式需要 `--yes`，`--dry-run` 只预览。
+4. 加锁，依次：
+   - 记下 `net.ipv4.ip_forward` 的当前值，写入 `/etc/sysctl.d/90-tunlr-gateway.conf`（`net.ipv4.ip_forward = 1`，重启后仍生效）并立即生效。
+   - 加载 `inet tunlr_gateway` 表（`templates/nft/gateway.nft`，`nft -f` 原子替换）：从局域网网卡进来、不出 `tunlr0`、目标不是私有地址段的转发流量丢弃。TUN 正常时局域网流量都进 `tunlr0`，这条规则不起作用；内核停止、崩溃或面板临时关闭 TUN 时，局域网设备断网，而不是悄悄直连（失败时关闭）。私有地址段（`10/8`、`172.16/12`、`192.168/16`、`100.64/10`、`169.254/16`）照常转发：内核本来就不代理直连网段，Docker 发布的端口在转发前已 DNAT 到容器地址。
+   - 存在 Docker 的 `DOCKER-USER` 链时，在其中插入两条放行规则（`-i <网卡> -o tunlr0` 及反方向，带注释 `tunlr`）。同一个 hook 上任何一张表 drop 都会丢包，自己的表中 accept 无效，只能按 Docker 文档放在这条链里。**这是项目中唯一调用 `iptables` 的地方**（Docker 的链由 iptables 管理）；没有这条链时不调用。
+   - 开关记为开启。任何一步失败，撤销已做的步骤，退出码 4。
+5. 输出局域网设备应设置的网关和 DNS 地址（局域网网卡的 IPv4 地址）。
+
+不做防失联检测：网关不改变本机自己的流量，SSH 不受影响。从服务器上也无法检测局域网设备是否能用，`doctor` 检查各项是否到位。
+
+**`gateway off`**：加锁，删除 `DOCKER-USER` 中的两条规则、`inet tunlr_gateway` 表和 sysctl 文件；`ip_forward` 开启前为 0、且没有 `DOCKER-USER` 链时恢复为 0（Docker 需要转发，有它时保持 1）；开关记为关闭。TUN 保持开启。
+
+**生命周期**：
+
+- 网关的规则不随内核停止删除（`_poststop` 不动它们），这样内核不在时仍是失败时关闭。
+- `_prestart`（含开机）在开关开启时重新加载 `inet tunlr_gateway` 表和 `DOCKER-USER` 规则（nft 规则不跨重启保存）。Docker 晚于内核服务启动时，`DOCKER-USER` 链那时还不存在，由 `_check` 补上。
+- `_check`（随 TUN 启用，每 5 分钟）在开关开启时检查表和 `DOCKER-USER` 规则，缺了就补（例如 `flush ruleset`、Docker 重建了链）。
+- `tun off` 先关闭网关（同一把锁中），并在确认时说明；防失联回滚关闭 TUN 时同样先关闭网关。
+- `uninstall` 关闭网关，删除 sysctl 文件。
+
+**其他**：
+
+- `status` 与 `tunlr tun` 显示网关开关和网卡；`tunlr gateway` 显示各项是否到位（转发、sysctl 文件、表、`DOCKER-USER` 规则）。
+- `doctor` 的 install 组在网关开启时检查：`ip_forward` 为 1、sysctl 文件、`inet tunlr_gateway` 表、有 `DOCKER-USER` 链时的放行规则、局域网网卡存在、`rp_filter` 不是严格模式、TUN 开启。
+- 代码：nft 模板与 `DOCKER-USER` 规则在 `pkg/core/netfilter`；开关、sysctl 与流程在 `pkg/core/setup`；CLI 在 `internal/cli/gateway.go`。
+- `--json` 时 TUN 必须已经开启（退出码 3，提示先 `tunlr tun on`）：两段流程各有一份 JSON 输出，无法合并。
+- 再次执行 `gateway on` 会补上缺少的部分；换 `--interface` 时先撤掉旧网卡的规则，开启前的 `ip_forward` 仍按最初记下的值。
+
+**实现后的实测**（2026-10-28，tunlr-dev，Debian 12 + Docker，局域网设备仍用 netns + veth 模拟）：
+
+| 项目 | 结果 |
+|---|---|
+| TUN 关闭时 `gateway on --yes` | 先走完 `tun on`（含检测），再开启网关，一次完成 |
+| 局域网设备：DNS（国内、国外） | fake-ip，被劫持 |
+| 局域网设备：HTTPS 国内、国外，UDP NTP，ping | 都通过 |
+| 内核停止（`tunlr stop`） | 局域网设备的 TCP、ping、DNS 都不通（失败时关闭），服务器自己照常联网；`start` 后恢复 |
+| 删掉网关表和一条 `DOCKER-USER` 规则 | `doctor` 报 fail；`_check` 补上，再次执行无事可做 |
+| `gateway off` | 表、`DOCKER-USER` 规则、sysctl 文件都删除；有 Docker，`ip_forward` 保持 1；TUN 保持开启 |
+| 再次 `gateway on` 两次 | 第二次报告已经开启，不做改动 |
+| `tun off` | 先关闭网关，确认前说明；表与规则都删除，`tunlr-check.timer` 停用 |
+| `TestNetns`（真实 nft、netns 中的 iptables） | 通过 |
+
+仍未实测：同 8.9 末尾所列（没有 Docker 的机器、同网段的旁路由、rp_filter 严格模式、IPv6），以及重启后由 `_prestart` 重新加载。
+
+### 8.11 若将来实现 tproxy，需要处理的 Docker 冲突
 
 - 容器发布端口的回包会被劫持 → `ct direction reply return`
 - tproxy 挂在 mangle（-150），早于 Docker 的 DNAT（-100） → `fib daddr type local return`
@@ -476,8 +568,8 @@ tunlr-dev（环境同 8.2；SSH 客户端 192.168.11.41 不在服务器的直连
 
 纳入：
 
-1. **本机模式与网关模式**：`init` 时选择，二者需要的 sysctl、防火墙、DNS 设置不同。（MVP）
-2. **端口访问安全**：代理端口只监听 127.0.0.1，或在允许局域网访问时强制设置认证，避免成为开放代理。（MVP）
+1. **本机模式与网关模式**：二者需要的 sysctl、防火墙设置不同。（MVP 5，用 `tunlr gateway on/off` 切换，不在 `init` 中选择，见 8.10）
+2. **端口访问安全**：代理端口只监听 127.0.0.1，或在允许局域网访问时强制设置认证，避免成为开放代理。（MVP 5，见第 6 节“端口安全”）
 3. 流量过滤开关：按 IP/网段过滤局域网设备、只代理常用端口、屏蔽 QUIC、容器与虚拟机流量独立开关（翻译为 TUN 排除地址或 mihomo 规则）
 4. 自定义保留地址段 → `route-exclude-address`
 5. 开机联网检测与防自启死循环 → `network-online.target` + `StartLimitBurst`
@@ -508,6 +600,7 @@ tunlr sub add | list | remove | update  订阅（可保存多个；add --update 
 tunlr sub set [name] --update <period>  修改一个订阅的自动更新周期（6h、1d、off、default）
 tunlr sub use [name]      切换启用的订阅（同一时间只启用一个；交互时省略名称则从列表选择）
 tunlr tun on | off        透明代理（--mode 预留给将来的 tproxy）
+tunlr gateway on | off    网关模式：局域网设备经本机分流（见 8.10；--interface 指定局域网网卡）
 tunlr env on | off        当前 shell 的代理变量（需先配置 shell-init）
 
 tunlr update [sub|geo]    立即执行订阅、geo 数据的更新（不看周期）
@@ -630,7 +723,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 其余功能在此之后按需求排期。
 
-进度（2026-10-27）：1～4 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）。
+进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）。
 
 ### 13.1 已设计、尚未实现
 
@@ -638,7 +731,6 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 | 项目 | 出处 | 说明 |
 |---|---|---|
-| 本机/网关模式、端口安全 | 第 9 节 1、2，MVP 5 | 网关模式需要转发、sysctl、局域网 DNS；`allow-lan` 时强制认证 |
 | `tunlr upgrade`（自身升级） | 第 10 节 | 现在 `upgrade` 只有 `core` 子命令。正式发布前必须实现：从 GitHub release 下载，按官方 sha256 校验，原子替换 `/usr/local/bin/tunlr`，必要时重写 unit。不做定时任务 |
 | `status` 的漂移 | 5.3、第 10 节 | 现场计算生效配置与“现在 apply 会生成的配置”是否一致（订阅更新后未发布、mixin 改了未发布、配置被手改等）。目前 `status` 不报告 |
 | `panel` | 第 10 节 | 面板地址与 SSH 隧道命令 |

@@ -36,6 +36,8 @@ type TunStatus struct {
 	// Rules 报告工具的 inet tunlr 表是否存在，KernelRules 报告内核的 inet mihomo 表是否存在。
 	Rules       bool `json:"rules"`
 	KernelRules bool `json:"kernel_rules"`
+	// Gateway 是网关模式的局域网网卡，网关关闭时为空。
+	Gateway string `json:"gateway,omitempty"`
 }
 
 // TunCheck 是开启透明代理后一项检测的结果。
@@ -74,6 +76,9 @@ func (i *Installer) TunStatus(ctx context.Context) (*TunStatus, error) {
 	}
 	if st != nil && st.Tun != "" {
 		s.Switch, s.Deadline = st.Tun, st.TunDeadline
+	}
+	if st != nil && st.Gateway != nil {
+		s.Gateway = st.Gateway.Interface
 	}
 	if on, err := mihomo.NewClient(i.Layout.CoreSocket()).TunEnabled(ctx); err == nil {
 		s.Running = &on
@@ -196,7 +201,8 @@ func (i *Installer) TunOn(ctx context.Context, plan *pipeline.Plan, opts TunOpti
 }
 
 // TunOff 关闭透明代理并发布 plan（pipeline.PlanTun(ctx, false) 的结果，已经用户确认），
-// 撤掉可能存在的回滚定时器。发布失败时开关恢复原状，配置由流水线回滚。
+// 撤掉可能存在的回滚定时器。网关开启时先关闭网关（它依赖 TUN）。发布失败时开关恢复原状，
+// 配置由流水线回滚；已经关闭的网关不再恢复。
 func (i *Installer) TunOff(ctx context.Context, plan *pipeline.Plan) (*TunResult, error) {
 	p := i.pipeline(nil)
 	l, err := i.lock(ctx)
@@ -206,6 +212,9 @@ func (i *Installer) TunOff(ctx context.Context, plan *pipeline.Plan) (*TunResult
 	defer l.Release()
 	st, _, err := state.LoadOrNew(i.Layout.StateFile(), i.now())
 	if err != nil {
+		return nil, err
+	}
+	if err := i.gatewayOffLocked(ctx, st); err != nil {
 		return nil, err
 	}
 	previous, previousDeadline := st.Tun, st.TunDeadline
@@ -266,6 +275,11 @@ func (i *Installer) tunGuard(ctx context.Context, wait bool) error {
 	if err != nil || st.Tun != state.TunPending {
 		return ignoreNotExist(err)
 	}
+	if err := i.gatewayOffLocked(ctx, st); err != nil {
+		// 继续关闭 TUN：网关的表还在时局域网设备断网（失败时关闭），不影响本机。
+		i.log().Error("turn the unconfirmed TUN off: turning the gateway off failed", "err", err)
+	}
+	st.Gateway = nil
 	st.SetTun("", time.Time{})
 	if err := state.Save(i.Layout.StateFile(), st); err != nil {
 		return err
@@ -291,8 +305,8 @@ func (i *Installer) tunGuard(ctx context.Context, wait bool) error {
 }
 
 // PreStart 是内核服务启动前（ExecStartPre，以 root）执行的 _prestart：开关仍为 pending 且已过期限时
-// 先关闭 TUN（重启机器会丢掉回滚定时器），再加载工具的规则。不等待文件锁：tunlr start 等命令持锁调用
-// systemctl start 时会死锁。
+// 先关闭 TUN（重启机器会丢掉回滚定时器），再加载工具的规则；网关开启时重新加载网关的规则（nft 规则
+// 不跨重启保存）。不等待文件锁：tunlr start 等命令持锁调用 systemctl start 时会死锁。
 func (i *Installer) PreStart(ctx context.Context) error {
 	st, err := state.Load(i.Layout.StateFile())
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -301,13 +315,21 @@ func (i *Installer) PreStart(ctx context.Context) error {
 	var errs []error
 	if st != nil && st.Tun == state.TunPending && i.now().After(st.TunDeadline) {
 		errs = append(errs, i.tunGuard(ctx, false))
+		if st, err = state.Load(i.Layout.StateFile()); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
 	}
 	errs = append(errs, i.rules().Up(ctx))
+	if actions, err := i.repairGateway(ctx, st); err != nil {
+		errs = append(errs, err)
+	} else if len(actions) > 0 {
+		i.log().Info("gateway: " + strings.Join(actions, "; "))
+	}
 	return errors.Join(errs...)
 }
 
 // PostStop 是内核以任何方式退出后（ExecStopPost，以 root）执行的 _poststop：删除工具的规则，以及内核
-// 没能自己清理的规则（被 SIGKILL 或崩溃时）。
+// 没能自己清理的规则（被 SIGKILL 或崩溃时）。网关的规则保留：内核不在时局域网设备断网，而不是直连。
 func (i *Installer) PostStop(ctx context.Context) error {
 	left, err := i.rules().Down(ctx)
 	if left {
@@ -324,7 +346,8 @@ type CheckResult struct {
 
 // Check 是 tunlr-check.timer 每 5 分钟执行的 _check：内核在运行而工具的表不见了时重新加载；内核开着
 // TUN 而它的表不见了（例如重新加载 nftables.service 时 flush ruleset）时重启内核，由内核重建；开关为
-// pending 且已过期限一分钟以上（回滚定时器没有生效）时关闭 TUN。
+// pending 且已过期限一分钟以上（回滚定时器没有生效）时关闭 TUN；网关开启时补上缺少的转发设置和规则
+// （例如 Docker 晚于内核启动、重建了 DOCKER-USER 链）。
 //
 // 这些都是透明代理的事：tunlr-check.timer 随开关启停（tun on 启用，tun off 停用）。开关已经关闭时
 // （如回滚定时器或 _prestart 关闭了 TUN）停用自己。面板临时打开的 TUN 不在保护范围内。
@@ -347,6 +370,12 @@ func (i *Installer) Check(ctx context.Context) (*CheckResult, error) {
 		}
 		res.Actions = append(res.Actions, "stopped "+service.CheckTimer+": the transparent proxy is off")
 		return res, nil
+	}
+	// 网关的规则不论内核是否在运行都要在：内核不在时靠它让局域网设备断网，而不是直连。
+	actions, err := i.repairGateway(ctx, st)
+	res.Actions = append(res.Actions, actions...)
+	if err != nil {
+		return res, fmt.Errorf("repairing the gateway: %w", err)
 	}
 
 	status, err := i.systemd().Status(ctx, service.CoreUnit)

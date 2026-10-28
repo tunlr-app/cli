@@ -168,6 +168,38 @@ func TestDoctorInstalled(t *testing.T) {
 	if r.Err() == nil {
 		t.Error("no failure reported")
 	}
+	if _, ok := got["install.gateway"]; ok || got["install.exposure"].Status != doctor.OK {
+		t.Errorf("gateway %+v, exposure %+v", got["install.gateway"], got["install.exposure"])
+	}
+
+	// 发布之外改成了开放的配置；网关开着但转发和规则都不在。
+	if err := os.WriteFile(i.Layout.CoreConfig(), []byte("mixed-port: 7890\nallow-lan: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, _, err := state.LoadOrNew(i.Layout.StateFile(), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.SetTun(state.TunOn, time.Time{})
+	st.Gateway = &state.Gateway{Interface: "ens3", ForwardBefore: "0"}
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	i.Interfaces = func(name string) (*netfilter.Interface, error) {
+		return &netfilter.Interface{Name: name, Up: true}, nil
+	}
+	r, err = i.Doctor(context.Background(), DoctorOptions{Quick: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = checkMap(r)
+	if c := got["install.exposure"]; c.Status != doctor.Fail || !strings.HasPrefix(c.Message, "allow-lan is on") {
+		t.Errorf("exposure = %+v", c)
+	}
+	if c := got["install.gateway"]; c.Status != doctor.Fail || !strings.Contains(c.Message, "IPv4 forwarding is off") ||
+		!strings.Contains(c.Message, netfilter.GatewayTable) {
+		t.Errorf("gateway = %+v", c)
+	}
 
 	// 非 root：安装的细节都跳过。
 	i.Host.Euid = func() int { return 1000 }

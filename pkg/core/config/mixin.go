@@ -598,26 +598,12 @@ func sameNode(a, b *yaml.Node) bool {
 	return true
 }
 
-// lint 检查最终配置中有风险的设置。
+// lint 检查最终配置中有风险、但不至于拒绝发布的设置；会开放无需认证的端口的设置由 CheckExposure 拒绝。
 func lint(root *yaml.Node) []Warning {
 	var ws []Warning
-	str := func(key string) string {
-		if n := lookup(root, []string{key}); n != nil && n.Kind == yaml.ScalarNode && !isNull(n) {
-			return n.Value
-		}
-		return ""
-	}
-	if ctl := str("external-controller"); ctl != "" {
-		if host, _, err := net.SplitHostPort(ctl); err != nil || !isLoopback(host) {
-			ws = append(ws, Warning{Message: fmt.Sprintf("external-controller listens on %s, which other hosts can reach; keep it on 127.0.0.1 and use an SSH tunnel", ctl)})
-		}
-		if str("secret") == "" {
-			ws = append(ws, Warning{Message: "secret is empty: anyone who can reach external-controller can control mihomo"})
-		}
-	}
-	if str("allow-lan") == "true" {
-		if auth := lookup(root, []string{"authentication"}); auth == nil || len(auth.Content) == 0 {
-			ws = append(ws, Warning{Message: "allow-lan is on without authentication: the proxy ports are open to the network"})
+	if n := lookup(root, []string{"external-controller"}); n != nil && n.Kind == yaml.ScalarNode && !isNull(n) && n.Value != "" {
+		if host, _, err := net.SplitHostPort(n.Value); err != nil || !isLoopback(host) {
+			ws = append(ws, Warning{Message: fmt.Sprintf("external-controller listens on %s, which other hosts can reach; keep it on 127.0.0.1 and use an SSH tunnel", n.Value)})
 		}
 	}
 	return ws

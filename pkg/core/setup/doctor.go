@@ -18,6 +18,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/fsutil"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
+	"github.com/tunlr-app/cli/pkg/core/netfilter"
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/state"
@@ -189,6 +190,8 @@ func (i *Installer) installChecks(ctx context.Context, h *doctor.Host, quick boo
 		i.checkTimers(ctx, c, st)
 	}
 	i.checkTun(ctx, c, st, running != "")
+	i.checkGateway(ctx, c, st)
+	i.checkExposure(c)
 	i.checkPorts(ctx, h, c, running != "")
 	i.checkSubscriptions(c, st)
 	return c.List
@@ -347,6 +350,66 @@ func (i *Installer) checkTun(ctx context.Context, c *doctor.Checker, st *state.S
 			"use tunlr tun on instead")
 	default:
 		c.Add("tun", doctor.OK, "Transparent proxy", "switch "+ts.Switch+", matches mihomo", "")
+	}
+}
+
+// checkGateway 在网关开启时检查各项是否到位（见 DESIGN.md 8.10）；网关关闭时不出现。
+func (i *Installer) checkGateway(ctx context.Context, c *doctor.Checker, st *state.State) {
+	if st == nil || st.Gateway == nil {
+		return
+	}
+	iface := st.Gateway.Interface
+	var fails, warns []string
+	if st.Tun != state.TunOn {
+		fails = append(fails, "TUN is off")
+	}
+	if _, err := i.lookupInterface(iface); err != nil {
+		fails = append(fails, "the interface "+iface+" is missing")
+	}
+	if i.ipForward() != "1" {
+		fails = append(fails, "IPv4 forwarding is off")
+	}
+	if _, err := os.Stat(i.Layout.SysctlFile()); err != nil {
+		warns = append(warns, i.Layout.SysctlFile()+" is missing, so forwarding is off after a reboot")
+	}
+	rs, err := i.rules().Gateway(ctx, iface)
+	switch {
+	case err != nil:
+		fails = append(fails, err.Error())
+	case !rs.Table:
+		fails = append(fails, "the nftables table inet "+netfilter.GatewayTable+" is missing (LAN devices bypass mihomo when it stops)")
+	}
+	if err == nil && rs.DockerChain && !rs.DockerRules {
+		fails = append(fails, "the accept rules in "+netfilter.DockerChain+" are missing (Docker drops the forwarded traffic)")
+	}
+	if i.strictRPFilter(iface) {
+		warns = append(warns, "rp_filter is strict (1) on "+iface+"; replies from TUN may be dropped (not tested yet)")
+	}
+	switch {
+	case len(fails) > 0:
+		c.Add("gateway", doctor.Fail, "Gateway", strings.Join(append(fails, warns...), "; "), "tunlr gateway on --interface "+iface+" restores it")
+	case len(warns) > 0:
+		c.Add("gateway", doctor.Warn, "Gateway", strings.Join(warns, "; "), "tunlr gateway on --interface "+iface)
+	default:
+		c.Add("gateway", doctor.OK, "Gateway", "on "+iface+": forwarding, nftables and Docker rules in place", "")
+	}
+}
+
+// checkExposure 检查生效的配置会不会开放无需认证的端口（见 DESIGN.md 第 6 节“端口安全”）。
+// 发布时已经拒绝这种配置，这里发现的是工具发布之外改动的或较早版本发布的配置。
+func (i *Installer) checkExposure(c *doctor.Checker) {
+	cfg, err := i.pipeline(nil).Current()
+	if err != nil || cfg == nil {
+		return
+	}
+	var ee *config.ExposureError
+	switch err := config.CheckExposure(cfg); {
+	case errors.As(err, &ee):
+		c.Add("exposure", doctor.Fail, "Port security", strings.Join(ee.Problems, "; "), "fix it in a mixin (tunlr edit), then tunlr apply")
+	case err != nil:
+		c.Add("exposure", doctor.Fail, "Port security", err.Error(), "")
+	default:
+		c.Add("exposure", doctor.OK, "Port security", "no port is open to other hosts without authentication", "")
 	}
 }
 

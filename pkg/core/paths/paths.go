@@ -79,5 +79,16 @@ func (l Layout) LockFile() string { return l.join("run", "lock", "tunlr.lock") }
 // UnitDir 存放工具生成的 systemd unit。
 func (l Layout) UnitDir() string { return l.join("etc", "systemd", "system") }
 
+// SysctlFile 是网关模式开启 IPv4 转发的 sysctl 配置，重启后仍生效。
+func (l Layout) SysctlFile() string { return l.join("etc", "sysctl.d", "90-tunlr-gateway.conf") }
+
+// IPForward 是 IPv4 转发的内核开关（procfs），测试时也放在 Root 下。
+func (l Layout) IPForward() string { return l.join("proc", "sys", "net", "ipv4", "ip_forward") }
+
+// RPFilter 是网卡 iface 的反向路径过滤设置（procfs）。iface 须先经过校验。
+func (l Layout) RPFilter(iface string) string {
+	return l.join("proc", "sys", "net", "ipv4", "conf", iface, "rp_filter")
+}
+
 // ToolBinary 是安装后的 tunlr 自身，unit 中引用这个路径。
 func (l Layout) ToolBinary() string { return l.join("usr", "local", "bin", "tunlr") }

@@ -36,12 +36,14 @@ func TestRender(t *testing.T) {
 	}
 }
 
-// fakeSystem 模拟 nft 和 ip：记录执行的命令，维护表和 ip rule 的列表。
+// fakeSystem 模拟 nft、ip 和 iptables：记录执行的命令，维护表、ip rule 和 DOCKER-USER 规则的列表。
 type fakeSystem struct {
 	calls  []string
 	tables []string
 	rules  map[string][]string // 地址族 → ip rule show 的各行
 	stdin  []byte
+	// docker 为 nil 时没有 DOCKER-USER 链；否则是链中规则的参数（不含链名）。
+	docker []string
 }
 
 func (f *fakeSystem) run(_ context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
@@ -50,8 +52,33 @@ func (f *fakeSystem) run(_ context.Context, stdin []byte, name string, args ...s
 	switch {
 	case call == "nft -f -":
 		f.stdin = stdin
-		if !slices.Contains(f.tables, Table) {
-			f.tables = append(f.tables, Table)
+		// 脚本的最后一个 “table inet X {” 是加载的表。
+		for line := range strings.Lines(string(stdin)) {
+			if t, ok := strings.CutPrefix(line, "table inet "); ok && strings.HasSuffix(t, " {\n") {
+				if t = strings.TrimSuffix(t, " {\n"); !slices.Contains(f.tables, t) {
+					f.tables = append(f.tables, t)
+				}
+			}
+		}
+	case name == "iptables":
+		if f.docker == nil || args[1] != DockerChain {
+			return nil, errors.New("iptables: No chain/target/match by that name.")
+		}
+		rule := strings.Join(args[2:], " ")
+		switch args[0] {
+		case "-S":
+		case "-C":
+			if !slices.Contains(f.docker, rule) {
+				return nil, errors.New("iptables: Bad rule (does a matching rule exist in that chain?).")
+			}
+		case "-I":
+			f.docker = slices.Insert(f.docker, 0, rule)
+		case "-D":
+			i := slices.Index(f.docker, rule)
+			if i < 0 {
+				return nil, errors.New("iptables: Bad rule")
+			}
+			f.docker = slices.Delete(f.docker, i, i+1)
 		}
 	case call == "nft list tables inet":
 		var b strings.Builder

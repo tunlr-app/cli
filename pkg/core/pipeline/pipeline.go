@@ -239,6 +239,10 @@ func (p *Pipeline) plan(ctx context.Context, edited *config.Mixin, tun *bool) (*
 	if err != nil {
 		return nil, err
 	}
+	// 只在重新合成时检查端口安全；回滚和重写强制项不经过这里，以免旧配置无法恢复。
+	if err := config.CheckExposure(res.Config); err != nil {
+		return nil, err
+	}
 	plan.Config, plan.Dropped, plan.facts = res.Config, res.Dropped, res.Facts
 	plan.Warnings, plan.Overrides = res.Warnings, res.Overrides
 	if err := p.finish(ctx, plan); err != nil {

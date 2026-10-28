@@ -45,6 +45,9 @@ type State struct {
 	// TunDeadline 是 TunPending 的期限：过期仍未确认时，由回滚定时器或下次启动内核前关闭。
 	TunDeadline time.Time `json:"tun_deadline,omitzero"`
 
+	// Gateway 是网关模式的开关，nil 为关闭。只由 gateway on/off、tun off 和防失联回滚修改。
+	Gateway *Gateway `json:"gateway,omitempty"`
+
 	// Updates 记录定时更新任务（键为任务名，目前只有 geo；订阅的记在各自的 FetchedAt、LastErrorAt 中）
 	// 最近一次执行的情况，用来判断下次何时到期。只记最近一次，历次的情况在 journal 中。
 	Updates map[string]UpdateRun `json:"updates,omitempty"`
@@ -75,6 +78,16 @@ func (s *State) SetTun(v string, deadline time.Time) {
 	if v == TunPending {
 		s.TunDeadline = deadline.UTC()
 	}
+}
+
+// Gateway 是开启网关模式时的设置。
+type Gateway struct {
+	// Interface 是局域网网卡。
+	Interface string `json:"interface"`
+	// ForwardBefore 是开启前 net.ipv4.ip_forward 的值（"0" 或 "1"），关闭时据此决定是否恢复。
+	ForwardBefore string `json:"forward_before"`
+	// Since 是开启的时间。
+	Since time.Time `json:"since"`
 }
 
 // Kernel 是一个已知可用的内核版本，二进制存放在 paths.Layout.KernelBinary(Version)。

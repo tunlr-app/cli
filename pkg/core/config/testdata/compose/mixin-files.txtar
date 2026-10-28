@@ -1,6 +1,7 @@
 多个 mixin 文件按顺序逐个应用，后面的文件优先：同一个键以后面的为准并记为覆盖，
 后面文件前插的规则排在更前面，后面的文件可以修改前面文件加入的项。
-用普通键整体替换订阅的列表时给出警告；最终配置中有风险的设置也给出警告。
+用普通键整体替换订阅的列表时给出警告；最终配置中有风险的设置也给出警告
+（无需认证的端口不在这里检查，见 CheckExposure）。
 
 -- template.yaml --
 mixed-port: 7890
@@ -65,8 +66,6 @@ rules:
 -- warnings --
 20-override.yaml:9: proxies replaces the subscription's proxies entirely; use prepend-proxies, append-proxies, patch-proxies or delete-proxies to keep them
 external-controller listens on 0.0.0.0:9090, which other hosts can reach; keep it on 127.0.0.1 and use an SSH tunnel
-secret is empty: anyone who can reach external-controller can control mihomo
-allow-lan is on without authentication: the proxy ports are open to the network
 -- overrides --
 dns.nameserver: 20-override.yaml overrides 10-base.yaml
 secret: 20-override.yaml overrides tunlr

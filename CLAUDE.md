@@ -20,6 +20,7 @@
   - 不做 zashboard 已有的实时视图（流量、连接、日志跟随、切节点）。
 - **不做常驻守护进程**。常驻的只有 mihomo 内核；定时任务、救援、回滚全部交给 systemd。
 - 只支持：使用 systemd 的 Linux（Debian 12+、Ubuntu 22.04+ 等）、amd64 与 arm64、nftables、root 运行工具。不支持 OpenRC/procd/路由器固件/WSL、iptables、sing-box 及其他内核。环境不满足时由 `doctor` 明确拒绝，不做兜底兼容。
+  - 唯一的例外：网关模式在 Docker 的 `DOCKER-USER` 链中插入、删除放行转发的规则，这条链由 Docker 经 iptables 管理，只能用 `iptables` 命令（见 `docs/DESIGN.md` 8.10）。其他地方不调用 `iptables`。
 - 不做 zashboard 已有的功能。例外：Linux 侧必须由工具负责的事项（如 TUN 的持久化开关）。
 - 不限制面板能力：内核支持的操作（如面板触发内核升级）保持可用，工具负责兜底救援。
 - 不做遥测、账号体系、云同步。

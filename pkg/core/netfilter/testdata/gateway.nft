@@ -1,0 +1,12 @@
+# 由 tunlr 生成：网关模式下，局域网设备的流量只能经 TUN 出去（DESIGN.md 8.10）。
+# TUN 正常时局域网流量都进 tunlr0，这条规则不起作用；内核不在时局域网设备断网，而不是悄悄直连。
+# 先建后删再建，整个文件在一个事务中替换旧表。
+table inet tunlr_gateway
+delete table inet tunlr_gateway
+table inet tunlr_gateway {
+	chain forward {
+		type filter hook forward priority filter - 1; policy accept;
+		# 私有地址段照常转发：内核本来就不代理直连网段，Docker 发布的端口在转发前已 DNAT 到容器地址。
+		iifname "ens3" oifname != "tunlr0" ip daddr != { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop
+	}
+}

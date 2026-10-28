@@ -476,7 +476,14 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		} else {
 			items = append(items, menuItem{label: "Turn TUN on", args: []string{"tun", "on"}})
 		}
-		items = append(items, menuItem{label: "Show details", args: []string{"tun"}})
+		if s.Tun != nil && s.Tun.Gateway != "" {
+			items = append(items, menuItem{label: "Turn gateway mode off", args: []string{"gateway", "off"}})
+		} else {
+			items = append(items, menuItem{label: "Turn gateway mode on (LAN devices route through mihomo)", args: []string{"gateway", "on"}})
+		}
+		items = append(items,
+			menuItem{label: "Show details", args: []string{"tun"}},
+			menuItem{label: "Show gateway details", args: []string{"gateway"}})
 	case groupService:
 		if s.Service != nil && s.Service.Active() {
 			items = append(items,

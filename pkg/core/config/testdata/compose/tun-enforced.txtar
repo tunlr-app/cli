@@ -96,4 +96,3 @@ tun:
 -- warnings --
 50-tun.yaml:1: tun.enable is managed by tunlr; the value in the mixin is ignored
 50-tun.yaml:1: tun.strict-route is managed by tunlr; the value in the mixin is ignored
-secret is empty: anyone who can reach external-controller can control mihomo

@@ -15,6 +15,11 @@ var Systemd embed.FS
 //go:embed nft/tunlr.nft
 var Nft []byte
 
+// GatewayNft 是网关模式开启时的 nftables 规则（text/template），由 nft -f 加载。
+//
+//go:embed nft/gateway.nft
+var GatewayNft []byte
+
 // Config 是默认的 mihomo 基础配置，即配置合成的第一层（系统部分）。
 //
 //go:embed config.yaml

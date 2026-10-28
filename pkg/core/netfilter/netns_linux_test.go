@@ -65,6 +65,34 @@ func TestNetns(t *testing.T) {
 	if problems, _ := r.Preflight(ctx); len(problems) != 1 {
 		t.Errorf("preflight with leftovers: %q", problems)
 	}
+	// 网关：没有 DOCKER-USER 链时只加载表；有链时插入放行规则，删除时只删自己的。
+	for range 2 {
+		if err := r.GatewayUp(ctx, "lo"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s, err := r.Gateway(ctx, "lo"); err != nil || s != (GatewayState{Table: true}) {
+		t.Fatalf("gateway = %+v, %v", s, err)
+	}
+	if _, err := inNS(ctx, nil, "iptables", "-N", DockerChain); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inNS(ctx, nil, "iptables", "-A", DockerChain, "-j", "RETURN"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.GatewayUp(ctx, "lo"); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := r.Gateway(ctx, "lo"); !s.Complete() || !s.DockerRules {
+		t.Fatalf("gateway with DOCKER-USER = %+v", s)
+	}
+	if err := r.GatewayDown(ctx, "lo"); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := inNS(ctx, nil, "iptables", "-S", DockerChain); string(out) != "-N DOCKER-USER\n-A DOCKER-USER -j RETURN\n" {
+		t.Errorf("DOCKER-USER after down:\n%s", out)
+	}
+
 	left, err := r.Down(ctx)
 	if err != nil || !left {
 		t.Fatalf("Down = %v, %v", left, err)

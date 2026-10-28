@@ -53,6 +53,8 @@ type Installer struct {
 	CheckNetwork func(ctx context.Context, opts TunOptions) []TunCheck
 	// Host 是 doctor 检查的本机，为空时使用真实的系统（测试时替换）。
 	Host *doctor.Host
+	// Interfaces 查找网卡，为空时使用 netfilter.LookupInterface（测试时替换）。
+	Interfaces func(name string) (*netfilter.Interface, error)
 }
 
 // InitOptions 是 init 的参数。
@@ -353,6 +355,12 @@ func (i *Installer) Uninstall(ctx context.Context, purge bool) (*UninstallResult
 	defer l.Release()
 
 	res := &UninstallResult{}
+	if st, err := state.Load(i.Layout.StateFile()); err == nil && st.Gateway != nil {
+		if err := i.gatewayOffLocked(ctx, st); err != nil {
+			return nil, err
+		}
+		res.Removed = append(res.Removed, "gateway mode ("+i.Layout.SysctlFile()+", nftables table inet "+netfilter.GatewayTable+")")
+	}
 	// 停止内核服务时 _poststop 删除规则；服务没在运行（或 unit 是旧版）时这里再删一次。
 	if err := i.systemd().Uninstall(ctx); err != nil {
 		return nil, err

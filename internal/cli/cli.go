@@ -197,6 +197,7 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.withFullDiff(a.newEditCommand()),
 		a.newSubCommand(),
 		a.newTunCommand(),
+		a.newGatewayCommand(),
 		a.newPreStartCommand(),
 		a.newPostStopCommand(),
 		a.newTunGuardCommand(),
