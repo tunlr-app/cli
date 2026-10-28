@@ -29,6 +29,7 @@ const (
 	groupPanel         = "Panel"
 	groupProxy         = "Proxy port"
 	groupDevices       = "LAN devices"
+	groupFilter        = "Filters"
 	groupService       = "mihomo service"
 	groupUpdates       = "Scheduled updates"
 )
@@ -447,6 +448,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 			{label: groupConfiguration, group: groupConfiguration, note: a.describeRevision(s)},
 			{label: groupTun, group: groupTun, note: a.describeTun(s.Tun)},
 			{label: groupDevices, group: groupDevices, note: a.describeDevicesNote(s.Devices)},
+			{label: groupFilter, group: groupFilter, note: a.describeFilterNote(s.Filter)},
 			{label: groupService, group: groupService, note: a.describeService(s)},
 			{label: groupUpdates, group: groupUpdates, note: a.describeUpdates(s.Updates)},
 			diagnose,
@@ -510,9 +512,23 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		items = append(items,
 			menuItem{label: "List devices", args: []string{"devices"}},
 			menuItem{label: "List all devices on the LAN", args: []string{"devices", "--all"}},
-			menuItem{label: "Set a device to go through proxies or directly", args: []string{"devices", "set"}},
 			menuItem{label: "Name a device", args: []string{"devices", "name"}},
 			menuItem{label: "Forget a device", args: []string{"devices", "forget"}})
+	case groupFilter:
+		items = append(items,
+			menuItem{label: "Show filters", args: []string{"filter"}},
+			menuItem{label: "Set a device to go through proxies or directly", args: []string{"filter", "device"}})
+		if s.Filter != nil && s.Filter.QUIC {
+			items = append(items, menuItem{label: "Allow QUIC again", args: []string{"filter", "quic", "off"}})
+		} else {
+			items = append(items, menuItem{label: "Block QUIC (browsers use TCP)", args: []string{"filter", "quic", "on"}})
+		}
+		if s.Filter != nil && s.Filter.Ports {
+			items = append(items, menuItem{label: "Proxy all ports again", args: []string{"filter", "ports", "off"}})
+		} else {
+			items = append(items, menuItem{label: "Proxy only common ports (others go direct)", args: []string{"filter", "ports", "on"}})
+		}
+		items = append(items, menuItem{label: "Change the proxied ports", args: []string{"filter", "ports", "set"}})
 	case groupService:
 		if s.Service != nil && s.Service.Active() {
 			items = append(items,
@@ -618,6 +634,14 @@ func (a *app) describeDevicesNote(d *setup.DeviceSummary) string {
 		return a.style.dim("gateway and proxy LAN access off")
 	}
 	return a.describeDevices(d)
+}
+
+// describeFilterNote 是过滤分类右侧的状态。
+func (a *app) describeFilterNote(f *setup.FilterStatus) string {
+	if f == nil {
+		return a.style.dim("none")
+	}
+	return a.describeFilter(f)
 }
 
 func (a *app) describeService(s *setup.Status) string {

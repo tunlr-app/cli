@@ -589,9 +589,9 @@ tunlr-dev（环境同 8.2，装有 Docker：`ip_forward` 由 Docker 在运行时
 | `proxy`（默认） | 按规则分流 | — |
 | `direct` | 这台设备的流量全部直连 | 受管 mixin 在规则最前插入按来源匹配、`DIRECT` 的规则 |
 
-- 按来源 IP（`SRC-IP-CIDR,<ip>/32,DIRECT`）匹配。内核没有按来源 MAC 的规则（v1.19.33 实测 `SRC-MAC` 报 unsupported rule type），所以设为直连后提示在路由器上为它保留地址。记录同时保存 MAC：设备换了地址时列表按 MAC 认出它，提示规则仍按旧地址匹配、再执行一次 `devices set` 即更新。
+- 按来源 IP（`SRC-IP-CIDR,<ip>/32,DIRECT`）匹配。内核没有按来源 MAC 的规则（v1.19.33 实测 `SRC-MAC` 报 unsupported rule type），所以设为直连后提示在路由器上为它保留地址。记录同时保存 MAC：设备换了地址时列表按 MAC 认出它，提示规则仍按旧地址匹配、再执行一次 `filter device` 即更新。
 - 网关模式与代理端口都适用：两种方式下内核看到的来源都是设备的地址。
-- 规则由提供默认值的受管 mixin `tunlr:devices` 插入，用户的 mixin 可以覆盖或删除；`plan`、`tunlr mixin list` 列出它的内容。名单变化经流水线发布（diff、确认、`mihomo -t`），失败时回滚，名单恢复原状。
+- 规则由提供默认值的受管 mixin `tunlr:filter` 插入（与其他过滤项一起，见 8.13），用户的 mixin 可以覆盖或删除；`plan`、`tunlr mixin list` 列出它的内容。名单变化经流水线发布（diff、确认、`mihomo -t`），失败时回滚，名单恢复原状。
 
 **不做系统层绕过**（2026-10-28 讨论后决定）：曾考虑让名单中的设备完全不经过内核（内核停止时照常上网），在 tunlr-dev 上验证过可行：内核的 `tun.exclude-mac-address` 只跳过 TCP 重定向和 DNS 劫持、不改路由，还要自己按 MAC 打标记加 `ip rule`、把 DNS 转给路由器、放行转发并做 masquerade。不做的理由：依赖 sing-tun 的 nft 表、ip rule 位置和标记位等内部行为，内核升级后可能悄悄失效且影响整个局域网；需要它的场景（路由器不能为单台设备设网关、设备自己也改不了）不多，多数情况下让设备直接用路由器做网关即可。
 
@@ -605,14 +605,13 @@ tunlr-dev（环境同 8.2，装有 Docker：`ip_forward` 由 Docker 在运行时
 - 状态：`online`（5 分钟内有流量）、`idle`（24 小时内来过）、`away`（有记录但 24 小时内没来过）；`--all` 中没有使用本机的为 `not using`。服务器重启后集合清空，设备再次使用即重新出现。
 - `inet tunlr_devices` 在网关或代理端口局域网访问开启时加载，两者都关闭时删除。集合 `lan`、`ports` 随开关更新（`gateway on/off`、`proxy lan on/off`），只替换这两个集合，不重建表，已记下的设备保留；`ports` 取生效配置的 `mixed-port`，mixin 改了端口时由 `_prestart` 和 `tunlr devices` 更新。`_check` 补缺，`uninstall` 删除；`_poststop` 保留它。记录设备是附带功能，表加载失败只记日志，不影响开关。
 - 只在本机显示，不保存历史；持久保存的只有用户设置过走法或名称的设备（状态文件的 `devices`：MAC、IP、名称、走法）。没有名称、走法为默认的记录自动去掉。
-- 在 tunlr-dev 上实测（netns 模拟的设备经代理端口访问）：几秒内出现在列表中，状态 `online`；`set direct` 后内核对它的连接显示规则 `SrcIPCIDR`、链路 `DIRECT`；设回 `proxy`、`forget`、关闭代理端口的局域网访问后，规则、记录和表都已清理。
-- 在 tunlr-dev 上实测网关一路（开启透明代理和网关，局域网网卡为 netns 的 veth）：设备上网后出现在列表中，用途 `gateway`、状态 `online`；`set direct` 后它的连接显示规则 `SrcIPCIDR`、链路 `DIRECT`，设回 `proxy` 后新连接重新按订阅的规则匹配；重启内核后已记下的设备仍在；`forget`、关闭网关和透明代理后表、规则、记录都已清理。
+- 在 tunlr-dev 上实测（netns 模拟的设备经代理端口访问）：几秒内出现在列表中，状态 `online`；设为直连后内核对它的连接显示规则 `SrcIPCIDR`、链路 `DIRECT`；设回 `proxy`、`forget`、关闭代理端口的局域网访问后，规则、记录和表都已清理。
+- 在 tunlr-dev 上实测网关一路（开启透明代理和网关，局域网网卡为 netns 的 veth）：设备上网后出现在列表中，用途 `gateway`、状态 `online`；设为直连后它的连接显示规则 `SrcIPCIDR`、链路 `DIRECT`，设回 `proxy` 后新连接重新按订阅的规则匹配；重启内核后已记下的设备仍在；`forget`、关闭网关和透明代理后表、规则、记录都已清理。
 
 **命令**：
 
 ```
 tunlr devices [--all]                    列出使用本机的设备（名称、IP、MAC、用途、状态、最后出现、走法）
-tunlr devices set <设备> proxy|direct    设置走法（经 diff 确认后发布）
 tunlr devices name <设备> <名称>         起名
 tunlr devices forget <设备>              删除记录（恢复为 proxy）
 ```
@@ -620,9 +619,44 @@ tunlr devices forget <设备>              删除记录（恢复为 proxy）
 - `<设备>` 可以是 IP、MAC 或名称（不区分大小写）。列表中没有的私有地址可以预先设置；公网地址拒绝。
 - 交互模式下省略 `<设备>` 时从列表（含 `--all` 的设备）选择，光标停在最近出现的设备上；省略走法时再选。
 - 走法变化经 diff 确认后发布；只起名、不改配置时直接保存，不需要确认。
-- 主菜单新增分类“LAN devices”（在“Transparent proxy”之后），右侧是摘要；分类中列出、列出全部、设置走法、起名、删除记录。
-- `status` 在网关或代理端口局域网访问开启时多一行 `LAN devices:`（在线、空闲的台数，直连的几台）；`--json` 全部支持。
-- 放在 `tunlr devices` 而不是 `tunlr filter` 下：走法是设备的属性，从设备出发操作更直接。`tunlr filter` 留给将来的全局过滤项（屏蔽 QUIC、只代理常用端口、目标地址不进 TUN），同样生成受管 mixin。
+- 设置走法是 `tunlr filter device <设备> proxy|direct`（见 8.13）。`forget` 删除记录时直连的规则一并去掉，同样经 diff 确认。
+- `status` 在网关或代理端口局域网访问开启时多一行 `LAN devices:`（在线、空闲的台数）；`--json` 全部支持。
+- 设置走法放在 `tunlr filter` 而不是 `tunlr devices` 下（2026-10-28 讨论后改定）：用户按“我想让什么不走代理”找功能，设备直连与 QUIC、端口同属过滤（ShellCrash 的“流量过滤”中第一项也是过滤局域网设备）；`tunlr devices` 只负责查看、起名和删除记录。
+
+### 8.13 流量过滤
+
+`tunlr filter` 集中设置哪些流量不按订阅的规则走（2026-10-28 讨论后决定）。都由受管 mixin `tunlr:filter`（提供默认值，用户的 mixin 可以覆盖，或用 `delete-rules` 去掉）在规则最前插入规则，变化经流水线发布（diff、确认、`mihomo -t`），失败时回滚，过滤项恢复原状。全部默认关闭，`init` 不询问。
+
+| 项 | 规则 | 用途 |
+|---|---|---|
+| `device` | `SRC-IP-CIDR,<ip>/32,DIRECT` | 指定的局域网设备全部直连（设备与记录见 8.12） |
+| `quic` | `AND,((NETWORK,UDP),(DST-PORT,443)),REJECT` | 拒绝 QUIC，浏览器改用 TCP；很多节点转发 UDP 不稳定 |
+| `ports` | `NOT,((DST-PORT,<端口>)),DIRECT` | 只代理常用端口，其余（BT、P2P、游戏）直连，不消耗节点流量 |
+
+- 顺序即上表：直连的设备在最前，不受其他过滤项影响；QUIC 在端口之前，端口列表不含 443 时 QUIC 仍被拒绝。
+- QUIC 不能只拒绝最终走代理的连接（规则匹配时还不知道结果），直连的网站也退回 TCP，影响很小。
+- 默认端口沿用 ShellCrash：`22,80,143,194,443,465,587,853,993,995,5222,8080,8443`。可以改为端口和范围（`8000-9000`）的列表，由工具检查（内核不检查端口号，`99999`、`9000-8000` 都能通过 `-t`）；关闭时列表保留，与默认相同时记为默认。
+- 规则写法在 tunlr-dev（v1.19.33）上用 `mihomo -t` 确认；端口以 `/` 分隔，`DST-PORT,22,80` 会把 80 当作出站名。
+- 状态文件的 `filter`：`quic`、`ports`、`port_list`。设备的走法仍在 `devices` 记录中。
+- 在 tunlr-dev 上实测（开启透明代理，本机发起）：到 `www.google.com` 的 UDP 443 被拒绝（日志 `match AND(...) using REJECT`），HTTPS 照常；到 8888 端口的连接匹配 `NOT` 规则直连，443 照常按订阅的规则；把 8000-9000 加入列表后 8888 改为按订阅的规则走代理；全部关闭后规则和状态都已清理。
+- 不做的：
+  - 目标地址不进 TUN：mixin 写 `tun.route-exclude-address` 即可；做成开关容易把 DNS 服务器排除在外，使 DNS 劫持失效（8.2）。只想让某些地址直连时写 `IP-CIDR` 规则。
+  - 中国 IP 直连：订阅的规则一般已有；在系统层绕过内核已经否决（8.12）。
+  - 白名单模式（只有名单中的设备走代理）：暂不做，需要时用 `NOT,((SRC-IP-CIDR,…))` 实现。
+  - 容器直连：按来源匹配，但 Docker 的网段不固定，默认地址池与局域网可能重叠；TUN 的 `exclude-interface` 对转发流量是否有效未知。先在 tunlr-dev 上实测再定放在哪里。
+
+**命令**：
+
+```
+tunlr filter                              列出各个过滤项
+tunlr filter device <设备> proxy|direct   设置设备的走法（经 diff 确认后发布）
+tunlr filter quic on|off                  拒绝 QUIC
+tunlr filter ports on|off                 只代理常用端口
+tunlr filter ports set <端口>|default     更改只代理的端口
+```
+
+- 交互模式下省略设备、走法、端口时询问；非交互时缺少参数以退出码 2 报错。配置不变时（关闭时改端口列表）直接保存，不需要确认。
+- 主菜单新增分类“Filters”（在“LAN devices”之后），右侧是摘要；`status` 多一行 `Filters:`，如 `1 device direct · QUIC blocked`，都关闭时为 `none`。
 
 ## 9. 从 ShellCrash 借鉴的功能
 
@@ -630,7 +664,7 @@ tunlr devices forget <设备>              删除记录（恢复为 proxy）
 
 1. **本机模式与网关模式**：二者需要的 sysctl、防火墙设置不同。（MVP 5，用 `tunlr gateway on/off` 切换，见 8.10；`init` 询问这台服务器的用途时可以一并开启，见第 10 节“家庭网络中的用法”）
 2. **端口访问安全**：代理端口默认只给本机用；允许局域网访问（`tunlr proxy lan on`）时由 `lan-allowed-ips` 只放行私有地址段，其他来源必须设置认证，避免成为开放代理。（MVP 5，见第 6 节“端口安全”）
-3. 流量过滤：按设备分流见 8.12（`tunlr devices`，逐台设置走代理或直连；不做绕过内核的系统层）。屏蔽 QUIC、只代理常用端口、目标地址不进 TUN、容器流量将来放在 `tunlr filter` 下，同样由命令生成受管 mixin，用户只填端口、网段等参数；容器一项先在 tunlr-dev 上实测。
+3. 流量过滤：`tunlr filter`（8.13），设备直连、拒绝 QUIC、只代理常用端口；不做绕过内核的系统层，目标地址不进 TUN 用 mixin，容器直连待实测。
 4. 自定义保留地址段：用 mixin 写 `tun.route-exclude-address`（不是受管的键），已可用。
 5. 开机联网检测与防自启死循环：已实现，`tunlr-core.service` 有 `After=/Wants=network-online.target`、`StartLimitBurst`、`OnFailure=tunlr-rescue.service`；开机时 `_prestart` 关闭过期仍未确认的 TUN（8.5）。
 6. 失败通知：暂不做（见 3.4）。
@@ -662,8 +696,8 @@ tunlr sub set [name] --update <period>  修改一个订阅的自动更新周期�
 tunlr sub use [name]      切换启用的订阅（同一时间只启用一个；交互时省略名称则从列表选择）
 tunlr tun on | off        透明代理（--mode 预留给将来的 tproxy）
 tunlr gateway on | off    网关模式：局域网设备经本机分流（见 8.10；--interface 指定局域网网卡）
-tunlr devices             使用本机的局域网设备；set 逐台设置走代理或直连（见 8.12）
-tunlr filter              全局过滤项（屏蔽 QUIC、只代理常用端口等，尚未设计细节）
+tunlr devices             使用本机的局域网设备；起名、删除记录（见 8.12）
+tunlr filter              流量过滤：设备直连、拒绝 QUIC、只代理常用端口（见 8.13）
 tunlr env on | off        当前 shell 的代理变量（需先配置 shell-init）
 
 tunlr update [sub|geo]    立即执行订阅、geo 数据的更新（不看周期）
@@ -840,7 +874,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 其余功能在此之后按需求排期。
 
-进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）、面板（`tunlr panel`，含局域网访问）、受管 mixin（第 6 节），以及家庭网络的用法：代理端口的局域网访问（`tunlr proxy lan`）和 `init` 的用途问题（第 10 节），`status` 的漂移（第 10 节），局域网设备的列表与分流（`tunlr devices`，8.12）。
+进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）、面板（`tunlr panel`，含局域网访问）、受管 mixin（第 6 节），以及家庭网络的用法：代理端口的局域网访问（`tunlr proxy lan`）和 `init` 的用途问题（第 10 节），`status` 的漂移（第 10 节），局域网设备的列表与分流（`tunlr devices`，8.12），流量过滤（`tunlr filter`，8.13）。
 
 ### 13.1 待实现（按顺序）
 
@@ -850,7 +884,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 |---|---|---|---|---|
 | 1 | ~~`status` 的漂移~~ | 第 10 节 | 已完成 | 见第 10 节 `status` |
 | 2 | ~~局域网设备的列表与分流~~ | 8.12 | 已完成 | 见 8.12；内核没有按 MAC 的规则，按地址匹配 |
-| 3 | 全局过滤项 | 第 9 节 3 | 待补全 | `tunlr filter`：屏蔽 QUIC、只代理常用端口、目标地址不进 TUN（`route-exclude-address`）、容器流量；由命令生成受管 mixin，用户只填参数。容器一项先在 tunlr-dev 上实测 |
+| 3 | ~~流量过滤~~ | 8.13 | 已完成 | 设备直连（从 `devices set` 移来）、拒绝 QUIC、只代理常用端口；目标地址不进 TUN 用 mixin；容器直连待实测 |
 | 4 | 代理变量 | 第 10 节 | 草案，待确认 | 不做 `shell-init`、`env on/off`（要先在 shell 配置中装函数，服务器上有 `tun on` 已覆盖本机流量），改为 `tunlr proxy env [--unset]` 输出 `export` 语句，用法 `eval "$(tunlr proxy env)"`；端口取自生效配置 |
 | 5 | `config` | 第 10 节 | 草案 | `tunlr config` 列出全部设置（标出默认值）；`config set/unset <key>` 校验后保存。改 `github-mirror` 时同 `apply`（diff、确认、发布），geo 两项走 `update set geo` 的同一个 core 函数 |
 | 6 | `backup`、`restore` | 第 9 节 9、第 10 节 | 草案，待确认 | 打包设置、mixin、订阅（含最近一次抓取的内容）、API secret 和开关记录（`--history` 附历史），不含内核与 geo 数据，0600。还原要求已 `init`，先自动备份当前内容，合并状态（保留实例 ID、内核、开关），再 diff 确认发布；TUN、网关、代理端口和面板的局域网访问不自动开启（待定：逐项询问还是只列命令） |

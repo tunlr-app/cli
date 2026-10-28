@@ -353,6 +353,16 @@ func (i *Installer) PlanDeviceEdit(ctx context.Context, d *Device, edit DeviceEd
 // SaveDevices 保存设备记录，并发布 plan（pipeline.PlanDevices(ctx, records) 的结果，已经用户确认；配置
 // 没有变化时为 nil 或没有改动）。发布失败时记录恢复原状，配置由流水线回滚。
 func (i *Installer) SaveDevices(ctx context.Context, records []state.Device, plan *pipeline.Plan) (*config.Revision, error) {
+	return i.saveAndApply(ctx, plan, func(st *state.State) func() {
+		previous := st.Devices
+		st.Devices = records
+		return func() { st.Devices = previous }
+	})
+}
+
+// saveAndApply 在锁内用 change 修改并保存状态，再发布 plan（已经用户确认；配置没有变化时为 nil 或没有改动）。
+// change 返回撤销修改的函数：发布失败时用它恢复状态，配置由流水线回滚。
+func (i *Installer) saveAndApply(ctx context.Context, plan *pipeline.Plan, change func(*state.State) (undo func())) (*config.Revision, error) {
 	l, err := i.lock(ctx)
 	if err != nil {
 		return nil, err
@@ -362,8 +372,7 @@ func (i *Installer) SaveDevices(ctx context.Context, records []state.Device, pla
 	if err != nil {
 		return nil, err
 	}
-	previous := st.Devices
-	st.Devices = records
+	undo := change(st)
 	if err := state.Save(i.Layout.StateFile(), st); err != nil {
 		return nil, err
 	}
@@ -372,13 +381,12 @@ func (i *Installer) SaveDevices(ctx context.Context, records []state.Device, pla
 	}
 	applied, err := i.pipeline(nil).ApplyLocked(ctx, plan)
 	if err != nil {
-		st.Devices = previous
+		undo()
 		return nil, errors.Join(err, state.Save(i.Layout.StateFile(), st))
 	}
 	if applied == nil {
 		return nil, nil
 	}
-	i.log().Debug("devices saved", "records", len(records))
 	return applied.Revision, nil
 }
 
@@ -386,8 +394,6 @@ func (i *Installer) SaveDevices(ctx context.Context, records []state.Device, pla
 type DeviceSummary struct {
 	Online int `json:"online"`
 	Idle   int `json:"idle"`
-	// Direct 是走法为直连的设备数。
-	Direct int `json:"direct"`
 }
 
 // deviceSummary 在网关或代理端口的局域网访问开启时汇总设备，否则返回 nil。
@@ -406,9 +412,6 @@ func (i *Installer) deviceSummary(ctx context.Context, st *state.State) *DeviceS
 			s.Online++
 		case DeviceIdle:
 			s.Idle++
-		}
-		if d.Route == RouteDirect {
-			s.Direct++
 		}
 	}
 	return s

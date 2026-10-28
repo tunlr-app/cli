@@ -1,0 +1,69 @@
+# 默认都关闭
+cp airport.yaml provider/airport.yaml
+exec tunlr sub add main $PROVIDER/airport.yaml
+install-mihomo
+exec tunlr apply --yes
+exec tunlr filter
+stdout 'Direct devices:\s+none'
+stdout 'QUIC:\s+allowed'
+stdout 'Ports:\s+all proxied'
+stdout 'when on: 22,80,143,194,443,465,587,853,993,995,5222,8080,8443 \(default; tunlr filter ports set\)'
+exec tunlr status
+stdout 'Filters:\s+none'
+
+# 用法错误
+exitcode 2 tunlr filter quic on
+stderr 'filter quic on needs confirmation; pass --yes'
+exitcode 2 tunlr filter ports set
+stderr 'filter ports set needs the ports'
+exitcode 2 tunlr filter ports set 80,70000
+stderr '"70000" is not a port'
+exitcode 2 tunlr filter ports set 9000-8000
+stderr 'the port range 9000-8000 is reversed'
+
+# 拒绝 QUIC：受管 mixin tunlr:filter 在规则最前插入，经 diff 发布
+exec tunlr filter quic on --dry-run
+stdout '^\+  - AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT$'
+stdout 'Dry run: nothing changed'
+! grep 'DST-PORT' root/var/lib/tunlr/core/config.yaml
+exec tunlr filter quic on --yes
+stdout 'QUIC is blocked'
+grep '^  - AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT$' root/var/lib/tunlr/core/config.yaml
+grep '"quic": true' root/var/lib/tunlr/state.json
+exec tunlr filter quic on --yes
+stdout 'Already so'
+exec tunlr mixin list
+stdout 'tunlr:filter'
+
+# 只代理常用端口：关闭时改列表只保存，配置不变
+exec tunlr filter ports set 443,80,8000-9000,80
+stdout '^Proxied ports: 443,80,8000-9000\. They take effect with tunlr filter ports on\.$'
+grep '"port_list"' root/var/lib/tunlr/state.json
+exec tunlr filter ports on --yes
+stdout '^\+  - NOT,\(\(DST-PORT,443/80/8000-9000\)\),DIRECT$'
+grep '^  - NOT,\(\(DST-PORT,443/80/8000-9000\)\),DIRECT$' root/var/lib/tunlr/core/config.yaml
+exec tunlr status
+stdout 'Filters:\s+QUIC blocked · common ports only'
+exec tunlr filter ports set default --yes
+stdout '^\+  - NOT,\(\(DST-PORT,22/80/143/194/443/465/587/853/993/995/5222/8080/8443\)\),DIRECT$'
+exec tunlr filter --json
+stdout '"default_ports": true'
+! grep '"port_list"' root/var/lib/tunlr/state.json
+
+# 都关闭后受管 mixin 不再出现
+exec tunlr filter quic off --yes
+stdout 'QUIC is allowed again'
+exec tunlr filter ports off --yes
+stdout 'All ports follow the rules again'
+! grep 'DST-PORT' root/var/lib/tunlr/core/config.yaml
+! grep '"filter"' root/var/lib/tunlr/state.json
+exec tunlr mixin list
+! stdout 'tunlr:filter'
+
+-- airport.yaml --
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: g, type: select, proxies: [a]}
+rules:
+  - MATCH,g

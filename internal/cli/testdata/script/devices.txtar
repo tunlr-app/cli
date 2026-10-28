@@ -6,29 +6,29 @@ stdout '"gateway": false'
 stdout '"devices": \[\]'
 
 # 用法错误：非交互时省略参数、走法不对、不是私有地址、没有 --yes
-exitcode 2 tunlr devices set
-stderr 'devices set needs the device and the route'
-exitcode 2 tunlr devices set 192.168.1.50 tunnel
+exitcode 2 tunlr filter device
+stderr 'filter device needs the device and the route'
+exitcode 2 tunlr filter device 192.168.1.50 tunnel
 stderr 'the route must be proxy or direct'
-exitcode 2 tunlr devices set 192.168.1.50 direct
-stderr 'devices set needs confirmation; pass --yes'
-exitcode 2 tunlr devices set 8.8.8.8 direct --yes
+exitcode 2 tunlr filter device 192.168.1.50 direct
+stderr 'filter device needs confirmation; pass --yes'
+exitcode 2 tunlr filter device 8.8.8.8 direct --yes
 stderr '8.8.8.8 is not a private address'
-exitcode 2 tunlr devices set nope direct --yes
+exitcode 2 tunlr filter device nope direct --yes
 stderr 'no device "nope"'
 exitcode 2 tunlr devices name 192.168.1.50 192.168.1.1
 stderr 'the name cannot be an address'
 
-# 预先按地址设为直连：受管 mixin tunlr:devices 在规则最前插入按来源地址直连的规则，经 diff 发布
+# 预先按地址设为直连：受管 mixin tunlr:filter 在规则最前插入按来源地址直连的规则，经 diff 发布
 cp airport.yaml provider/airport.yaml
 exec tunlr sub add main $PROVIDER/airport.yaml
 install-mihomo
 exec tunlr apply --yes
-exec tunlr devices set 192.168.1.50 direct --dry-run
+exec tunlr filter device 192.168.1.50 direct --dry-run
 stdout '^\+  - SRC-IP-CIDR,192\.168\.1\.50/32,DIRECT$'
 stdout 'Dry run: nothing changed'
 ! grep 'SRC-IP-CIDR' root/var/lib/tunlr/core/config.yaml
-exec tunlr devices set 192.168.1.50 direct --yes
+exec tunlr filter device 192.168.1.50 direct --yes
 stdout 'now goes direct for everything'
 stdout 'DHCP reservation'
 grep '^  - SRC-IP-CIDR,192.168.1.50/32,DIRECT$' root/var/lib/tunlr/core/config.yaml
@@ -36,7 +36,7 @@ grep '"route": "direct"' root/var/lib/tunlr/state.json
 exec tunlr devices
 stdout '^-\s+192\.168\.1\.50\s+-\s+-\s+away\s+-\s+0\s+direct$'
 exec tunlr mixin list
-stdout 'tunlr:devices'
+stdout 'tunlr:filter'
 
 # 起名不改配置，不需要确认
 exec tunlr devices name 192.168.1.50 tv
@@ -46,7 +46,7 @@ exitcode 2 tunlr devices name 192.168.1.51 TV
 stderr 'another device is already called "tv"'
 
 # 按名称设回 proxy：规则去掉，名称保留；forget 删除记录
-exec tunlr devices set tv proxy --yes
+exec tunlr filter device tv proxy --yes
 stdout '^-  - SRC-IP-CIDR,192\.168\.1\.50/32,DIRECT$'
 stdout 'follows the rules again'
 ! grep 'SRC-IP-CIDR' root/var/lib/tunlr/core/config.yaml

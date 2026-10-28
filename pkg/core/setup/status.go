@@ -39,6 +39,8 @@ type Status struct {
 	Drift *pipeline.Drift `json:"drift,omitempty"`
 	// Devices 汇总使用本机的局域网设备，网关和代理端口的局域网访问都关闭时为 nil。
 	Devices *DeviceSummary `json:"devices,omitempty"`
+	// Filter 是全局过滤项，还没有状态文件时为 nil。
+	Filter *FilterStatus `json:"filter,omitempty"`
 }
 
 // driftCache 缓存最近一次计算的漂移：合成一次配置要解析整份订阅，主菜单每 10 秒刷新一次状态，
@@ -93,6 +95,7 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 	}
 	if st != nil {
 		s.Subscription, s.PanelLAN, s.ProxyLAN = st.Active, st.PanelLAN != nil, st.ProxyLAN != nil
+		s.Filter = filterStatus(st)
 	}
 	revs, current, err := i.pipeline(nil).Revisions()
 	if err != nil {

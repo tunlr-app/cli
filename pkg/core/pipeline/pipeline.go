@@ -189,6 +189,11 @@ func (p *Pipeline) PlanDevices(ctx context.Context, devices []state.Device) (*Pl
 	return p.plan(ctx, planOptions{devices: devices})
 }
 
+// PlanFilter 同 Plan，但按全局过滤项为 f 时的样子合成，不看状态文件中的过滤项。调用方在发布前保存它。
+func (p *Pipeline) PlanFilter(ctx context.Context, f state.Filter) (*Plan, error) {
+	return p.plan(ctx, planOptions{filter: &f})
+}
+
 // PlanResetSecret 同 Plan，但换用新生成的 API secret，发布时保存。
 func (p *Pipeline) PlanResetSecret(ctx context.Context) (*Plan, error) {
 	return p.plan(ctx, planOptions{resetSecret: true})
@@ -220,10 +225,11 @@ type switches struct {
 	tun, panelLAN, proxyLAN bool
 	// direct 是走法为直连的设备的地址。
 	direct []string
+	filter state.Filter
 }
 
 func switchesOf(st *state.State) switches {
-	return switches{tun: st.TunEnabled(), panelLAN: st.PanelLAN != nil, proxyLAN: st.ProxyLAN != nil, direct: st.DirectIPs()}
+	return switches{tun: st.TunEnabled(), panelLAN: st.PanelLAN != nil, proxyLAN: st.ProxyLAN != nil, direct: st.DirectIPs(), filter: st.Filter}
 }
 
 type planOptions struct {
@@ -239,6 +245,8 @@ type planOptions struct {
 	proxyLAN *bool
 	// devices 不为 nil 时代替状态文件中的设备记录。
 	devices []state.Device
+	// filter 不为 nil 时代替状态文件中的全局过滤项。
+	filter *state.Filter
 	// composeOnly 只合成，不检查端口安全，不比较也不校验。
 	composeOnly bool
 	// noValidate 合成、检查端口安全并与生效的配置比较，但不校验（不运行 mihomo -t）。
@@ -276,6 +284,9 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	}
 	if opts.devices != nil {
 		sw.direct = (&state.State{Devices: opts.devices}).DirectIPs()
+	}
+	if opts.filter != nil {
+		sw.filter = *opts.filter
 	}
 	var sub []byte
 	if st.Active != "" {
@@ -762,13 +773,13 @@ func (p *Pipeline) now() time.Time {
 
 // 受管 mixin 的名称。
 const (
-	ManagedCore    = "tunlr:core"
-	ManagedTun     = "tunlr:tun"
-	ManagedGeo     = "tunlr:geo"
-	ManagedPanel   = "tunlr:panel"
-	ManagedProxy   = "tunlr:proxy"
-	ManagedMirror  = "tunlr:mirror"
-	ManagedDevices = "tunlr:devices"
+	ManagedCore   = "tunlr:core"
+	ManagedTun    = "tunlr:tun"
+	ManagedGeo    = "tunlr:geo"
+	ManagedPanel  = "tunlr:panel"
+	ManagedProxy  = "tunlr:proxy"
+	ManagedMirror = "tunlr:mirror"
+	ManagedFilter = "tunlr:filter"
 )
 
 // managed 生成 tunlr 的交互功能对应的受管 mixin，顺序即展示的顺序。独占键的：
@@ -783,8 +794,8 @@ const (
 //	             （config.LANAllowedIPs），内核拒绝其他来源；关闭时 allow-lan: false
 //
 // 提供默认值、用户可以覆盖的：tunlr:mirror，geo 数据的下载地址，配置了 GitHub 镜像时另有经镜像的面板
-// 下载地址和让镜像直连的规则（用 delete-rules 去掉）；tunlr:devices，有设备设为直连时在规则最前按来源地址
-// 直连（DESIGN.md 8.12）。
+// 下载地址和让镜像直连的规则（用 delete-rules 去掉）；tunlr:filter，有过滤项时在规则最前插入的规则
+// （设为直连的设备、拒绝 QUIC、只代理常用端口，见 filterRules 和 DESIGN.md 8.13）。
 func managed(secret string, sw switches, set *settings.Settings) []config.Managed {
 	geoAuto, geoHours := set.GeoAutoUpdate()
 	geo := fmt.Sprintf("geo-auto-update: %t\n", geoAuto)
@@ -833,12 +844,8 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 		{Name: ManagedProxy, Command: "tunlr proxy lan on/off", Data: proxy, Owns: []string{"allow-lan", "lan-allowed-ips"}},
 		{Name: ManagedMirror, Command: "tunlr init --mirror", Default: true, Data: mirrorData},
 	}
-	if len(sw.direct) > 0 {
-		rules := make([]string, len(sw.direct))
-		for i, ip := range sw.direct {
-			rules[i] = "SRC-IP-CIDR," + ip + "/32,DIRECT"
-		}
-		list = append(list, config.Managed{Name: ManagedDevices, Command: "tunlr devices set", Default: true,
+	if rules := filterRules(sw); len(rules) > 0 {
+		list = append(list, config.Managed{Name: ManagedFilter, Command: "tunlr filter", Default: true,
 			Data: marshal(struct {
 				PrependRules []string `yaml:"prepend-rules"`
 			}{rules})})

@@ -19,7 +19,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
-// deviceEditView 是 devices set/name/forget 在 --json 输出中的形式。
+// deviceEditView 是 devices name/forget、filter device 在 --json 输出中的形式。
 type deviceEditView struct {
 	Device   setup.Device     `json:"device"`
 	Plan     *planView        `json:"plan,omitempty"`
@@ -31,20 +31,18 @@ func (a *app) newDevicesCommand() *cobra.Command {
 	var all bool
 	cmd := &cobra.Command{
 		Use:   "devices",
-		Short: "List the LAN devices that use this server; set them to go through proxies or directly",
+		Short: "List the LAN devices that use this server; name them",
 		Long: "Devices that use this server as their gateway or HTTP/SOCKS5 proxy are recorded as they send\n" +
 			"traffic (nftables table inet " + netfilter.DevicesTable + ") and forgotten after 24 hours without any.\n" +
 			"A device is online if it sent traffic in the last 5 minutes. Names come from tunlr devices name,\n" +
 			"or from the router's reverse DNS. The list starts empty after a reboot.\n\n" +
-			"All their traffic goes through mihomo. By default it follows the rules (proxy); a device set to\n" +
-			"direct goes direct for everything, by a rule matching its address placed before all others\n" +
-			"(the managed mixin tunlr:devices). mihomo cannot match by MAC address, so reserve the address\n" +
-			"for the device on your router.",
+			"All their traffic goes through mihomo and follows the rules (proxy), unless the device is set\n" +
+			"to go direct for everything with tunlr filter device.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.listDevices(cmd.Context(), all) },
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "also list other devices on the LAN (from the neighbor table)")
-	cmd.AddCommand(a.withFullDiff(a.newDevicesSetCommand()), a.newDevicesNameCommand(), a.withFullDiff(a.newDevicesForgetCommand()))
+	cmd.AddCommand(a.newDevicesNameCommand(), a.withFullDiff(a.newDevicesForgetCommand()))
 	return cmd
 }
 
@@ -85,10 +83,10 @@ func (a *app) listDevices(ctx context.Context, all bool) error {
 		for _, d := range list.Devices {
 			if d.RuleIP != "" && d.Route == setup.RouteDirect {
 				fmt.Fprintf(&b, "\n%s %s now has the address %s, but its rule still matches %s;\n"+
-					"tunlr devices set %s direct updates it.", a.style.warn("Warning:"), deviceLabel(d), d.IP, d.RuleIP, deviceRef(d))
+					"tunlr filter device %s direct updates it.", a.style.warn("Warning:"), deviceLabel(d), d.IP, d.RuleIP, deviceRef(d))
 			}
 		}
-		fmt.Fprintln(&b, "\n(tunlr devices set <device> direct sends a device's traffic directly; --all also lists other LAN devices)")
+		fmt.Fprintln(&b, "\n(tunlr filter device <device> direct sends a device's traffic directly; --all also lists other LAN devices)")
 		_, err := a.stdout.Write(b.Bytes())
 		return err
 	})
@@ -179,7 +177,7 @@ func deviceRef(d setup.Device) string {
 // chooseDevice 取得命令要操作的设备：给出时在列表中查找，否则在终端里从列表选择（光标在最近出现的设备上）。
 func (a *app) chooseDevice(ctx context.Context, command string, args []string) (*setup.Device, error) {
 	if len(args) == 0 && !a.interactive() {
-		return nil, usageErrorf("devices %s needs the device (an address, MAC address or name)", command)
+		return nil, usageErrorf("%s needs the device (an address, MAC address or name)", command)
 	}
 	list, err := a.loadDevices(ctx, true)
 	if err != nil {
@@ -189,7 +187,7 @@ func (a *app) chooseDevice(ctx context.Context, command string, args []string) (
 		return list.FindDevice(args[0])
 	}
 	if len(list.Devices) == 0 {
-		return nil, usageErrorf("no device is known yet; give its address: tunlr devices %s <address>", command)
+		return nil, usageErrorf("no device is known yet; give its address: tunlr %s <address>", command)
 	}
 	rows := make([][]string, len(list.Devices))
 	for k, d := range list.Devices {
@@ -202,58 +200,6 @@ func (a *app) chooseDevice(ctx context.Context, command string, args []string) (
 	return &list.Devices[k], nil
 }
 
-func (a *app) newDevicesSetCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "set [device] [proxy|direct]",
-		Short: "Set whether a device follows the rules (proxy) or goes direct for everything",
-		Long: "The device is an address, a MAC address or a name. An address no device has used yet can be set\n" +
-			"in advance. Setting it to proxy again removes the rule. The configuration is published after\n" +
-			"the diff is confirmed.",
-		Args: usageArgs(cobra.MaximumNArgs(2)),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 2 && args[1] != setup.RouteProxy && args[1] != setup.RouteDirect {
-				return usageErrorf("the route must be proxy or direct, got %q", args[1])
-			}
-			if len(args) < 2 && !a.interactive() {
-				return usageErrorf("devices set needs the device and the route (proxy or direct)")
-			}
-			if err := a.requireConfirmation("devices set"); err != nil {
-				return err
-			}
-			ctx := cmd.Context()
-			d, err := a.chooseDevice(ctx, "set", args)
-			if stop, err := a.cancelled(err); stop {
-				return err
-			}
-			route := ""
-			if len(args) == 2 {
-				route = args[1]
-			} else {
-				routes := []string{setup.RouteProxy, setup.RouteDirect}
-				initial := 1
-				if d.Route == setup.RouteDirect {
-					initial = 0
-				}
-				k, err := a.prompt.Choose(ctx, "How should "+deviceLabel(*d)+" go out?", []string{
-					"proxy   follow the rules (default)", "direct  everything direct, no proxies"}, initial)
-				if stop, err := a.cancelled(err); stop {
-					return err
-				}
-				route = routes[k]
-			}
-			return a.editDevice(ctx, d, setup.DeviceEdit{Route: &route}, "Publish the configuration with this device's route?",
-				func(d setup.Device) string {
-					if route == setup.RouteDirect {
-						return fmt.Sprintf("%s now goes direct for everything.\n"+
-							"The rule matches %s: reserve this address for the device on your router (DHCP reservation)\n"+
-							"so it keeps it.", deviceLabel(d), d.IP)
-					}
-					return fmt.Sprintf("%s follows the rules again.", deviceLabel(d))
-				})
-		},
-	}
-}
-
 func (a *app) newDevicesNameCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "name [device] [name]",
@@ -264,7 +210,7 @@ func (a *app) newDevicesNameCommand() *cobra.Command {
 				return usageErrorf("devices name needs the device and the name")
 			}
 			ctx := cmd.Context()
-			d, err := a.chooseDevice(ctx, "name", args)
+			d, err := a.chooseDevice(ctx, "devices name", args)
 			if stop, err := a.cancelled(err); stop {
 				return err
 			}
@@ -300,7 +246,7 @@ func (a *app) newDevicesForgetCommand() *cobra.Command {
 		Args:  usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			d, err := a.chooseDevice(ctx, "forget", args)
+			d, err := a.chooseDevice(ctx, "devices forget", args)
 			if stop, err := a.cancelled(err); stop {
 				return err
 			}

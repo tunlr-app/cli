@@ -184,6 +184,7 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.newPanelCommand(),
 		a.newProxyCommand(),
 		a.newDevicesCommand(),
+		a.newFilterCommand(),
 		a.newDoctorCommand(),
 		a.newStartCommand(),
 		a.newStopCommand(),

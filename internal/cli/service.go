@@ -595,9 +595,12 @@ func (a *app) printStatus(s *setup.Status) {
 	if s.Devices != nil {
 		fmt.Fprintf(w, "LAN devices:   %s (list them: tunlr devices)\n", a.describeDevices(s.Devices))
 	}
+	if s.Filter != nil {
+		fmt.Fprintf(w, "Filters:       %s (details: tunlr filter)\n", a.describeFilter(s.Filter))
+	}
 }
 
-// describeDevices 用于 status 和菜单的设备摘要，如 "3 online, 1 idle · 1 direct"。
+// describeDevices 用于 status 和菜单的设备摘要，如 "3 online, 1 idle"。
 func (a *app) describeDevices(d *setup.DeviceSummary) string {
 	parts := []string{fmt.Sprintf("%d online", d.Online)}
 	if d.Idle > 0 {
@@ -606,9 +609,6 @@ func (a *app) describeDevices(d *setup.DeviceSummary) string {
 	s := strings.Join(parts, ", ")
 	if d.Online > 0 {
 		s = a.style.good(s)
-	}
-	if d.Direct > 0 {
-		s += a.style.dim(fmt.Sprintf(" · %d direct", d.Direct))
 	}
 	return s
 }

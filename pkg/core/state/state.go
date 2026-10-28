@@ -54,8 +54,11 @@ type State struct {
 	// ProxyLAN 是代理端口的局域网访问开关，nil 为关闭（代理端口只监听本机）。只由 proxy lan on/off 修改。
 	ProxyLAN *ProxyLAN `json:"proxy_lan,omitempty"`
 
-	// Devices 是用户起过名称或设置过走法的局域网设备。只由 tunlr devices 修改。
+	// Devices 是用户起过名称或设置过走法的局域网设备。只由 tunlr devices、tunlr filter device 修改。
 	Devices []Device `json:"devices,omitempty"`
+
+	// Filter 是全局过滤项，零值为都关闭。只由 tunlr filter 修改。
+	Filter Filter `json:"filter,omitzero"`
 
 	// Updates 记录定时更新任务（键为任务名，目前只有 geo；订阅的记在各自的 FetchedAt、LastErrorAt 中）
 	// 最近一次执行的情况，用来判断下次何时到期。只记最近一次，历次的情况在 journal 中。
@@ -134,6 +137,16 @@ func (s *State) DirectIPs() []string {
 		}
 	}
 	return ips
+}
+
+// Filter 是全局过滤项（DESIGN.md 9 第 3 条）。
+type Filter struct {
+	// QUIC 拒绝 UDP 443 的连接，让浏览器改用 TCP。
+	QUIC bool `json:"quic,omitempty"`
+	// Ports 开启时目标端口不在 PortList 中的连接直连。
+	Ports bool `json:"ports,omitempty"`
+	// PortList 是只代理的端口（如 "443"、"8000-9000"），为空时用默认的列表；关闭 Ports 时保留。
+	PortList []string `json:"port_list,omitempty"`
 }
 
 // Kernel 是一个已知可用的内核版本，二进制存放在 paths.Layout.KernelBinary(Version)。

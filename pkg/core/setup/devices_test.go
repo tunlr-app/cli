@@ -96,7 +96,7 @@ func TestDevices(t *testing.T) {
 
 	// status 的摘要。
 	s := i.deviceSummary(ctx, tunSwitch(t, i))
-	if s == nil || *s != (DeviceSummary{Online: 1, Idle: 1, Direct: 2}) {
+	if s == nil || *s != (DeviceSummary{Online: 1, Idle: 1}) {
 		t.Errorf("summary = %+v", s)
 	}
 }
