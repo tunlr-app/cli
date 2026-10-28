@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -38,9 +39,10 @@ func CheckExposure(cfg []byte) error {
 	globalAuth := nonEmptySeq(lookup(root, []string{"authentication"}))
 
 	var problems []string
-	if str("allow-lan") == "true" && !globalAuth {
-		problems = append(problems, "allow-lan is on without authentication, so anyone who can reach this server can use the proxy ports; "+
-			"add authentication (e.g. authentication: [\"user:password\"]) in a mixin, or set allow-lan: false")
+	if str("allow-lan") == "true" && !globalAuth && !privateOnly(lookup(root, []string{"lan-allowed-ips"})) {
+		problems = append(problems, "allow-lan is on without authentication and lan-allowed-ips does not limit it to private addresses, "+
+			"so anyone who can reach this server can use the proxy ports; use tunlr proxy lan on (private addresses only), "+
+			"or add authentication in a mixin")
 	}
 	if ls := lookup(root, []string{"listeners"}); ls != nil && ls.Kind == yaml.SequenceNode {
 		for _, l := range ls.Content {
@@ -85,6 +87,49 @@ func CheckExposure(cfg []byte) error {
 		return &ExposureError{Problems: problems}
 	}
 	return nil
+}
+
+// LANAllowedIPs 是代理端口对局域网开放时 lan-allowed-ips 的值：私有地址段、Tailscale 的 100.64/10 和链路本地
+// 地址。内核对回环地址同样按它检查，所以本机的 127.0.0.0/8 和 ::1 也在其中（tunlr 自己经 127.0.0.1 检测代理）。
+var LANAllowedIPs = []string{
+	"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
+	"::1/128", "fc00::/7", "fe80::/10",
+}
+
+// LANAccess 报告配置是否打开了代理端口的局域网访问（allow-lan），以及来源是否只限于私有地址段。
+func LANAccess(cfg []byte) (allowLAN, private bool, err error) {
+	doc, err := parseNode(cfg)
+	if err != nil || doc == nil {
+		return false, false, err
+	}
+	root := doc.Content[0]
+	n := lookup(root, []string{"allow-lan"})
+	return n != nil && n.Kind == yaml.ScalarNode && n.Value == "true", privateOnly(lookup(root, []string{"lan-allowed-ips"})), nil
+}
+
+// privateOnly 报告 lan-allowed-ips（n）是否只允许 LANAllowedIPs 范围内的来源。不写时内核允许所有来源。
+func privateOnly(n *yaml.Node) bool {
+	if !nonEmptySeq(n) {
+		return false
+	}
+	for _, item := range n.Content {
+		p, err := netip.ParsePrefix(item.Value)
+		if err != nil || item.Kind != yaml.ScalarNode {
+			return false
+		}
+		within := false
+		for _, s := range LANAllowedIPs {
+			q := netip.MustParsePrefix(s)
+			if q.Bits() <= p.Bits() && q.Contains(p.Masked().Addr()) {
+				within = true
+				break
+			}
+		}
+		if !within {
+			return false
+		}
+	}
+	return true
 }
 
 func nonEmptySeq(n *yaml.Node) bool {

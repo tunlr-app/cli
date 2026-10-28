@@ -667,7 +667,7 @@ func TestManagedConflicts(t *testing.T) {
 	}
 
 	ms, err := p.Managed()
-	if err != nil || len(ms) != 5 || ms[4].Name != ManagedMirror || !ms[4].Default || ms[1].Keys()[0] != "tun.enable" {
+	if err != nil || len(ms) != 6 || ms[5].Name != ManagedMirror || !ms[5].Default || ms[1].Keys()[0] != "tun.enable" {
 		t.Errorf("Managed = %+v, %v", ms, err)
 	}
 }
@@ -689,7 +689,7 @@ func TestExposureRejected(t *testing.T) {
 	useSubscription(t, p.Layout, "main", subscriptionV1)
 	mustApply(t, p, mustPlan(t, p))
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "allow-lan: true\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "listeners:\n  - {name: open, type: mixed, port: 7999}\n")
 	var ee *config.ExposureError
 	if _, err := p.Plan(ctx); !errors.As(err, &ee) || !errors.Is(err, core.ErrCheckFailed) {
 		t.Fatalf("plan: %v", err)
@@ -698,8 +698,34 @@ func TestExposureRejected(t *testing.T) {
 		t.Fatalf("rollback: %v", err)
 	}
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "allow-lan: true\nauthentication: [\"u:p\"]\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "listeners:\n  - {name: open, type: mixed, port: 7999}\nauthentication: [\"u:p\"]\n")
 	mustPlan(t, p)
+}
+
+// TestProxyLAN 验证代理端口的局域网访问开关写入 allow-lan 和只含私有地址段的 lan-allowed-ips，通过端口
+// 安全检查；关闭时只有 allow-lan 变为 false（来源列表留在模板的位置上）。mixin 不能写这两个键。
+func TestProxyLAN(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	ctx := context.Background()
+	plan, err := p.PlanProxyLAN(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := string(plan.Config)
+	if !strings.Contains(cfg, "\nallow-lan: true\n\n# ") || !strings.Contains(cfg, "\nlan-allowed-ips:\n  - 127.0.0.0/8\n  - 10.0.0.0/8\n") {
+		t.Errorf("on:\n%s", cfg)
+	}
+	if allow, private, err := config.LANAccess(plan.Config); !allow || !private || err != nil {
+		t.Errorf("LANAccess = %v %v %v", allow, private, err)
+	}
+	if off := string(mustPlan(t, p).Config); !strings.Contains(off, "\nallow-lan: false\n\n# ") || !strings.Contains(off, "\nlan-allowed-ips:\n  - 127.0.0.0/8\n  - 10.0.0.0/8\n") {
+		t.Errorf("off:\n%s", off)
+	}
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "lan-allowed-ips: [0.0.0.0/0]\n")
+	var me *config.MixinError
+	if _, err := p.PlanProxyLAN(ctx, true); !errors.As(err, &me) || !strings.Contains(err.Error(), "tunlr proxy lan on/off") {
+		t.Errorf("mixin: %v", err)
+	}
 }
 
 func TestMirrorDefaults(t *testing.T) {

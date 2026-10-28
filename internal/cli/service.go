@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/settings"
@@ -32,8 +33,41 @@ func (a *app) kernels() (*mihomo.Manager, error) {
 	}, nil
 }
 
+// lanUsage 是 init 之后要开启的局域网功能（init 询问的“这台服务器的用途”，或 --lan-proxy 等参数）。
+type lanUsage struct {
+	// proxy 让局域网设备使用代理端口（tunlr proxy lan on）。
+	proxy bool
+	// gateway 不为空时开启网关模式（tunlr gateway on），"auto" 表示默认路由所在的网卡。网关模式也开启 proxy。
+	gateway string
+	// panel 让局域网设备打开面板（tunlr panel lan on）。
+	panel bool
+}
+
+func (u lanUsage) any() bool { return u.proxy || u.gateway != "" || u.panel }
+
+// steps 是确认问题中列出的、init 之后要做的步骤。
+func (u lanUsage) steps() []string {
+	var steps []string
+	if u.gateway != "" {
+		iface := u.gateway
+		if iface == "auto" {
+			iface = "the interface with the IPv4 default route"
+		}
+		steps = append(steps, "Turn the transparent proxy (TUN) on, checked with automatic rollback",
+			"Turn gateway mode on, LAN interface "+iface)
+	}
+	if u.proxy {
+		steps = append(steps, "Let LAN devices use the proxy port (private addresses only)")
+	}
+	if u.panel {
+		steps = append(steps, "Let LAN devices open the panel (mihomo restarts)")
+	}
+	return steps
+}
+
 func (a *app) newInitCommand() *cobra.Command {
 	var mirror, sub, version string
+	var usage lanUsage
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Install or repair tunlr: kernel, systemd service and scheduled updates",
@@ -41,10 +75,19 @@ func (a *app) newInitCommand() *cobra.Command {
 			"mihomo, install the latest mihomo release (checksum verified), install and enable\n" +
 			"tunlr-core.service and tunlr-update.timer (see: tunlr update show), add a subscription,\n" +
 			"publish the configuration and start mihomo. Running it again repairs the installation.\n\n" +
-			"Interactively it asks for a GitHub mirror and a subscription (both optional);\n" +
-			"otherwise pass --mirror and --sub <name>=<url>.",
+			"Interactively it asks for a GitHub mirror and a subscription (both optional), and what\n" +
+			"this server is for: only itself, a proxy for LAN devices (tunlr proxy lan on), or their\n" +
+			"gateway (tunlr gateway on); otherwise pass --mirror, --sub <name>=<url>, --lan-proxy,\n" +
+			"--gateway and --lan-panel.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if usage.gateway != "" {
+				usage.proxy = true
+			}
+			if usage.any() && a.opts.JSON {
+				return usageErrorf("--lan-proxy, --gateway and --lan-panel cannot be combined with --json; run init, then tunlr proxy lan on, tunlr gateway on or tunlr panel lan on with --json")
+			}
 			opts := setup.InitOptions{KernelVersion: version}
 			if cmd.Flags().Changed("mirror") {
 				opts.Mirror = &mirror
@@ -63,60 +106,209 @@ func (a *app) newInitCommand() *cobra.Command {
 				}
 				opts.SubName, opts.SubURL = name, url
 			}
-			if err := a.installer().CheckSupport(cmd.Context()); err != nil {
+			inst := a.installer()
+			if err := inst.CheckSupport(ctx); err != nil {
 				return err
 			}
 			if err := a.requireYes("init"); err != nil {
+				return err
+			}
+			// 已经开启过透明代理、网关或代理端口局域网访问的不再问用途，也不再提示。
+			configured, err := inst.LANConfigured()
+			if err != nil {
 				return err
 			}
 			if a.interactive() {
 				if _, err := a.cancelled(a.askInit(cmd, &opts)); err != nil || a.aborted {
 					return err
 				}
+				if !usage.any() && !configured {
+					if _, err := a.cancelled(a.askLANUsage(ctx, &opts, &usage)); err != nil || a.aborted {
+						return err
+					}
+				}
 			}
 			if !a.opts.Yes {
-				steps, err := a.installer().InitSteps(cmd.Context(), opts)
+				steps, err := inst.InitSteps(ctx, opts)
 				if err != nil {
 					return err
 				}
-				if ok, err := a.ask(cmd.Context(), "Set up tunlr now?", bullets(steps), "Nothing changed."); !ok {
+				steps = append(steps, usage.steps()...)
+				if ok, err := a.ask(ctx, "Set up tunlr now?", bullets(steps), "Nothing changed."); !ok {
 					return err
 				}
 			}
 			var done func(error)
 			opts.Progress, done = a.stepper()
-			res, err := a.installer().Init(cmd.Context(), opts)
+			res, err := inst.Init(ctx, opts)
 			done(err)
 			if err != nil {
 				return err
 			}
-			return a.render(res, func() error {
-				w := a.stdout
-				fmt.Fprintln(w)
-				if res.Kernel != nil {
-					fmt.Fprintf(w, "Installed mihomo %s (%s, checksum verified).\n", res.Kernel.To, res.Kernel.Asset)
-				}
-				if res.SubscriptionAdded != "" {
-					fmt.Fprintf(w, "Added the subscription %q.\n", res.SubscriptionAdded)
-				}
-				if res.Revision > 0 {
-					fmt.Fprintf(w, "Published revision %d.\n", res.Revision)
-				}
-				if res.Started != nil {
-					fmt.Fprintf(w, "mihomo %s is running (pid %d) and passed the health check.\n", res.Started.Version, res.Started.MainPID)
-					fmt.Fprintln(w, "Open the panel (zashboard): tunlr panel shows the SSH tunnel and the link.")
-				} else {
-					fmt.Fprintf(w, "mihomo is not started: %s.\n", res.NotStarted)
-				}
-				return nil
-			})
+			hint := !usage.any() && !configured && res.Started != nil
+			if err := a.renderInit(res, hint); err != nil || !usage.any() {
+				return err
+			}
+			return a.initLAN(ctx, res, usage)
 		},
 	}
 	f := cmd.Flags()
 	f.StringVar(&mirror, "mirror", "", `GitHub download mirror prefix, e.g. "https://gh-proxy.com/" ("" for direct)`)
 	f.StringVar(&sub, "sub", "", "add a subscription, as <name>=<url>")
 	f.StringVar(&version, "version", "", "mihomo version to install when none is installed (default: latest release)")
+	f.BoolVar(&usage.proxy, "lan-proxy", false, "then let LAN devices use the proxy port (tunlr proxy lan on)")
+	f.StringVar(&usage.gateway, "gateway", "", `then make this server the LAN gateway on this interface, or "auto" (tunlr gateway on; implies --lan-proxy)`)
+	f.BoolVar(&usage.panel, "lan-panel", false, "then let LAN devices open the panel (tunlr panel lan on)")
 	return cmd
+}
+
+// initLAN 在 init 成功之后开启选定的局域网功能，依次走 gateway on、proxy lan on、panel lan on 的流程。
+// 这些步骤已经在 init 的确认中列出，不再逐一确认。失败时说明 tunlr 已经装好，保留原错误的退出码。
+func (a *app) initLAN(ctx context.Context, res *setup.InitResult, u lanUsage) error {
+	if res.Started == nil {
+		return fmt.Errorf("%w: tunlr is installed, but mihomo is not running, so the LAN setup is skipped; "+
+			"once it runs, use tunlr proxy lan on, tunlr gateway on or tunlr panel lan on", core.ErrCheckFailed)
+	}
+	a.opts.Yes = true
+	step := func(title, what string, run func() error) error {
+		fmt.Fprintf(a.stdout, "\n%s\n\n", a.style.title(title))
+		if err := run(); err != nil {
+			return fmt.Errorf("tunlr is installed, but %s failed: %w", what, err)
+		}
+		return nil
+	}
+	if u.gateway != "" {
+		iface := u.gateway
+		if iface == "auto" {
+			iface = ""
+		}
+		if err := step("Gateway mode", "turning gateway mode on", func() error { return a.gatewayOn(ctx, iface) }); err != nil {
+			return err
+		}
+	}
+	if u.proxy {
+		if err := step("Proxy port", "opening the proxy port to the LAN", func() error { return a.proxyLAN(ctx, true) }); err != nil {
+			return err
+		}
+	}
+	if u.panel {
+		return step("Panel", "opening the panel to the LAN", func() error { return a.panelLANOn(ctx) })
+	}
+	return nil
+}
+
+// askLANUsage 询问这台服务器的用途。没有订阅（也没有在 askInit 中添加）时不问：内核不会启动，
+// 开启不了这些功能。
+func (a *app) askLANUsage(ctx context.Context, opts *setup.InitOptions, u *lanUsage) error {
+	if opts.SubName == "" {
+		entries, err := a.subscriptions().List()
+		if err != nil || len(entries) == 0 {
+			return err
+		}
+	}
+	cands, err := a.installer().LANInterfaces(ctx)
+	if err != nil {
+		return err
+	}
+	return a.askUsage(ctx, cands, u)
+}
+
+// askUsage 询问这台服务器的用途，cands 是局域网网卡的候选（见 setup.LANInterfaces）。选择网关且有多个
+// 候选时再选网卡，网卡有公网地址时再确认一次；选择局域网代理或网关时再问是否让局域网设备打开面板。
+func (a *app) askUsage(ctx context.Context, cands []setup.LANInterface, u *lanUsage) error {
+	options := []string{
+		"Only this server (e.g. a VPS; LAN devices do not use it)",
+		"Proxy for LAN devices: they set this server as their HTTP/SOCKS5 proxy",
+		"Gateway for LAN devices: they set this server as their router and DNS",
+	}
+	for {
+		choice, err := a.prompt.Choose(ctx, "What is this server for?", options, 0)
+		if err != nil || choice == 0 {
+			return err
+		}
+		var iface *setup.LANInterface
+		switch {
+		case len(cands) == 0 && choice == 2:
+			fmt.Fprintln(a.stdout, "No interface is up with an IPv4 address, so gateway mode is not possible.")
+			continue
+		case len(cands) == 0:
+		case choice == 2 && len(cands) > 1:
+			rows := make([][]string, len(cands))
+			for i, c := range cands {
+				note := ""
+				switch {
+				case len(c.PublicAddresses) > 0:
+					note = "public address"
+				case c.Default:
+					note = "default route"
+				}
+				rows[i] = []string{c.Name, strings.Join(c.Addresses, ", "), note}
+			}
+			i, err := a.prompt.Choose(ctx, "Which interface is on the LAN?", columns(rows), 0)
+			if err != nil {
+				return err
+			}
+			iface = &cands[i]
+		default:
+			iface = &cands[0]
+		}
+		if iface != nil && len(iface.PublicAddresses) > 0 {
+			ok, err := a.prompt.Confirm(ctx, fmt.Sprintf("%s has the public address %s. Use it for the LAN anyway?",
+				iface.Name, strings.Join(iface.PublicAddresses, ", ")),
+				"This server is probably reachable from the internet rather than on a LAN you use. Only private\n"+
+					"addresses are let in, but a server that is not on your LAN should be \"only this server\".")
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+		}
+		u.proxy = true
+		if choice == 2 {
+			u.gateway = "auto"
+			if iface != nil {
+				u.gateway = iface.Name
+			}
+		}
+		panel, err := a.prompt.Choose(ctx, "Let LAN devices open the panel (zashboard) too?", []string{
+			"Yes: phones and laptops at home open it directly (the API secret travels unencrypted)",
+			"No: open it through an SSH tunnel (tunlr panel shows how)",
+		}, 0)
+		if err != nil {
+			return err
+		}
+		u.panel = panel == 0
+		return nil
+	}
+}
+
+// renderInit 输出 init 的结果。hint 为 true 时提示以后怎样让本机全部流量或局域网设备经过代理。
+func (a *app) renderInit(res *setup.InitResult, hint bool) error {
+	return a.render(res, func() error {
+		w := a.stdout
+		fmt.Fprintln(w)
+		if res.Kernel != nil {
+			fmt.Fprintf(w, "Installed mihomo %s (%s, checksum verified).\n", res.Kernel.To, res.Kernel.Asset)
+		}
+		if res.SubscriptionAdded != "" {
+			fmt.Fprintf(w, "Added the subscription %q.\n", res.SubscriptionAdded)
+		}
+		if res.Revision > 0 {
+			fmt.Fprintf(w, "Published revision %d.\n", res.Revision)
+		}
+		if res.Started != nil {
+			fmt.Fprintf(w, "mihomo %s is running (pid %d) and passed the health check.\n", res.Started.Version, res.Started.MainPID)
+			fmt.Fprintln(w, "Open the panel (zashboard): tunlr panel shows the SSH tunnel and the link.")
+		} else {
+			fmt.Fprintf(w, "mihomo is not started: %s.\n", res.NotStarted)
+		}
+		if hint {
+			fmt.Fprintln(w, "Only this server uses the proxy port (tunlr proxy). tunlr tun on sends all its traffic\n"+
+				"through mihomo; tunlr proxy lan on or tunlr gateway on serves devices on the LAN.")
+		}
+		return nil
+	})
 }
 
 // askInit 在交互模式下询问参数中没有给出的 GitHub 镜像和订阅。
@@ -370,6 +562,7 @@ func (a *app) printStatus(s *setup.Status) {
 	}
 	if s.Installed {
 		fmt.Fprintf(w, "Panel:         %s (open it with: tunlr panel)\n", a.describePanelLAN(s.PanelLAN))
+		fmt.Fprintf(w, "Proxy port:    %s (details: tunlr proxy)\n", a.describeProxyLAN(s.ProxyLAN))
 	}
 }
 

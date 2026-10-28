@@ -19,6 +19,10 @@ stderr 'run: tunlr init'
 # 参数用法错误：退出码 2
 exitcode 2 tunlr init --sub nope
 stderr '--sub must be <name>=<url>'
+exitcode 2 tunlr init --json --yes --gateway auto
+stdout 'cannot be combined with --json'
+exitcode 2 tunlr init --json --yes --lan-panel
+stdout 'cannot be combined with --json'
 exitcode 2 tunlr upgrade core --rollback --version v1.19.33
 stderr 'cannot be used together'
 exitcode 2 tunlr upgrade core --version 1.19

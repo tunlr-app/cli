@@ -92,7 +92,7 @@ rm root/etc/tunlr/mixin.d/50-rules.yaml root/etc/tunlr/mixin.d/10-level.yaml roo
 
 # plan 列出 tunlr 管理的 mixin，不显示 secret 的值
 exec tunlr plan
-stdout '^Managed by tunlr: tunlr:core, tunlr:tun, tunlr:geo, tunlr:panel \(mixins cannot change their keys; see: tunlr mixin list\)$'
+stdout '^Managed by tunlr: tunlr:core, tunlr:tun, tunlr:geo, tunlr:panel, tunlr:proxy \(mixins cannot change their keys; see: tunlr mixin list\)$'
 ! stdout 'geox-url'
 ! stdout 'Defaults from'
 exec tunlr mixin list

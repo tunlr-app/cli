@@ -202,13 +202,13 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   2. 订阅：**只取路由部分**，即 `proxies`、`proxy-groups`、`rules`、`proxy-providers`、`rule-providers`、`sub-rules`，其余键一律丢弃并在 `plan` 中列出。订阅是不可信输入，不能让机场配置打开端口、改监听地址或设置 API。
   3. 提供默认值的受管 mixin（`tunlr:mirror`），见下文“受管 mixin”。
   4. 用户的 mixin，见下文。
-  5. 独占键的受管 mixin（`tunlr:core`、`tunlr:tun`、`tunlr:geo`、`tunlr:panel`），最后写入。
+  5. 独占键的受管 mixin（`tunlr:core`、`tunlr:tun`、`tunlr:geo`、`tunlr:panel`、`tunlr:proxy`），最后写入。
 - **受管 mixin：mixin 是统一的底座**。mihomo 由配置驱动，tunlr 的交互功能（TUN 开关、面板的局域网访问、geo 数据的更新方式等）说到底都是对配置的修改。每个功能的开关存在状态文件或工具设置中，它在配置中写成什么由一份受管 mixin 表达，与用户的 mixin 走同一套合并引擎（`pkg/core/config/managed.go`）。原来分开的“工具生成的调整”和“强制项”两条路径合并为它。
   - 两种受管 mixin：
 
     | 种类 | 成员 | 应用时机 | 用户的 mixin 动了它的键 |
     |---|---|---|---|
-    | 独占 | `tunlr:core`（`external-controller-unix`，工具经它访问 API）<br>`tunlr:tun`（`tun.enable` 等，见 8.3）<br>`tunlr:geo`（`geo-auto-update`、`geo-update-interval`，见第 7 节）<br>`tunlr:panel`（`external-controller`、`secret`） | 用户的 mixin 之后 | 报错，不发布 |
+    | 独占 | `tunlr:core`（`external-controller-unix`，工具经它访问 API）<br>`tunlr:tun`（`tun.enable` 等，见 8.3）<br>`tunlr:geo`（`geo-auto-update`、`geo-update-interval`，见第 7 节）<br>`tunlr:panel`（`external-controller`、`secret`）<br>`tunlr:proxy`（`allow-lan`、`lan-allowed-ips`，见第 10 节“代理端口的局域网访问”） | 用户的 mixin 之后 | 报错，不发布 |
     | 默认值 | `tunlr:mirror`（`geox-url`；配置了 `github-mirror` 时另有 `external-ui-url` 和让镜像直连的规则） | 用户的 mixin 之前 | 允许，`plan` 中记为“覆盖 tunlr:mirror” |
 
   - 冲突：用户的 mixin 写了独占的键（即使值相同）、用 `null` 或 `delete-` 删除它，或把它的上级整个替换掉。报告为 mixin 错误（`*config.MixinError`，退出码 3），指出文件、行和改用的命令，例如 `mixin 20-x.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); remove it from the mixin`。同一映射中的其他键照常可改（如 `tun.stack`、`tun.route-exclude-address`）。
@@ -242,7 +242,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 允许但警告：数字前缀位数不同导致的意外顺序；用不带前缀的 `rules`/`proxies`/`proxy-groups` 整体替换订阅的内容；`patch-`、`delete-` 没有匹配的项。
   - 报错（退出码 3，不发布）：YAML 解析失败；动了受管的键；前缀操作的值不是列表，或目标的类型不对（如 `prepend-dns`）；`patch-` 的项没有 `name`；正则无效；端口安全检查不通过（见下）；以及 `mihomo -t` 不通过。
   - **端口安全**（MVP 5）：合成的结果会让其他主机无需凭据就能使用代理或 DNS 时不发布，避免公网服务器成为开放代理、开放 DNS 解析器。由 `pkg/core/config.CheckExposure` 检查：
-    - `allow-lan: true` 而 `authentication` 为空：代理端口（`mixed-port`、`port`、`socks-port` 等）对外开放且没有认证。
+    - `allow-lan: true` 而 `authentication` 为空，且 `lan-allowed-ips` 不是只含私有地址段（每一项都在 `config.LANAllowedIPs` 的某个网段之内；没写这个键时内核放行所有来源）：代理端口（`mixed-port`、`port`、`socks-port` 等）对外开放且没有认证。`tunlr proxy lan on` 写的就是只含私有地址段的列表，所以通过。
     - `listeners` 中 `mixed`、`http`、`socks` 类型的项监听在非回环地址（不写 `listen` 即为 `0.0.0.0`），且没有认证：写了 `users: []`，或没写 `users`（这时沿用全局的 `authentication`）而全局也为空。
     - `dns.enable` 时 `dns.listen` 不在回环地址：在公网上会被用于 DNS 反射放大。局域网设备经网关模式（8.10）使用时由 TUN 劫持，不需要它。
     - `external-controller` 有值而 `secret` 为空（`secret` 归 `tunlr:panel`，mixin 改不了，只会出现在工具之外改动的配置中）。
@@ -625,6 +625,8 @@ tunlr upgrade core        升级内核（--rollback 回退）
 
 tunlr panel               面板的 SSH 隧道命令与链接（--reset-secret 换新的 API secret）
 tunlr panel lan on | off  允许局域网设备直接打开面板（默认关闭）
+tunlr proxy               局域网设备要填的代理地址
+tunlr proxy lan on | off  允许局域网设备使用代理端口（默认关闭，只放行私有地址）
 tunlr config              查看和修改工具设置（交互式，或 config set <key> <value>）
 tunlr backup | restore    备份与还原
 tunlr shell-init          输出 shell 函数
@@ -638,6 +640,11 @@ tunlr version
 服务与安装相关命令的行为：
 
 - `init`：可重复执行，再次执行即修复。依次：检查环境（root、systemd、架构）→ 把自身复制到 `/usr/local/bin/tunlr` → 创建用户 `tunlr` → 建目录并设置属主与权限 → 没有内核时安装最新版 → 写入 unit 和 timer、`daemon-reload`、启用 `tunlr-core.service` 与 `tunlr-update.timer` → 给了订阅就添加 → 有启用的订阅时发布配置并启动内核、做健康检查。交互模式下询问 GitHub 镜像和订阅地址（都可以留空）；非交互模式由 `--mirror`、`--sub <名称>=<地址>` 给出，没给就跳过。
+  - 之后询问这台服务器的用途（见下文“家庭网络中的用法”）：只给本机用（默认，如 VPS）、给局域网设备当代理、给局域网设备当网关。后两项再问是否也让局域网设备打开面板（默认是）；选网关且有多块候选网卡（已启用、有 IPv4 地址，排除回环、TUN、docker/veth 等虚拟网卡，默认路由所在的排最前）时选择网卡；所选网卡有公网地址时再确认一次，回答否回到用途的问题。
+  - 已经开启过透明代理、网关或代理端口局域网访问时不问（再次 init 是修复，不改用途）；没有订阅时也不问（内核不会启动）。
+  - 非交互模式由 `--lan-proxy`、`--gateway <网卡|auto>`（同时开启 `--lan-proxy`）、`--lan-panel` 给出。它们与 `--json` 同用时报用法错误：后续步骤各有输出，合不成一份 JSON，分别执行 `proxy lan on`、`gateway on`、`panel lan on` 即可。
+  - 这些步骤列在“Set up tunlr now?”的确认中，init 成功后依次走 `gateway on`（TUN 关着时先开 TUN）、`proxy lan on`、`panel lan on` 的流程，不再逐一确认（公网地址的确认已经在提问时做过）。某一步失败时报“tunlr is installed, but … failed”，退出码沿用那一步的（如 4 为已回滚），已经装好的部分不撤销。
+  - 选“只给本机用”时，结果的最后提示 `tunlr tun on`、`tunlr proxy lan on`、`tunlr gateway on`。
 - `start`、`stop`、`restart`：执行 `systemctl`，`start`、`restart` 之后做健康检查。`logs` 执行 `journalctl -u tunlr-core.service`，透传 `-f`、`-n`。
 - `status`：服务状态、运行中的内核版本、已知可用版本、启用的订阅、最近一次发布、下次定时更新的时间。
 - `uninstall`：停止并禁用、删除 unit，删除 `bin/`、`core/`、`kernels/` 和用户 `tunlr`；保留 `/etc/tunlr`、订阅、历史、状态文件和 `/usr/local/bin/tunlr`（之后可以直接 `tunlr init` 恢复），`--purge` 才一并删除。需要确认（`--yes`）。
@@ -647,7 +654,7 @@ tunlr version
 
 | 命令 | 问题 | 说明 |
 |---|---|---|
-| `apply`、`rollback`、`tun on/off`、`panel lan on/off` | 是否发布 | diff 之后确认，下方给出节点变化 |
+| `apply`、`rollback`、`tun on/off`、`panel lan on/off`、`proxy lan on/off` | 是否发布 | diff 之后确认，下方给出节点变化 |
 | `init` | Set up tunlr now? | 按现状列出将做的事（复制自身、建用户、装哪个内核、启用 unit、加订阅、发布、启动还是重启内核） |
 | `stop` | Stop mihomo? | 代理停止；TUN 开着时本机流量改为直连 |
 | `restart` | Restart mihomo? | 连接会断开几秒 |
@@ -728,6 +735,23 @@ tunlr version
   - 这张表只能多挡一层，不能放行：机器上其他防火墙挡了这个端口时，它照样打不开，`lan on` 完成后提示检查已有的防火墙。
 - 默认路由网卡的 IPv4 地址不是私有地址时（服务器很可能直接在公网上），`lan on` 先给出警告，再单独确认一次（`--yes` 时两次都视为同意）。nft 表仍然只放行私有地址段。
 - 回滚、自动关闭透明代理改写独占的键时，`external-controller` 和 `secret` 也按当前开关写入：回滚到开启前的修订，面板照样对局域网开放，与 nft 表一致。
+
+**家庭网络中的用法**：家里一台 Linux 服务器运行代理，其他设备有两种用法，`init` 的用途问题对应这两种（以及只给本机用）：
+
+| 用法 | 设备上的设置 | 工具做的事 | 覆盖范围 |
+|---|---|---|---|
+| 代理 | Wi-Fi 设置中把 HTTP/SOCKS5 代理设为 `服务器:7890` | `proxy lan on` | 遵守系统代理的应用 |
+| 网关 | 网关和 DNS 设为服务器（手动，或在路由器的 DHCP 中） | `tun on` + `gateway on`（8.10），并 `proxy lan on` | 设备的全部流量；同时也能当代理用 |
+
+网关模式下也开启代理端口：有的设备不方便改网关（或只想让个别应用走代理），两种用法可以并存。
+
+**代理端口的局域网访问（`tunlr proxy lan on | off`）**：
+
+- 开关存在状态文件中（`proxy_lan`），由独占的受管 mixin `tunlr:proxy` 写成配置：`allow-lan` 按开关写 `true` 或 `false`；`lan-allowed-ips` 总是写成私有地址段（`config.LANAllowedIPs`：`127.0.0.0/8`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`100.64.0.0/10`、`169.254.0.0/16`、`::1/128`、`fc00::/7`、`fe80::/10`）。模板中也写了这份列表，紧跟 `allow-lan`，让它在配置中的位置固定、开关的 diff 只有一行（不放在模板里时合并会把它追加到配置末尾的规则之后）。mixin 设置这两个键时合成拒绝，提示改用 `tunlr proxy lan on/off`；要密码时在 mixin 中写 `authentication`。
+- 来源由内核限制，不需要 nft 表（与面板不同：API 不能限制来源）。在 tunlr-dev（v1.19.33）上实测：没有 `lan-allowed-ips` 时放行所有来源；只写私有地址段时局域网来源可用，临时加在 lo 上的 `198.51.100.77` 被拒绝。回环地址也受这个列表限制，所以必须包含 `127.0.0.0/8` 和 `::1/128`。`::1/128` 在 YAML 流式列表中要加引号，所以写成块列表。
+- `allow-lan` 热重载即生效（内核重新绑定 `*:7890`），不重启内核。经流水线发布：diff、确认、`mihomo -t`，失败时回滚，开关恢复原状。
+- 默认路由网卡的 IPv4 地址是公网地址时，`lan on` 先警告，再单独确认一次。
+- `tunlr proxy` 显示开关和局域网设备要填的地址（默认路由网卡的 IPv4 地址加 `mixed-port`）；`status`、`doctor`（检查生效配置与开关是否一致）、主菜单的分类“Proxy port”中也有。
 
 设计思路：高频的服务控制放在顶层，与 `systemctl` 的直觉一致；只保留 `sub`、`tun`、`env` 三组子命令（`sub use` 的说法与 `kubectl config use-context`、`nvm use` 一致）；合并含义重叠的命令。检验标准：没看过文档的人能猜对大部分常用操作。
 

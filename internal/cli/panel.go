@@ -107,7 +107,7 @@ func (a *app) printPanelLAN(p *setup.Panel) {
 		fmt.Fprintf(w, "%s the nftables table inet %s is missing, so the panel accepts connections from any\n"+
 			"address; tunlr panel lan on restores it.\n\n", a.style.bad("Warning:"), netfilter.PanelTable)
 	case !p.LAN:
-		fmt.Fprintf(w, "%s the API listens on %s, reachable from the network (a mixin set it);\n"+
+		fmt.Fprintf(w, "%s the API listens on %s, reachable from the network (edited outside tunlr?);\n"+
 			"anyone who can reach it and knows the secret controls mihomo.\n\n", a.style.warn("Warning:"), p.Controller)
 	}
 	fmt.Fprintln(w, "From devices on the LAN, open:")
@@ -197,86 +197,90 @@ func (a *app) newPanelLANOnCommand() *cobra.Command {
 			"Running it again restores a missing nftables table.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
 			if err := a.requireConfirmation("panel lan on"); err != nil {
 				return err
 			}
-			inst := a.installer()
-			pre, err := inst.PanelLANPreflight(ctx)
-			if err != nil {
-				return err
-			}
-			plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().PlanPanelLAN(ctx, true) })
-			if err != nil {
-				return err
-			}
-			v := panelLANView{Plan: newPlanView(plan, false), Preflight: pre}
-			if pre.On && !plan.Changed() {
-				// 配置已经是开启的样子：只补上可能缺少的表，不需要确认。
-				if !a.opts.DryRun {
-					if v.Result, err = inst.PanelLANOn(ctx, plan); err != nil {
-						return err
-					}
-				}
-				return a.render(v, func() error {
-					_, err := fmt.Fprintln(a.stdout, "LAN access to the panel is already on (tunlr panel shows the links).")
-					return err
-				})
-			}
-			if !a.opts.JSON {
-				a.printPlan(v.Plan)
-			}
-			if err := checkExit(plan, false); err != nil || a.opts.DryRun {
-				if a.opts.JSON {
-					if rerr := a.render(v, nil); rerr != nil {
-						return rerr
-					}
-				} else if err != nil {
-					fmt.Fprintln(a.stdout, "\nLAN access not turned on.")
-				} else {
-					fmt.Fprintln(a.stdout, "\nDry run: nothing changed.")
-				}
-				return err
-			}
-			if !a.opts.JSON {
-				fmt.Fprintf(a.stdout, "\nDevices with a private address can open the panel at port %d; others are dropped by the\n"+
-					"nftables table inet %s. The API secret travels unencrypted over the LAN.\n", pipeline.APIPort, netfilter.PanelTable)
-			}
-			if len(pre.PublicAddresses) > 0 {
-				if !a.opts.JSON {
-					fmt.Fprintf(a.stdout, "\n%s %s has the public address %s: this server is probably reachable from the\n"+
-						"internet. Only private addresses can reach the panel, but if the server is not on a LAN you\n"+
-						"use, an SSH tunnel (tunlr panel) is the safer way.\n",
-						a.style.warn("Warning:"), pre.Interface, strings.Join(pre.PublicAddresses, ", "))
-				}
-				if ok, err := a.ask(ctx, "This server has a public address. Open the panel to the LAN anyway?", "", "LAN access not turned on."); !ok {
-					return err
-				}
-			}
-			if ok, err := a.ask(ctx, "Let devices on the LAN open the panel?", "mihomo restarts", "LAN access not turned on."); !ok {
-				return err
-			}
-			err = a.spin("Publishing the configuration", func() (err error) {
-				v.Result, err = inst.PanelLANOn(ctx, plan)
-				return err
-			})
-			if errors.Is(err, core.ErrRolledBack) {
-				return fmt.Errorf("%w; the previous configuration is back in place", err)
-			}
-			if err != nil {
-				return err
-			}
-			v.Applied = true
-			return a.render(v, func() error {
-				fmt.Fprintf(a.stdout, "\n%s\n", a.style.good("LAN access to the panel is on."))
-				if p, err := a.panel(ctx); err == nil {
-					a.printPanelLAN(p)
-				}
-				fmt.Fprintln(a.stdout, "If a device cannot open it, check other firewalls on this server (they can still block the port).")
-				return nil
-			})
+			return a.panelLANOn(cmd.Context())
 		},
 	}
+}
+
+// panelLANOn 是 panel lan on 的流程：前置检查、预览、确认、发布。init 选择让局域网设备打开面板时也走它。
+func (a *app) panelLANOn(ctx context.Context) error {
+	inst := a.installer()
+	pre, err := inst.PanelLANPreflight(ctx)
+	if err != nil {
+		return err
+	}
+	plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().PlanPanelLAN(ctx, true) })
+	if err != nil {
+		return err
+	}
+	v := panelLANView{Plan: newPlanView(plan, false), Preflight: pre}
+	if pre.On && !plan.Changed() {
+		// 配置已经是开启的样子：只补上可能缺少的表，不需要确认。
+		if !a.opts.DryRun {
+			if v.Result, err = inst.PanelLANOn(ctx, plan); err != nil {
+				return err
+			}
+		}
+		return a.render(v, func() error {
+			_, err := fmt.Fprintln(a.stdout, "LAN access to the panel is already on (tunlr panel shows the links).")
+			return err
+		})
+	}
+	if !a.opts.JSON {
+		a.printPlan(v.Plan)
+	}
+	if err := checkExit(plan, false); err != nil || a.opts.DryRun {
+		if a.opts.JSON {
+			if rerr := a.render(v, nil); rerr != nil {
+				return rerr
+			}
+		} else if err != nil {
+			fmt.Fprintln(a.stdout, "\nLAN access not turned on.")
+		} else {
+			fmt.Fprintln(a.stdout, "\nDry run: nothing changed.")
+		}
+		return err
+	}
+	if !a.opts.JSON {
+		fmt.Fprintf(a.stdout, "\nDevices with a private address can open the panel at port %d; others are dropped by the\n"+
+			"nftables table inet %s. The API secret travels unencrypted over the LAN.\n", pipeline.APIPort, netfilter.PanelTable)
+	}
+	if len(pre.PublicAddresses) > 0 {
+		if !a.opts.JSON {
+			fmt.Fprintf(a.stdout, "\n%s %s has the public address %s: this server is probably reachable from the\n"+
+				"internet. Only private addresses can reach the panel, but if the server is not on a LAN you\n"+
+				"use, an SSH tunnel (tunlr panel) is the safer way.\n",
+				a.style.warn("Warning:"), pre.Interface, strings.Join(pre.PublicAddresses, ", "))
+		}
+		if ok, err := a.ask(ctx, "This server has a public address. Open the panel to the LAN anyway?", "", "LAN access not turned on."); !ok {
+			return err
+		}
+	}
+	if ok, err := a.ask(ctx, "Let devices on the LAN open the panel?", "mihomo restarts", "LAN access not turned on."); !ok {
+		return err
+	}
+	err = a.spin("Publishing the configuration", func() (err error) {
+		v.Result, err = inst.PanelLANOn(ctx, plan)
+		return err
+	})
+	if errors.Is(err, core.ErrRolledBack) {
+		return fmt.Errorf("%w; the previous configuration is back in place", err)
+	}
+	if err != nil {
+		return err
+	}
+	v.Applied = true
+	return a.render(v, func() error {
+		fmt.Fprintf(a.stdout, "\n%s\n", a.style.good("LAN access to the panel is on."))
+		if p, err := a.panel(ctx); err == nil {
+			a.printPanelLAN(p)
+		}
+		fmt.Fprintln(a.stdout, "If a device cannot open it, check other firewalls on this server (they can still block the port).")
+		return nil
+	})
 }
 
 func (a *app) newPanelLANOffCommand() *cobra.Command {

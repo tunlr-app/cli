@@ -55,6 +55,8 @@ type Installer struct {
 	Host *doctor.Host
 	// Interfaces 查找网卡，为空时使用 netfilter.LookupInterface（测试时替换）。
 	Interfaces func(name string) (*netfilter.Interface, error)
+	// InterfaceNames 列出本机的网卡名，为空时使用 net.Interfaces（测试时替换）。
+	InterfaceNames func() ([]string, error)
 }
 
 // InitOptions 是 init 的参数。

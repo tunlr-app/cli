@@ -92,66 +92,71 @@ func (a *app) newGatewayOnCommand() *cobra.Command {
 			"Running it again restores missing parts (and switches to another --interface).",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
 			if err := a.requireConfirmation("gateway on"); err != nil {
 				return err
 			}
-			inst := a.installer()
-			plan, err := inst.GatewayPreflight(ctx, iface)
-			if err != nil {
-				return err
-			}
-			a.printWarnings(plan.Warnings)
-
-			ts, err := inst.TunStatus(ctx)
-			if err != nil {
-				return err
-			}
-			if ts.Switch != state.TunOn {
-				if ok, err := a.gatewayTunOn(ctx, plan.Warnings); !ok || err != nil {
-					return err
-				}
-			}
-
-			v := gatewayView{Plan: plan}
-			if plan.InPlace() {
-				return a.render(v, func() error {
-					_, err := fmt.Fprintf(a.stdout, "Gateway mode is already on (%s).\n", plan.Interface)
-					return err
-				})
-			}
-			if !a.opts.JSON {
-				a.printGatewayPlan(plan)
-			}
-			if a.opts.DryRun {
-				return a.render(v, func() error {
-					_, err := fmt.Fprintln(a.stdout, "\nDry run: nothing changed.")
-					return err
-				})
-			}
-			if ok, err := a.ask(ctx, "Turn gateway mode on?", "", "Gateway mode not turned on."); !ok {
-				return err
-			}
-			var res *setup.GatewayResult
-			err = a.spin("Turning gateway mode on", func() (err error) {
-				res, err = inst.GatewayOn(ctx, plan.Interface)
-				return err
-			})
-			if err != nil {
-				return err
-			}
-			v.Applied, v.Result = true, res
-			return a.render(v, func() error {
-				fmt.Fprintf(a.stdout, "\n%s\n", a.style.good("Gateway mode is on."))
-				addrs := strings.Join(res.Addresses, " or ")
-				fmt.Fprintf(a.stdout, "On LAN devices, set the gateway and DNS server to %s\n", addrs)
-				fmt.Fprintln(a.stdout, "(by hand, or in the DHCP settings of your router).")
-				return nil
-			})
+			return a.gatewayOn(cmd.Context(), iface)
 		},
 	}
 	cmd.Flags().StringVar(&iface, "interface", "", "the LAN interface (default: the one with the IPv4 default route)")
 	return cmd
+}
+
+// gatewayOn 是 gateway on 的流程：前置检查、TUN 关闭时先开启、预览、确认、开启。iface 为空时用默认路由
+// 所在的网卡。init 选择局域网网关时也走它。
+func (a *app) gatewayOn(ctx context.Context, iface string) error {
+	inst := a.installer()
+	plan, err := inst.GatewayPreflight(ctx, iface)
+	if err != nil {
+		return err
+	}
+	a.printWarnings(plan.Warnings)
+
+	ts, err := inst.TunStatus(ctx)
+	if err != nil {
+		return err
+	}
+	if ts.Switch != state.TunOn {
+		if ok, err := a.gatewayTunOn(ctx, plan.Warnings); !ok || err != nil {
+			return err
+		}
+	}
+
+	v := gatewayView{Plan: plan}
+	if plan.InPlace() {
+		return a.render(v, func() error {
+			_, err := fmt.Fprintf(a.stdout, "Gateway mode is already on (%s).\n", plan.Interface)
+			return err
+		})
+	}
+	if !a.opts.JSON {
+		a.printGatewayPlan(plan)
+	}
+	if a.opts.DryRun {
+		return a.render(v, func() error {
+			_, err := fmt.Fprintln(a.stdout, "\nDry run: nothing changed.")
+			return err
+		})
+	}
+	if ok, err := a.ask(ctx, "Turn gateway mode on?", "", "Gateway mode not turned on."); !ok {
+		return err
+	}
+	var res *setup.GatewayResult
+	err = a.spin("Turning gateway mode on", func() (err error) {
+		res, err = inst.GatewayOn(ctx, plan.Interface)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	v.Applied, v.Result = true, res
+	return a.render(v, func() error {
+		fmt.Fprintf(a.stdout, "\n%s\n", a.style.good("Gateway mode is on."))
+		addrs := strings.Join(res.Addresses, " or ")
+		fmt.Fprintf(a.stdout, "On LAN devices, set the gateway and DNS server to %s\n", addrs)
+		fmt.Fprintln(a.stdout, "(by hand, or in the DHCP settings of your router).")
+		return nil
+	})
 }
 
 // gatewayTunOn 在 TUN 关闭时先走 tun on 的完整流程。ok 为 false 时不再继续开启网关（用户没有同意、

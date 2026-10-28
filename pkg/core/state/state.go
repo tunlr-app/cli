@@ -51,6 +51,9 @@ type State struct {
 	// PanelLAN 是面板的局域网访问开关，nil 为关闭（只有本机能访问）。只由 panel lan on/off 修改。
 	PanelLAN *PanelLAN `json:"panel_lan,omitempty"`
 
+	// ProxyLAN 是代理端口的局域网访问开关，nil 为关闭（代理端口只监听本机）。只由 proxy lan on/off 修改。
+	ProxyLAN *ProxyLAN `json:"proxy_lan,omitempty"`
+
 	// Updates 记录定时更新任务（键为任务名，目前只有 geo；订阅的记在各自的 FetchedAt、LastErrorAt 中）
 	// 最近一次执行的情况，用来判断下次何时到期。只记最近一次，历次的情况在 journal 中。
 	Updates map[string]UpdateRun `json:"updates,omitempty"`
@@ -95,6 +98,12 @@ type Gateway struct {
 
 // PanelLAN 是开启面板局域网访问时的设置。
 type PanelLAN struct {
+	// Since 是开启的时间。
+	Since time.Time `json:"since"`
+}
+
+// ProxyLAN 是开启代理端口局域网访问时的设置。
+type ProxyLAN struct {
 	// Since 是开启的时间。
 	Since time.Time `json:"since"`
 }

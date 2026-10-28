@@ -195,6 +195,7 @@ func (i *Installer) installChecks(ctx context.Context, h *doctor.Host, quick boo
 	i.checkGateway(ctx, c, st)
 	i.checkExposure(c)
 	i.checkPanelLAN(ctx, c, st)
+	i.checkProxyLAN(c, st)
 	i.checkPorts(ctx, h, c, running != "")
 	i.checkSubscriptions(c, st)
 	return c.List
@@ -451,10 +452,32 @@ func (i *Installer) checkPanelLAN(ctx context.Context, c *doctor.Checker, st *st
 	}
 	if api, err := config.API(cfg); err == nil && api.Controller != pipeline.LANController {
 		c.Add("panel", doctor.Warn, "Panel LAN access", "the switch is on but the published configuration has external-controller "+
-			strconv.Quote(api.Controller)+" (rolled back, or set in a mixin)", "tunlr apply")
+			strconv.Quote(api.Controller)+" (edited outside tunlr?)", "tunlr apply")
 		return
 	}
 	c.Add("panel", doctor.OK, "Panel LAN access", "on; port "+strconv.Itoa(pipeline.APIPort)+" only accepts private addresses", "")
+}
+
+// checkProxyLAN 在代理端口对局域网开放时检查生效的配置是否与开关一致；开关关闭时不出现（对外开放的配置由
+// checkExposure 报告）。
+func (i *Installer) checkProxyLAN(c *doctor.Checker, st *state.State) {
+	if st == nil || st.ProxyLAN == nil {
+		return
+	}
+	cfg, err := i.pipeline(nil).Current()
+	if err != nil || cfg == nil {
+		return
+	}
+	switch allow, private, err := config.LANAccess(cfg); {
+	case err != nil:
+		c.Add("proxy", doctor.Fail, "Proxy LAN access", err.Error(), "")
+	case !allow:
+		c.Add("proxy", doctor.Warn, "Proxy LAN access", "the switch is on but the published configuration has allow-lan off (edited outside tunlr?)", "tunlr apply")
+	case !private:
+		c.Add("proxy", doctor.Warn, "Proxy LAN access", "the switch is on but lan-allowed-ips in the published configuration is not limited to private addresses", "tunlr apply")
+	default:
+		c.Add("proxy", doctor.OK, "Proxy LAN access", "on; the proxy ports only accept private addresses", "")
+	}
 }
 
 // checkPorts 检查配置中的端口有没有被其他程序占用：内核在运行时它们应当归内核，没有运行时应当空闲。

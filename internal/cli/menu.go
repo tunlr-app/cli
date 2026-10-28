@@ -26,6 +26,7 @@ const (
 	groupConfiguration = "Configuration"
 	groupTun           = "Transparent proxy"
 	groupPanel         = "Panel"
+	groupProxy         = "Proxy port"
 	groupService       = "mihomo service"
 	groupUpdates       = "Scheduled updates"
 )
@@ -439,6 +440,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		return "tunlr", []menuItem{
 			status,
 			{label: groupPanel, group: groupPanel, note: a.describePanelLAN(s.PanelLAN)},
+			{label: groupProxy, group: groupProxy, note: a.describeProxyLAN(s.ProxyLAN)},
 			{label: groupSubscriptions, group: groupSubscriptions, note: a.describeSubscriptions(s, d.subs)},
 			{label: groupConfiguration, group: groupConfiguration, note: a.describeRevision(s)},
 			{label: groupTun, group: groupTun, note: a.describeTun(s.Tun)},
@@ -494,6 +496,13 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 			items = append(items, menuItem{label: "Let LAN devices open it", args: []string{"panel", "lan", "on"}})
 		}
 		items = append(items, menuItem{label: "Replace the API secret", args: []string{"panel", "--reset-secret"}})
+	case groupProxy:
+		items = append(items, menuItem{label: "Show the proxy address", args: []string{"proxy"}})
+		if s.ProxyLAN {
+			items = append(items, menuItem{label: "Stop LAN access (only this server)", args: []string{"proxy", "lan", "off"}})
+		} else {
+			items = append(items, menuItem{label: "Let LAN devices use it (HTTP/SOCKS5 proxy)", args: []string{"proxy", "lan", "on"}})
+		}
 	case groupService:
 		if s.Service != nil && s.Service.Active() {
 			items = append(items,

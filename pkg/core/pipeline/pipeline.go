@@ -174,6 +174,12 @@ func (p *Pipeline) PlanPanelLAN(ctx context.Context, on bool) (*Plan, error) {
 	return p.plan(ctx, planOptions{lan: &on})
 }
 
+// PlanProxyLAN 同 Plan，但按代理端口局域网访问开关为 on 时的样子合成，不看状态文件中的开关。调用方在
+// 发布前保存开关。
+func (p *Pipeline) PlanProxyLAN(ctx context.Context, on bool) (*Plan, error) {
+	return p.plan(ctx, planOptions{proxyLAN: &on})
+}
+
 // PlanResetSecret 同 Plan，但换用新生成的 API secret，发布时保存。
 func (p *Pipeline) PlanResetSecret(ctx context.Context) (*Plan, error) {
 	return p.plan(ctx, planOptions{resetSecret: true})
@@ -197,7 +203,16 @@ func (p *Pipeline) Managed() ([]config.Managed, error) {
 	if err != nil {
 		return nil, err
 	}
-	return managed(st.APISecret, st.TunEnabled(), st.PanelLAN != nil, set), nil
+	return managed(st.APISecret, switchesOf(st), set), nil
+}
+
+// switches 是决定受管 mixin 内容的开关。
+type switches struct {
+	tun, panelLAN, proxyLAN bool
+}
+
+func switchesOf(st *state.State) switches {
+	return switches{tun: st.TunEnabled(), panelLAN: st.PanelLAN != nil, proxyLAN: st.ProxyLAN != nil}
 }
 
 type planOptions struct {
@@ -209,12 +224,14 @@ type planOptions struct {
 	resetSecret bool
 	// lan 不为 nil 时代替状态文件中的面板局域网访问开关。
 	lan *bool
+	// proxyLAN 不为 nil 时代替状态文件中的代理端口局域网访问开关。
+	proxyLAN *bool
 	// composeOnly 只合成，不检查端口安全，不比较也不校验。
 	composeOnly bool
 }
 
 func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
-	edited, tun := opts.edited, opts.tun
+	edited := opts.edited
 	set, err := settings.Load(p.Layout.SettingsFile())
 	if err != nil {
 		return nil, err
@@ -232,9 +249,15 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		}
 		plan.newSecret, plan.oldSecret = secret, st.APISecret
 	}
-	lan := st.PanelLAN != nil
+	sw := switchesOf(st)
+	if opts.tun != nil {
+		sw.tun = *opts.tun
+	}
 	if opts.lan != nil {
-		lan = *opts.lan
+		sw.panelLAN = *opts.lan
+	}
+	if opts.proxyLAN != nil {
+		sw.proxyLAN = *opts.proxyLAN
 	}
 	var sub []byte
 	if st.Active != "" {
@@ -263,12 +286,7 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	for _, m := range mixins {
 		plan.Mixins = append(plan.Mixins, m.Name)
 	}
-	tunOn := st.TunEnabled()
-	if tun != nil {
-		tunOn = *tun
-	}
-
-	plan.Managed = managed(secret, tunOn, lan, set)
+	plan.Managed = managed(secret, sw, set)
 	res, err := config.Compose(config.Layers{
 		Template:     templates.Config,
 		Subscription: sub,
@@ -306,7 +324,7 @@ func (p *Pipeline) PlanEnforce(ctx context.Context) (*Plan, error) {
 		return nil, err
 	}
 	plan := &Plan{Kind: KindApply, Subscription: st.Active}
-	if plan.Config, plan.facts, err = config.Enforce(current, managed(st.APISecret, st.TunEnabled(), st.PanelLAN != nil, set)); err != nil {
+	if plan.Config, plan.facts, err = config.Enforce(current, managed(st.APISecret, switchesOf(st), set)); err != nil {
 		return nil, fmt.Errorf("the published configuration: %w", err)
 	}
 	if err := p.finish(ctx, plan); err != nil {
@@ -355,7 +373,7 @@ func (p *Pipeline) PlanRollback(ctx context.Context, n int) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, facts, err := config.Enforce(data, managed(st.APISecret, st.TunEnabled(), st.PanelLAN != nil, set))
+	data, facts, err := config.Enforce(data, managed(st.APISecret, switchesOf(st), set))
 	if err != nil {
 		return nil, fmt.Errorf("revision %d: %w", n, err)
 	}
@@ -721,6 +739,7 @@ const (
 	ManagedTun    = "tunlr:tun"
 	ManagedGeo    = "tunlr:geo"
 	ManagedPanel  = "tunlr:panel"
+	ManagedProxy  = "tunlr:proxy"
 	ManagedMirror = "tunlr:mirror"
 )
 
@@ -732,23 +751,31 @@ const (
 //	tunlr:geo    geo 数据的自动更新，只有一个旋钮：由内核自己更新时才写 geo-auto-update: true 和间隔，
 //	             否则关闭它，由 tunlr 按周期更新并校验；间隔在关闭时也归它管
 //	tunlr:panel  API 的监听地址（面板的局域网访问开关）和 secret
+//	tunlr:proxy  代理端口的局域网访问开关：开启时 allow-lan: true，lan-allowed-ips 限制为私有地址段
+//	             （config.LANAllowedIPs），内核拒绝其他来源；关闭时 allow-lan: false
 //
 // 提供默认值、用户可以覆盖的：tunlr:mirror，geo 数据的下载地址，配置了 GitHub 镜像时另有经镜像的面板
 // 下载地址和让镜像直连的规则（用 delete-rules 去掉）。
-func managed(secret string, tun, lan bool, set *settings.Settings) []config.Managed {
+func managed(secret string, sw switches, set *settings.Settings) []config.Managed {
 	geoAuto, geoHours := set.GeoAutoUpdate()
 	geo := fmt.Sprintf("geo-auto-update: %t\n", geoAuto)
 	if geoAuto {
 		geo += fmt.Sprintf("geo-update-interval: %d\n", geoHours)
 	}
 	controller := fmt.Sprintf("127.0.0.1:%d", APIPort)
-	if lan {
+	if sw.panelLAN {
 		controller = LANController
 	}
 	panel := marshal(struct {
 		Controller string `yaml:"external-controller"`
 		Secret     string `yaml:"secret"`
 	}{controller, secret})
+
+	// 来源列表开关时都写入（模板中也有，位置紧跟 allow-lan），开关只改 allow-lan。
+	proxy := marshal(struct {
+		AllowLAN      bool     `yaml:"allow-lan"`
+		LANAllowedIPs []string `yaml:"lan-allowed-ips"`
+	}{sw.proxyLAN, config.LANAllowedIPs})
 
 	mirror := set.GitHubMirror
 	m := struct {
@@ -771,9 +798,10 @@ func managed(secret string, tun, lan bool, set *settings.Settings) []config.Mana
   device: %s
   iproute2-table-index: %d
   iproute2-rule-index: %d
-`, tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex)},
+`, sw.tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex)},
 		{Name: ManagedGeo, Command: "tunlr update set geo", Data: []byte(geo), Owns: []string{"geo-auto-update", "geo-update-interval"}},
 		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel --reset-secret", Data: panel},
+		{Name: ManagedProxy, Command: "tunlr proxy lan on/off", Data: proxy, Owns: []string{"allow-lan", "lan-allowed-ips"}},
 		{Name: ManagedMirror, Command: "tunlr init --mirror", Default: true, Data: mirrorData},
 	}
 }
