@@ -199,7 +199,7 @@ func TestApplySubscriptionAndMixin(t *testing.T) {
 	useSubscription(t, p.Layout, "main", "port: 1234\n"+subscriptionV1)
 	dir := p.Layout.MixinDir()
 	writeFile(t, filepath.Join(dir, "20-b.yaml"), "log-level: debug\n")
-	writeFile(t, filepath.Join(dir, "10-a.yaml"), "log-level: warning\nexternal-controller-unix: /tmp/x.sock\n")
+	writeFile(t, filepath.Join(dir, "10-a.yaml"), "log-level: warning\n")
 	writeFile(t, filepath.Join(dir, "notes.txt"), "log-level: error\n")
 	plan := mustPlan(t, p)
 	if plan.Subscription != "main" || len(plan.Dropped) != 1 || plan.Dropped[0] != "port" {
@@ -211,16 +211,13 @@ func TestApplySubscriptionAndMixin(t *testing.T) {
 	if len(plan.Overrides) != 1 || plan.Overrides[0] != (config.Override{Path: "log-level", File: "20-b.yaml", Previous: "10-a.yaml"}) {
 		t.Errorf("overrides = %+v", plan.Overrides)
 	}
-	if len(plan.Warnings) != 1 || plan.Warnings[0].String() != "10-a.yaml:2: external-controller-unix is managed by tunlr; the value in the mixin is ignored" {
+	if len(plan.Warnings) != 0 {
 		t.Errorf("warnings = %+v", plan.Warnings)
 	}
 	for _, want := range []string{"-log-level: info", "+log-level: debug", "+  - MATCH,a"} {
 		if !strings.Contains(plan.Diff, want+"\n") {
 			t.Errorf("diff lacks %q:\n%s", want, plan.Diff)
 		}
-	}
-	if strings.Contains(string(plan.Config), "/tmp/x.sock") {
-		t.Error("mixin overrode an enforced key")
 	}
 	if rev := mustApply(t, p, plan); rev.Number != 2 || rev.Subscription != "main" {
 		t.Errorf("revision = %+v", rev)
@@ -413,9 +410,9 @@ func TestApplyRestartsForControllerChanges(t *testing.T) {
 	mustApply(t, p, mustPlan(t, p))
 	reloads := len(r.loaded)
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "secret: changed\nexternal-controller: 127.0.0.1:9091\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "external-ui-name: x\nexternal-doh-server: /dns-query\n")
 	plan := mustPlan(t, p)
-	if !slices.Equal(plan.Restart, []string{"external-controller", "secret"}) {
+	if !slices.Equal(plan.Restart, []string{"external-doh-server", "external-ui-name"}) {
 		t.Fatalf("restart keys = %v", plan.Restart)
 	}
 	res, err := p.Apply(context.Background(), plan)
@@ -434,7 +431,7 @@ func TestRestartFailureRollsBack(t *testing.T) {
 	mustApply(t, p, mustPlan(t, p))
 	before, _ := os.ReadFile(p.Layout.CoreConfig())
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "secret: changed\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "external-ui-name: x\n")
 	rs.fail = true
 	_, err := p.Apply(context.Background(), mustPlan(t, p))
 	if !errors.Is(err, core.ErrRolledBack) || !errors.Is(err, mihomo.ErrUnhealthy) {
@@ -453,12 +450,12 @@ func TestRestartKeysWithoutService(t *testing.T) {
 	p, _, r := newPipeline(t)
 	p.Restarter = &fakeRestarter{layout: p.Layout, stopped: true}
 	mustApply(t, p, mustPlan(t, p))
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "secret: changed\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "external-ui-name: x\n")
 	res, err := p.Apply(context.Background(), mustPlan(t, p))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Reloaded || res.Restarted || !slices.Equal(res.RestartNeeded, []string{"secret"}) || len(r.loaded) != 2 {
+	if !res.Reloaded || res.Restarted || !slices.Equal(res.RestartNeeded, []string{"external-ui-name"}) || len(r.loaded) != 2 {
 		t.Fatalf("result = %+v", res)
 	}
 }
@@ -527,7 +524,7 @@ func TestTunSwitch(t *testing.T) {
 	}
 	mustApply(t, p, plan)
 
-	// 回滚到开关关闭时的修订：强制项按现在的开关写入，内容与生效的配置相同。
+	// 回滚到开关关闭时的修订：独占的键按现在的开关写入，内容与生效的配置相同。
 	rb, err := p.PlanRollback(ctx, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -627,10 +624,61 @@ func TestPlanResetSecret(t *testing.T) {
 		t.Errorf("stale reset: %v", err)
 	}
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "secret: mine\n")
-	if _, err := p.PlanResetSecret(ctx); !errors.Is(err, ErrSecretInMixin) || !errors.Is(err, core.ErrInvalidArgument) {
-		t.Errorf("mixin secret: %v", err)
+}
+
+// TestManagedConflicts 验证 mixin 动了受管 mixin 独占的键时拒绝合成，提示改用的命令；独占的键在回滚时
+// 也按当前状态写入。
+func TestManagedConflicts(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	ctx := context.Background()
+	mustApply(t, p, mustPlan(t, p))
+
+	for _, tt := range []struct{ mixin, want string }{
+		{"secret: mine\n", "mixin 10-a.yaml:1: secret is managed by tunlr:panel (change it with: tunlr panel lan on/off, tunlr panel --reset-secret)"},
+		{"x: 1\nexternal-controller: 0.0.0.0:9091\n", "mixin 10-a.yaml:2: external-controller is managed by tunlr:panel"},
+		{"tun:\n  stack: system\n  enable: true\n", "mixin 10-a.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off)"},
+		{"geo-update-interval: 6\n", "mixin 10-a.yaml:1: geo-update-interval is managed by tunlr:geo (change it with: tunlr update set geo)"},
+		{"external-controller-unix: x.sock\n", "mixin 10-a.yaml:1: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
+	} {
+		writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), tt.mixin)
+		var me *config.MixinError
+		if _, err := p.Plan(ctx); !errors.As(err, &me) || !strings.HasPrefix(err.Error(), tt.want) {
+			t.Errorf("%q: err = %v", tt.mixin, err)
+		}
+		if err := p.CheckMixins(ctx); !errors.As(err, &me) {
+			t.Errorf("%q: CheckMixins = %v", tt.mixin, err)
+		}
 	}
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "tun:\n  stack: system\n")
+	if err := p.CheckMixins(ctx); err != nil {
+		t.Errorf("allowed key: %v", err)
+	}
+	mustApply(t, p, mustPlan(t, p))
+
+	// 回滚到的修订是换 secret 之前的；独占的键按当前状态写入，secret 保持现在的。
+	mustApply(t, p, mustPlanReset(t, p))
+	st, _ := state.Load(p.Layout.StateFile())
+	plan, err := p.PlanRollback(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Config), "\nsecret: "+st.APISecret+"\n") {
+		t.Errorf("rollback did not keep the current secret:\n%s", plan.Config)
+	}
+
+	ms, err := p.Managed()
+	if err != nil || len(ms) != 5 || ms[4].Name != ManagedMirror || !ms[4].Default || ms[1].Keys()[0] != "tun.enable" {
+		t.Errorf("Managed = %+v, %v", ms, err)
+	}
+}
+
+func mustPlanReset(t *testing.T, p *Pipeline) *Plan {
+	t.Helper()
+	plan, err := p.PlanResetSecret(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
 }
 
 // 重新合成的配置会开放无需认证的端口时拒绝发布；回滚不检查，旧配置总能恢复。
@@ -668,13 +716,13 @@ func TestMirrorDefaults(t *testing.T) {
 		}
 	}
 
-	// 工具生成的调整应用在用户的 mixin 之前，用户可以覆盖，覆盖记录在计划中。
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "secret: mine\nexternal-ui-url: https://example.com/ui.zip\n")
+	// tunlr:mirror 应用在用户的 mixin 之前，用户可以覆盖，覆盖记录在计划中。
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "external-ui-url: https://example.com/ui.zip\n")
 	plan := mustPlan(t, p)
-	if cfg := string(plan.Config); !strings.Contains(cfg, "\nsecret: mine\n") || !strings.Contains(cfg, "\nexternal-ui-url: https://example.com/ui.zip\n") {
-		t.Errorf("mixin did not override the generated values:\n%s", cfg)
+	if cfg := string(plan.Config); !strings.Contains(cfg, "\nexternal-ui-url: https://example.com/ui.zip\n") {
+		t.Errorf("mixin did not override the default:\n%s", cfg)
 	}
-	if fmt.Sprint(plan.Overrides) != "[{secret 10-a.yaml tunlr} {external-ui-url 10-a.yaml tunlr}]" {
+	if fmt.Sprint(plan.Overrides) != "[{external-ui-url 10-a.yaml tunlr:mirror}]" {
 		t.Errorf("overrides = %v", plan.Overrides)
 	}
 }
@@ -700,8 +748,8 @@ func TestMirrorRules(t *testing.T) {
 	useSubscription(t, p.Layout, "main", subscriptionV1)
 	writeFile(t, p.Layout.SettingsFile(), "github-mirror: https://gh-proxy.com/\n")
 	plan := mustPlan(t, p)
-	if strings.Join(plan.Generated.PrependRules, ",") != "DOMAIN,gh-proxy.com,DIRECT" {
-		t.Errorf("generated rules = %v", plan.Generated.PrependRules)
+	if m := plan.Managed[len(plan.Managed)-1]; m.Name != ManagedMirror || !strings.Contains(string(m.Data), "prepend-rules:\n  - DOMAIN,gh-proxy.com,DIRECT\n") {
+		t.Errorf("mirror = %s", m.Data)
 	}
 	if !strings.Contains(string(plan.Config), "\nrules:\n  - DOMAIN,gh-proxy.com,DIRECT\n  - MATCH,a\n") {
 		t.Errorf("config:\n%s", plan.Config)

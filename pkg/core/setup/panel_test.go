@@ -10,27 +10,36 @@ import (
 	"testing"
 
 	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/netfilter"
-	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
-// publishMixin 写入一个 mixin 并发布。
-func publishMixin(t *testing.T, i *Installer, content string) {
+// editPublished 按 mixin 的语义直接改生效的配置，模拟工具之外（如手动、旧版本）改出的配置：
+// 经 tunlr 发布时 mixin 改不了面板的键。
+func editPublished(t *testing.T, i *Installer, mixin string) {
+	t.Helper()
+	cur, err := os.ReadFile(i.Layout.CoreConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := config.Compose(config.Layers{Template: cur, Mixins: []config.Mixin{{Name: "edit.yaml", Data: []byte(mixin)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(i.Layout.CoreConfig(), res.Config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeMixin 写入一个 mixin 文件。
+func writeMixin(t *testing.T, i *Installer, content string) {
 	t.Helper()
 	if err := os.MkdirAll(i.Layout.MixinDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(i.Layout.MixinDir(), "10-api.yaml"), []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	p := i.pipeline(nil)
-	plan, err := p.Plan(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.Apply(context.Background(), plan); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -78,8 +87,8 @@ func TestPanel(t *testing.T) {
 		t.Errorf("port 22: %q", p.SSHCommand)
 	}
 
-	// mixin 改了端口和 secret；secret 中的特殊字符在链接中转义。
-	publishMixin(t, i, "external-controller: \"[::1]:9091\"\nsecret: \"a b&c\"\n")
+	// 配置中是别的端口和 secret；secret 中的特殊字符在链接中转义。
+	editPublished(t, i, "external-controller: \"[::1]:9091\"\nsecret: \"a b&c\"\n")
 	p, _ = i.Panel(ctx, PanelOptions{})
 	if p.SSHCommand != "ssh -N -L 9091:[::1]:9091 <server>" || p.Port != 9091 {
 		t.Errorf("ipv6: %q", p.SSHCommand)
@@ -90,7 +99,7 @@ func TestPanel(t *testing.T) {
 
 	// 对外监听：隧道经 127.0.0.1，另外给出默认路由网卡和 SSH 连进来的地址的链接。
 	i.Interfaces = lanInterface
-	publishMixin(t, i, "external-controller: 0.0.0.0:9090\n")
+	editPublished(t, i, "external-controller: 0.0.0.0:9090\n")
 	p, _ = i.Panel(ctx, PanelOptions{SSHConnection: "198.51.100.7 51234 203.0.113.10 22", Label: "srv"})
 	if !p.Public || p.SSHCommand != "ssh -N -L 9090:127.0.0.1:9090 203.0.113.10" || p.LAN || len(p.LANURLs) != 2 ||
 		!strings.HasPrefix(p.LANURLs[0], "http://192.168.1.20:9090/ui/#/setup?hostname=192.168.1.20&label=srv&port=9090") ||
@@ -102,7 +111,7 @@ func TestPanel(t *testing.T) {
 	}
 
 	// 面板关掉了。
-	publishMixin(t, i, "external-controller: null\n")
+	editPublished(t, i, "external-controller: null\n")
 	if _, err := i.Panel(ctx, PanelOptions{}); !errors.Is(err, core.ErrCheckFailed) {
 		t.Errorf("no controller: %v", err)
 	}
@@ -176,9 +185,10 @@ func TestPanelLAN(t *testing.T) {
 		t.Errorf("not repaired: %v", h.tables)
 	}
 
-	// mixin 设置了 external-controller 时不能开启。
-	publishMixin(t, i, "external-controller: 127.0.0.1:9091\n")
-	if _, err := i.pipeline(nil).PlanPanelLAN(ctx, true); !errors.Is(err, pipeline.ErrControllerInMixin) || !errors.Is(err, core.ErrInvalidArgument) {
+	// mixin 设置了 external-controller 时拒绝，提示改用的命令。
+	writeMixin(t, i, "external-controller: 127.0.0.1:9091\n")
+	var me *config.MixinError
+	if _, err := i.pipeline(nil).PlanPanelLAN(ctx, false); !errors.As(err, &me) || !strings.Contains(err.Error(), "tunlr panel lan on/off") {
 		t.Errorf("mixin: %v", err)
 	}
 	if err := os.Remove(filepath.Join(i.Layout.MixinDir(), "10-api.yaml")); err != nil {

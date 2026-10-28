@@ -119,8 +119,9 @@ type Plan struct {
 	Warnings []config.Warning
 	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键（仅 KindApply）。
 	Overrides []config.Override
-	// Generated 是工具为这台服务器生成的调整（仅 KindApply）。
-	Generated *Generated
+	// Managed 是 tunlr 的交互功能生成的受管 mixin，按 Managed 函数的顺序排列（仅 KindApply）。
+	// 其中含 API secret，展示时只列出键。
+	Managed []config.Managed
 	// RollbackTo 是回滚的目标修订（仅 KindRollback）。
 	RollbackTo int
 	// Restart 是有变化、需要重启内核才能生效的顶层键；不为空时发布后重启内核而不是热重载。
@@ -135,21 +136,6 @@ type Plan struct {
 	newSecret, oldSecret string
 	// facts 是从 Config 中提取的信息。
 	facts *config.Facts
-}
-
-// Generated 是工具为这台服务器生成的调整。它以 mixin 的语义应用在订阅之后、用户的 mixin 之前，
-// 不写入磁盘；用户可以在 mixin 中覆盖这些键，规则用 delete-rules 去掉。
-type Generated struct {
-	// Secret 是 API secret，第一次发布时生成并保存在状态文件中。
-	Secret string `yaml:"secret" json:"secret"`
-	// ExternalController 是面板的局域网访问开启时 API 的监听地址（LANController），关闭时为空（模板中只监听本机）。
-	ExternalController string `yaml:"external-controller,omitempty" json:"external-controller,omitempty"`
-	// ExternalUIURL 是配置了 GitHub 镜像时经镜像的面板下载地址。
-	ExternalUIURL string `yaml:"external-ui-url,omitempty" json:"external-ui-url,omitempty"`
-	// GeoxURL 是配置了 GitHub 镜像时经镜像的 geo 数据下载地址。
-	GeoxURL map[string]string `yaml:"geox-url,omitempty" json:"geox-url,omitempty"`
-	// PrependRules 是插在订阅规则前面的规则，目前是让 GitHub 镜像直连的规则。
-	PrependRules []string `yaml:"prepend-rules,omitempty" json:"prepend-rules,omitempty"`
 }
 
 // Changed 报告 Config 与生效的配置是否不同。
@@ -182,41 +168,36 @@ const APIPort = 9090
 // 来源由 nft 表 inet tunlr_panel 限制为私有地址段。
 var LANController = fmt.Sprintf("0.0.0.0:%d", APIPort)
 
-// ErrControllerInMixin 表示 mixin 设置了 external-controller，工具生成的值不起作用。
-var ErrControllerInMixin = errors.New("a mixin sets external-controller")
-
 // PlanPanelLAN 同 Plan，但按面板局域网访问开关为 on 时的样子合成，不看状态文件中的开关。调用方在发布前
-// 保存开关。开启时 mixin 设置了 external-controller 返回满足 errors.Is(err, ErrControllerInMixin) 和
-// errors.Is(err, core.ErrInvalidArgument) 的错误。
+// 保存开关。
 func (p *Pipeline) PlanPanelLAN(ctx context.Context, on bool) (*Plan, error) {
-	plan, err := p.plan(ctx, planOptions{lan: &on})
-	if err != nil {
-		return nil, err
-	}
-	for _, o := range plan.Overrides {
-		if on && o.Path == "external-controller" {
-			return nil, fmt.Errorf("%w: %w (%s); change it there", core.ErrInvalidArgument, ErrControllerInMixin, o.File)
-		}
-	}
-	return plan, nil
+	return p.plan(ctx, planOptions{lan: &on})
 }
 
-// ErrSecretInMixin 表示 mixin 设置了 secret，工具生成的 secret 不起作用，换新的没有意义。
-var ErrSecretInMixin = errors.New("a mixin sets secret")
-
-// PlanResetSecret 同 Plan，但换用新生成的 API secret，发布时保存。mixin 设置了 secret 时返回满足
-// errors.Is(err, ErrSecretInMixin) 和 errors.Is(err, core.ErrInvalidArgument) 的错误。
+// PlanResetSecret 同 Plan，但换用新生成的 API secret，发布时保存。
 func (p *Pipeline) PlanResetSecret(ctx context.Context) (*Plan, error) {
-	plan, err := p.plan(ctx, planOptions{resetSecret: true})
+	return p.plan(ctx, planOptions{resetSecret: true})
+}
+
+// CheckMixins 只合成配置、不校验也不比较，检查 mixin 有没有错、有没有动 tunlr 独占的键；
+// 有时返回 *config.MixinError。用于 doctor。
+func (p *Pipeline) CheckMixins(ctx context.Context) error {
+	_, err := p.plan(ctx, planOptions{composeOnly: true})
+	return err
+}
+
+// Managed 返回按状态文件和工具设置生成的受管 mixin，与发布时所用的相同；还没有生成过 API secret 时
+// secret 为空。用于展示（tunlr mixin list）。
+func (p *Pipeline) Managed() ([]config.Managed, error) {
+	set, err := settings.Load(p.Layout.SettingsFile())
 	if err != nil {
 		return nil, err
 	}
-	for _, o := range plan.Overrides {
-		if o.Path == "secret" {
-			return nil, fmt.Errorf("%w: %w (%s); change it there", core.ErrInvalidArgument, ErrSecretInMixin, o.File)
-		}
+	st, _, err := state.LoadOrNew(p.Layout.StateFile(), p.now())
+	if err != nil {
+		return nil, err
 	}
-	return plan, nil
+	return managed(st.APISecret, st.TunEnabled(), st.PanelLAN != nil, set), nil
 }
 
 type planOptions struct {
@@ -228,6 +209,8 @@ type planOptions struct {
 	resetSecret bool
 	// lan 不为 nil 时代替状态文件中的面板局域网访问开关。
 	lan *bool
+	// composeOnly 只合成，不检查端口安全，不比较也不校验。
+	composeOnly bool
 }
 
 func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
@@ -253,12 +236,6 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	if opts.lan != nil {
 		lan = *opts.lan
 	}
-	plan.Generated = generate(secret, set.GitHubMirror, lan)
-	generated, err := yaml.Marshal(plan.Generated)
-	if err != nil {
-		return nil, err
-	}
-
 	var sub []byte
 	if st.Active != "" {
 		sub, err = os.ReadFile(p.Layout.SubscriptionFile(st.Active))
@@ -291,17 +268,17 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		tunOn = *tun
 	}
 
+	plan.Managed = managed(secret, tunOn, lan, set)
 	res, err := config.Compose(config.Layers{
 		Template:     templates.Config,
 		Subscription: sub,
-		Generated:    generated,
+		Managed:      plan.Managed,
 		Mixins:       mixins,
-		Enforced:     enforcedLayer(tunOn, set),
 	})
-	if err != nil {
+	if err != nil || opts.composeOnly {
 		return nil, err
 	}
-	// 只在重新合成时检查端口安全；回滚和重写强制项不经过这里，以免旧配置无法恢复。
+	// 只在重新合成时检查端口安全；回滚和重写独占的键不经过这里，以免旧配置无法恢复。
 	if err := config.CheckExposure(res.Config); err != nil {
 		return nil, err
 	}
@@ -313,7 +290,7 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	return plan, nil
 }
 
-// PlanEnforce 准备只按状态文件重写生效配置中的强制项，其余内容不变；还没有发布过时返回 nil。
+// PlanEnforce 准备只按状态文件重写生效配置中受管 mixin 独占的键，其余内容不变；还没有发布过时返回 nil。
 // 用于自动关闭透明代理：不重新合成，期间订阅或 mixin 的变化不会混进来，也不会因它们校验失败。
 func (p *Pipeline) PlanEnforce(ctx context.Context) (*Plan, error) {
 	current, err := p.readCurrent()
@@ -329,7 +306,7 @@ func (p *Pipeline) PlanEnforce(ctx context.Context) (*Plan, error) {
 		return nil, err
 	}
 	plan := &Plan{Kind: KindApply, Subscription: st.Active}
-	if plan.Config, plan.facts, err = config.Enforce(current, enforcedLayer(st.TunEnabled(), set)); err != nil {
+	if plan.Config, plan.facts, err = config.Enforce(current, managed(st.APISecret, st.TunEnabled(), st.PanelLAN != nil, set)); err != nil {
 		return nil, fmt.Errorf("the published configuration: %w", err)
 	}
 	if err := p.finish(ctx, plan); err != nil {
@@ -368,7 +345,8 @@ func (p *Pipeline) PlanRollback(ctx context.Context, n int) (*Plan, error) {
 		}
 		return nil, err
 	}
-	// 强制项按当前状态重新写入：修订中的透明代理开关可能与现在不同，照搬会与工具的规则和防失联状态对不上。
+	// 独占的键按当前状态重新写入：修订中的透明代理开关、面板的监听地址和 secret 可能与现在不同，照搬会与
+	// 工具的规则、防失联状态和面板的链接对不上。
 	st, _, err := state.LoadOrNew(p.Layout.StateFile(), p.now())
 	if err != nil {
 		return nil, err
@@ -377,7 +355,7 @@ func (p *Pipeline) PlanRollback(ctx context.Context, n int) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, facts, err := config.Enforce(data, enforcedLayer(st.TunEnabled(), set))
+	data, facts, err := config.Enforce(data, managed(st.APISecret, st.TunEnabled(), st.PanelLAN != nil, set))
 	if err != nil {
 		return nil, fmt.Errorf("revision %d: %w", n, err)
 	}
@@ -737,17 +715,78 @@ func (p *Pipeline) now() time.Time {
 	return time.Now()
 }
 
-// generate 生成工具的调整：API secret，面板的局域网访问开启时 API 的监听地址，以及配置了 GitHub 镜像时
-// 经镜像的面板和 geo 数据地址、让镜像直连的规则。
-func generate(secret, mirror string, lan bool) *Generated {
-	g := &Generated{Secret: secret, GeoxURL: mihomo.GeoxURL(mirror), PrependRules: mirrorRules(mirror)}
+// 受管 mixin 的名称。
+const (
+	ManagedCore   = "tunlr:core"
+	ManagedTun    = "tunlr:tun"
+	ManagedGeo    = "tunlr:geo"
+	ManagedPanel  = "tunlr:panel"
+	ManagedMirror = "tunlr:mirror"
+)
+
+// managed 生成 tunlr 的交互功能对应的受管 mixin，顺序即展示的顺序。独占键的：
+//
+//	tunlr:core   内核的 Unix socket，工具经它调用 API
+//	tunlr:tun    透明代理：enable 取自开关，其余是固定值，工具补充的规则、清理和检测依赖它们；
+//	             面板临时打开 TUN 时也按这些值工作
+//	tunlr:geo    geo 数据的自动更新，只有一个旋钮：由内核自己更新时才写 geo-auto-update: true 和间隔，
+//	             否则关闭它，由 tunlr 按周期更新并校验；间隔在关闭时也归它管
+//	tunlr:panel  API 的监听地址（面板的局域网访问开关）和 secret
+//
+// 提供默认值、用户可以覆盖的：tunlr:mirror，geo 数据的下载地址，配置了 GitHub 镜像时另有经镜像的面板
+// 下载地址和让镜像直连的规则（用 delete-rules 去掉）。
+func managed(secret string, tun, lan bool, set *settings.Settings) []config.Managed {
+	geoAuto, geoHours := set.GeoAutoUpdate()
+	geo := fmt.Sprintf("geo-auto-update: %t\n", geoAuto)
+	if geoAuto {
+		geo += fmt.Sprintf("geo-update-interval: %d\n", geoHours)
+	}
+	controller := fmt.Sprintf("127.0.0.1:%d", APIPort)
 	if lan {
-		g.ExternalController = LANController
+		controller = LANController
 	}
+	panel := marshal(struct {
+		Controller string `yaml:"external-controller"`
+		Secret     string `yaml:"secret"`
+	}{controller, secret})
+
+	mirror := set.GitHubMirror
+	m := struct {
+		GeoxURL       map[string]string `yaml:"geox-url,omitempty"`
+		ExternalUIURL string            `yaml:"external-ui-url,omitempty"`
+		PrependRules  []string          `yaml:"prepend-rules,omitempty"`
+	}{GeoxURL: mihomo.GeoxURL(mirror), PrependRules: mirrorRules(mirror)}
 	if mirror != "" {
-		g.ExternalUIURL = download.MirrorURL(mirror, mihomo.ZashboardURL)
+		m.ExternalUIURL = download.MirrorURL(mirror, mihomo.ZashboardURL)
 	}
-	return g
+	mirrorData := marshal(m)
+
+	return []config.Managed{
+		{Name: ManagedCore, Data: fmt.Appendf(nil, "external-controller-unix: %s\n", paths.CoreSocketName)},
+		{Name: ManagedTun, Command: "tunlr tun on/off", Data: fmt.Appendf(nil, `tun:
+  enable: %t
+  auto-route: true
+  auto-redirect: true
+  strict-route: false
+  device: %s
+  iproute2-table-index: %d
+  iproute2-rule-index: %d
+`, tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex)},
+		{Name: ManagedGeo, Command: "tunlr update set geo", Data: []byte(geo), Owns: []string{"geo-auto-update", "geo-update-interval"}},
+		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel --reset-secret", Data: panel},
+		{Name: ManagedMirror, Command: "tunlr init --mirror", Default: true, Data: mirrorData},
+	}
+}
+
+// marshal 以与生成的配置相同的缩进（2 格）编码受管 mixin 的内容，tunlr mixin list 和 plan 照原样显示。
+// 内容都是字符串、映射和列表，编码不会失败。
+func marshal(v any) []byte {
+	var b bytes.Buffer
+	enc := yaml.NewEncoder(&b)
+	enc.SetIndent(2)
+	_ = enc.Encode(v)
+	_ = enc.Close()
+	return b.Bytes()
 }
 
 // mirrorRules 返回让 GitHub 镜像直连的规则。内核自己的下载（面板、geo 数据）同样按规则分流，
@@ -768,28 +807,6 @@ func mirrorRules(mirror string) []string {
 		return []string{"IP-CIDR6," + ip.String() + "/128,DIRECT,no-resolve"}
 	}
 	return []string{"DOMAIN," + host + ",DIRECT"}
-}
-
-// enforcedLayer 生成强制项：工具运行所依赖、mixin 不能覆盖的键。tun 段中除 enable 取自透明代理
-// 开关外都是固定值，工具补充的规则、清理和检测依赖它们；面板临时打开 TUN 时也按这些值工作。
-// geo 数据的自动更新由工具设置决定（tunlr update set geo），只有一个旋钮：由内核自己更新时才写
-// geo-auto-update: true 和间隔，否则关闭它，由 tunlr 按周期更新并校验。
-func enforcedLayer(tun bool, set *settings.Settings) []byte {
-	geoAuto, geoHours := set.GeoAutoUpdate()
-	geo := fmt.Sprintf("geo-auto-update: %t\n", geoAuto)
-	if geoAuto {
-		geo += fmt.Sprintf("geo-update-interval: %d\n", geoHours)
-	}
-	return fmt.Appendf(nil, `external-controller-unix: %s
-%stun:
-  enable: %t
-  auto-route: true
-  auto-redirect: true
-  strict-route: false
-  device: %s
-  iproute2-table-index: %d
-  iproute2-rule-index: %d
-`, paths.CoreSocketName, geo, tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex)
 }
 
 // newSecret 生成 32 个十六进制字符的随机 secret。

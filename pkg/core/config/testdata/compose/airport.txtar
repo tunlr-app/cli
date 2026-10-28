@@ -1,7 +1,7 @@
 内置模板 + 机场完整配置（结构仿照真实订阅，节点信息为假值）+ 常见 mixin。
 订阅中的端口、API、DNS 等系统设置被丢弃，只采用路由部分。
 
--- generated.yaml --
+-- managed/tunlr:panel --
 secret: generated
 -- subscription.yaml --
 # Example Airport

@@ -188,6 +188,7 @@ func (i *Installer) installChecks(ctx context.Context, h *doctor.Host, quick boo
 
 	i.checkConfig(ctx, c, owner, quick, ks != nil && ks.Installed)
 	if setErr == nil && stErr == nil {
+		i.checkMixins(ctx, c)
 		i.checkTimers(ctx, c, st)
 	}
 	i.checkTun(ctx, c, st, running != "")
@@ -296,6 +297,20 @@ func (i *Installer) checkConfig(ctx context.Context, c *doctor.Checker, owner *f
 			"tunlr apply publishes a fresh one; tunlr rollback goes back to an earlier one")
 	default:
 		c.Add("config", doctor.OK, "Configuration", "passes mihomo -t", "")
+	}
+}
+
+// checkMixins 按现在的订阅和 mixin 合成一次配置（不校验），发现有错的 mixin，包括动了 tunlr 独占的键的
+// （例如手动改的 mixin 写了 tun.enable）：下一次 apply 和定时更新都会因此拒绝发布。
+func (i *Installer) checkMixins(ctx context.Context, c *doctor.Checker) {
+	var me *config.MixinError
+	switch err := i.pipeline(nil).CheckMixins(ctx); {
+	case errors.As(err, &me):
+		c.Add("mixins", doctor.Fail, "Mixins", err.Error(), "tunlr edit "+me.File+", then tunlr apply")
+	case err != nil:
+		c.Add("mixins", doctor.Warn, "Mixins", "could not compose the configuration: "+err.Error(), "")
+	default:
+		c.Add("mixins", doctor.OK, "Mixins", "no conflict with the settings tunlr manages", "")
 	}
 }
 

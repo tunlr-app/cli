@@ -47,7 +47,7 @@
 ```
 cmd/tunlr/          main 入口（编译出的二进制名为 tunlr）
 pkg/core/           全部业务逻辑，公开包，将来供 agent 等组件复用
-  config/           模板 + 默认值 + 订阅 + mixin + 强制项合成、diff、发布历史
+  config/           模板 + 订阅 + 受管 mixin + 用户 mixin 合成（冲突检测）、diff、发布历史
   pipeline/         配置流水线：预览（plan）、校验、发布（apply）、回滚
   subscription/     订阅的抓取、保存、增删与切换（可保存多个，同一时间只启用一个）
   mihomo/           内核下载、升级、已知可用版本、geo 数据、mihomo -t 校验、API client

@@ -573,16 +573,6 @@ func lookup(m *yaml.Node, path []string) *yaml.Node {
 	return m
 }
 
-// keyLine 返回 mixin 中路径首个键所在的行，找不到时为 0。
-func keyLine(m *yaml.Node, path []string) int {
-	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == path[0] {
-			return m.Content[i].Line
-		}
-	}
-	return 0
-}
-
 func sameNode(a, b *yaml.Node) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -596,21 +586,6 @@ func sameNode(a, b *yaml.Node) bool {
 		}
 	}
 	return true
-}
-
-// lint 检查最终配置中有风险、但不至于拒绝发布的设置；会开放无需认证的端口的设置由 CheckExposure 拒绝。
-// setBy 是各个键最后由哪一层设置；工具生成的值（面板的局域网访问开关）是用户有意打开的，不警告。
-func lint(root *yaml.Node, setBy map[string]string) []Warning {
-	var ws []Warning
-	if setBy["external-controller"] == GeneratedName {
-		return ws
-	}
-	if n := lookup(root, []string{"external-controller"}); n != nil && n.Kind == yaml.ScalarNode && !isNull(n) && n.Value != "" {
-		if host, _, err := net.SplitHostPort(n.Value); err != nil || !isLoopback(host) {
-			ws = append(ws, Warning{Message: fmt.Sprintf("external-controller listens on %s, which other hosts can reach; keep it on 127.0.0.1 and use an SSH tunnel", n.Value)})
-		}
-	}
-	return ws
 }
 
 func isLoopback(host string) bool {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -18,8 +19,8 @@ import (
 var update = flag.Bool("update", false, "rewrite the want sections of golden files")
 
 // TestComposeGolden 读取 testdata/compose/*.txtar。每个文件包含输入
-// template.yaml（缺省时使用内置模板）、subscription.yaml、generated.yaml、enforced.yaml
-// 和 mixin.d/<文件名>（按出现顺序应用），以及期望输出 want.yaml、dropped（被丢弃的订阅键）、
+// template.yaml（缺省时使用内置模板）、subscription.yaml、受管 mixin（managed/<名称> 独占键，
+// default/<名称> 提供默认值）和 mixin.d/<文件名>（按出现顺序应用），以及期望输出 want.yaml、dropped（被丢弃的订阅键）、
 // warnings 和 overrides（每行一条）。用 go test ./pkg/core/config -update 重新生成期望输出。
 func TestComposeGolden(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("testdata", "compose", "*.txtar"))
@@ -37,18 +38,24 @@ func TestComposeGolden(t *testing.T) {
 			}
 			sections := map[string][]byte{}
 			var mixins []Mixin
+			var managed []Managed
 			for _, f := range ar.Files {
 				sections[f.Name] = f.Data
 				if name, ok := strings.CutPrefix(f.Name, "mixin.d/"); ok {
 					mixins = append(mixins, Mixin{Name: name, Data: f.Data})
 				}
+				if name, ok := strings.CutPrefix(f.Name, "managed/"); ok {
+					managed = append(managed, Managed{Name: name, Data: f.Data})
+				}
+				if name, ok := strings.CutPrefix(f.Name, "default/"); ok {
+					managed = append(managed, Managed{Name: name, Default: true, Data: f.Data})
+				}
 			}
 			l := Layers{
 				Template:     sections["template.yaml"],
 				Subscription: sections["subscription.yaml"],
-				Generated:    sections["generated.yaml"],
+				Managed:      managed,
 				Mixins:       mixins,
-				Enforced:     sections["enforced.yaml"],
 			}
 			if _, ok := sections["template.yaml"]; !ok {
 				l.Template = templates.Config
@@ -217,6 +224,61 @@ func TestComposeErrors(t *testing.T) {
 				t.Fatalf("err = %v, want prefix %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// TestComposeConflicts 检查用户的 mixin 动了受管 mixin 独占的键时报错：直接写（即使值相同）、用 null 删除、
+// 经上级替换或删除；同一映射中的其他键和提供默认值的受管 mixin 的键可以改。
+func TestComposeConflicts(t *testing.T) {
+	managed := []Managed{
+		{Name: "tunlr:tun", Command: "tunlr tun on/off", Data: []byte("tun:\n  enable: true\n  device: tunlr0\n")},
+		{Name: "tunlr:geo", Command: "tunlr update set geo", Data: []byte("geo-auto-update: false\n"), Owns: []string{"geo-update-interval"}},
+		{Name: "tunlr:core", Data: []byte("external-controller-unix: api.sock\n")},
+		{Name: "tunlr:mirror", Default: true, Data: []byte("prepend-rules: [DOMAIN,m.example,DIRECT]\nexternal-ui-url: https://m.example/ui.zip\n")},
+	}
+	template := "tun:\n  enable: false\n  stack: mixed\nrules:\n  - MATCH,DIRECT\n"
+	for _, tt := range []struct {
+		name, mixin, want string
+	}{
+		{"same value", "tun:\n  enable: true\n", "mixin 10-test.yaml:2: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); remove it from the mixin"},
+		{"null", "x: 1\ntun:\n  device: null\n", "mixin 10-test.yaml:3: tun.device is managed by tunlr:tun"},
+		{"replace parent", "tun: off\n", "mixin 10-test.yaml:1: tun.enable, tun.device are managed by tunlr:tun"},
+		{"delete parent", "a: 1\ndelete-tun: [enable]\n", "mixin 10-test.yaml:2: tun.enable is managed by tunlr:tun"},
+		{"owned but unset", "geo-update-interval: 1\n", "mixin 10-test.yaml:1: geo-update-interval is managed by tunlr:geo (change it with: tunlr update set geo)"},
+		{"required", "external-controller-unix: x.sock\n", "mixin 10-test.yaml:1: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
+		{"several owners", "tun: {enable: false}\ngeo-auto-update: true\n", "mixin 10-test.yaml:1: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); geo-auto-update is managed by tunlr:geo"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			l := mixinLayers(template, tt.mixin)
+			l.Managed = managed
+			_, err := Compose(l)
+			var me *MixinError
+			if !errors.As(err, &me) || !strings.HasPrefix(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want prefix %q", err, tt.want)
+			}
+		})
+	}
+
+	// 其他键可以改；默认值可以覆盖和删除。
+	l := mixinLayers(template, "tun:\n  stack: system\nexternal-ui-url: https://x.example/ui.zip\ndelete-rules: [DOMAIN,m.example,DIRECT]\n")
+	l.Managed = managed
+	res, err := Compose(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "tun:\n  enable: true\n  stack: system\n  device: tunlr0\n\nrules:\n  - MATCH,DIRECT\n\n" +
+		"external-ui-url: https://x.example/ui.zip\ngeo-auto-update: false\nexternal-controller-unix: api.sock\n"
+	if string(res.Config) != want {
+		t.Errorf("config:\n%s\nwant:\n%s", res.Config, want)
+	}
+	if len(res.Overrides) != 1 || res.Overrides[0] != (Override{Path: "external-ui-url", File: "10-test.yaml", Previous: "tunlr:mirror"}) {
+		t.Errorf("overrides = %+v", res.Overrides)
+	}
+
+	// Enforce 只写入独占的键。
+	cfg, _, err := Enforce([]byte("tun:\n  enable: false\n"), managed)
+	if err != nil || string(cfg) != "tun:\n  enable: true\n  device: tunlr0\n\ngeo-auto-update: false\nexternal-controller-unix: api.sock\n" {
+		t.Errorf("Enforce = %s, %v", cfg, err)
 	}
 }
 

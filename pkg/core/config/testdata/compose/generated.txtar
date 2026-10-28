@@ -1,4 +1,4 @@
-工具生成的调整（配置了 GitHub 镜像时让镜像直连的规则）以 mixin 语义应用在订阅之后、
+提供默认值的受管 mixin（配置了 GitHub 镜像时让镜像直连的规则）以 mixin 语义应用在订阅之后、
 用户的 mixin 之前：用户前插的规则排在它前面，用户也可以用 delete-rules 去掉它。
 
 -- template.yaml --
@@ -8,7 +8,7 @@ proxies:
   - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
 rules:
   - MATCH,a
--- generated.yaml --
+-- default/tunlr:mirror --
 prepend-rules:
   - DOMAIN,gh-proxy.com,DIRECT
   - DOMAIN,mirror.example.net,DIRECT

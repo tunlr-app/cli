@@ -171,8 +171,8 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 ## 6. 配置流水线
 
 ```
-模板 + 订阅（机场完整配置）+ 用户 mixin + 工具强制项
-        → 合成最终配置
+模板 + 订阅（机场完整配置）+ 受管 mixin（tunlr 的交互功能）+ 用户 mixin
+        → 合成最终配置（用户 mixin 动了受管的键时拒绝）
         → mihomo -t 校验
         → 写临时文件 → os.Rename 原子替换
         → 通过 API 热重载
@@ -200,11 +200,23 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 - **分层合成，各层职责固定**（`pkg/core/config.Compose`）：
   1. 模板：工具内置的系统部分，如端口、DNS、geo 更新与下载地址、面板、profile。
   2. 订阅：**只取路由部分**，即 `proxies`、`proxy-groups`、`rules`、`proxy-providers`、`rule-providers`、`sub-rules`，其余键一律丢弃并在 `plan` 中列出。订阅是不可信输入，不能让机场配置打开端口、改监听地址或设置 API。
-  3. 工具生成的调整：工具为这台服务器生成的值，在内存中写成一份名为 `tunlr` 的只读 mixin，以 mixin 的语义应用，用户的 mixin 可以覆盖或去掉（覆盖记录显示为“覆盖 tunlr”）。包括 HTTP API 的 `secret`（第一次发布时随机生成，存在状态文件中），以及配置了 `github-mirror` 时经镜像的面板地址（`external-ui-url`）、geo 数据地址（`geox-url`）和让镜像主机直连的规则（见下文“内核自己的下载”）。`plan` 列出这一层的全部内容（`secret` 的值隐去），用户由此知道哪些键由工具设置、该怎样覆盖。
-     - 不写入 `mixin.d`：写成文件会让用户以为可以编辑它，改了又被工具覆盖；镜像设置变化时还要同步文件。
-     - 放在订阅之后而不是紧接模板：插入规则需要订阅的 `rules` 已经就位；这一层的键模板中都有（`geox-url` 也写在模板里，地址与工具校验下载的 geo 数据一致），合并后位置不变，输出稳定。
-  4. mixin：用户的覆盖，可以改任何键（强制项除外），见下文。
-  5. 工具强制项：工具运行所依赖的键（`external-controller-unix`，以及透明代理开关决定的几个 `tun` 键，见 8.3），最后写入，mixin 无法覆盖。
+  3. 提供默认值的受管 mixin（`tunlr:mirror`），见下文“受管 mixin”。
+  4. 用户的 mixin，见下文。
+  5. 独占键的受管 mixin（`tunlr:core`、`tunlr:tun`、`tunlr:geo`、`tunlr:panel`），最后写入。
+- **受管 mixin：mixin 是统一的底座**。mihomo 由配置驱动，tunlr 的交互功能（TUN 开关、面板的局域网访问、geo 数据的更新方式等）说到底都是对配置的修改。每个功能的开关存在状态文件或工具设置中，它在配置中写成什么由一份受管 mixin 表达，与用户的 mixin 走同一套合并引擎（`pkg/core/config/managed.go`）。原来分开的“工具生成的调整”和“强制项”两条路径合并为它。
+  - 两种受管 mixin：
+
+    | 种类 | 成员 | 应用时机 | 用户的 mixin 动了它的键 |
+    |---|---|---|---|
+    | 独占 | `tunlr:core`（`external-controller-unix`，工具经它访问 API）<br>`tunlr:tun`（`tun.enable` 等，见 8.3）<br>`tunlr:geo`（`geo-auto-update`、`geo-update-interval`，见第 7 节）<br>`tunlr:panel`（`external-controller`、`secret`） | 用户的 mixin 之后 | 报错，不发布 |
+    | 默认值 | `tunlr:mirror`（`geox-url`；配置了 `github-mirror` 时另有 `external-ui-url` 和让镜像直连的规则） | 用户的 mixin 之前 | 允许，`plan` 中记为“覆盖 tunlr:mirror” |
+
+  - 冲突：用户的 mixin 写了独占的键（即使值相同）、用 `null` 或 `delete-` 删除它，或把它的上级整个替换掉。报告为 mixin 错误（`*config.MixinError`，退出码 3），指出文件、行和改用的命令，例如 `mixin 20-x.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); remove it from the mixin`。同一映射中的其他键照常可改（如 `tun.stack`、`tun.route-exclude-address`）。
+  - 为什么拒绝而不是像原来那样忽略并警告：被忽略的设置让人以为生效了，交互命令和手改的 mixin 各说各的；拒绝时用户立刻知道该用哪个命令。代价是工具升级新增独占的键后，已经写了它的 mixin 会让定时更新保持当前配置（与 mixin 出错相同），`doctor` 的 `install.mixins` 列出这种冲突。
+  - `secret` 也是独占的，不支持自定义：换 secret 用 `tunlr panel --reset-secret`。
+  - 受管 mixin 只在内存中合成，不写入 `mixin.d`：写成文件会让用户以为可以编辑它，改了又被工具覆盖；设置变化时还要同步文件。`tunlr mixin list` 列出用户的 mixin 文件和全部受管 mixin（独占的列出键和命令，默认值的列出内容，`secret` 的值不出现），`plan` 列出受管 mixin 的名称和默认值的内容。
+  - 默认值放在订阅之后而不是紧接模板：插入规则需要订阅的 `rules` 已经就位；这一层的键模板中都有（`geox-url` 也写在模板里，地址与工具校验下载的 geo 数据一致），合并后位置不变，输出稳定。
+  - 回滚和自动关闭透明代理不重新合成，只把独占的受管 mixin 按当前状态重新写入生效的配置（`config.Enforce`），包括面板的监听地址和 `secret`。
 - **mixin**（`pkg/core/config/mixin.go`）。参考了 clashctl（单个 mixin.yaml，嵌套的 `prepend`/`append`/`override`/`inject`）和 ShellCrash（按类别分文件、文本拼接、`-t` 失败时静默丢弃全部自定义）后的设计：
   - 场景：改通用设置；加自己的节点、策略组、规则、rule-providers、listeners；改订阅里已有的策略组和节点（塞入自己的节点、改 interval、加 dialer-proxy）；去掉机场的信息节点和不要的组或规则；按用途分文件、可以单独停用。
   - **语法：mihomo 原生写法 + 前缀操作**。不带前缀的键与 mihomo 配置语义完全一致；同一个文件里可以对同一个键做多种操作；一条规则推广到任意层级。没有采用 clashctl 的嵌套写法（`rules` 是列表就替换、是映射就执行操作，语义由类型决定，且只对写死的几个键有效），也没有用 YAML 标签（同一个键在一个文件里只能出现一次，无法既前插又追加）。
@@ -226,15 +238,15 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 子目录被忽略，预留给将来按订阅区分的 mixin（如 `mixin.d/<订阅名>/`，先应用全局文件，再应用启用订阅的文件）。第一版不做：patch、delete 找不到目标时只警告，切换订阅一般不会因此失败。
   - mixin 可能含有节点密码，目录 0700，文件 0600。
 - **范围与检查**：
-  - 强制项：mixin 写了会被忽略并给出警告，不报错，避免工具升级新增强制项后定时更新突然失败。
-  - 允许但警告：数字前缀位数不同导致的意外顺序；`external-controller` 不在回环地址；用不带前缀的 `rules`/`proxies`/`proxy-groups` 整体替换订阅的内容；`patch-`、`delete-` 没有匹配的项。
-  - 报错（退出码 3，不发布）：YAML 解析失败；前缀操作的值不是列表，或目标的类型不对（如 `prepend-dns`）；`patch-` 的项没有 `name`；正则无效；端口安全检查不通过（见下）；以及 `mihomo -t` 不通过。
+  - 受管的键：动了独占的受管 mixin 的键时报错（见上文“受管 mixin”）。
+  - 允许但警告：数字前缀位数不同导致的意外顺序；用不带前缀的 `rules`/`proxies`/`proxy-groups` 整体替换订阅的内容；`patch-`、`delete-` 没有匹配的项。
+  - 报错（退出码 3，不发布）：YAML 解析失败；动了受管的键；前缀操作的值不是列表，或目标的类型不对（如 `prepend-dns`）；`patch-` 的项没有 `name`；正则无效；端口安全检查不通过（见下）；以及 `mihomo -t` 不通过。
   - **端口安全**（MVP 5）：合成的结果会让其他主机无需凭据就能使用代理或 DNS 时不发布，避免公网服务器成为开放代理、开放 DNS 解析器。由 `pkg/core/config.CheckExposure` 检查：
     - `allow-lan: true` 而 `authentication` 为空：代理端口（`mixed-port`、`port`、`socks-port` 等）对外开放且没有认证。
     - `listeners` 中 `mixed`、`http`、`socks` 类型的项监听在非回环地址（不写 `listen` 即为 `0.0.0.0`），且没有认证：写了 `users: []`，或没写 `users`（这时沿用全局的 `authentication`）而全局也为空。
     - `dns.enable` 时 `dns.listen` 不在回环地址：在公网上会被用于 DNS 反射放大。局域网设备经网关模式（8.10）使用时由 TUN 劫持，不需要它。
-    - `external-controller` 有值而 `secret` 为空（`secret` 由 tunlr 生成，只有 mixin 把它改成空串时才会出现）。
-    - 只检查重新合成的配置（`plan`、`apply`、`edit`、`sub use`、`tun on/off`、定时更新）。回滚到历史修订、自动关闭 TUN 时只重写强制项、不重新合成，不检查：这些是已经发布过的内容，拦下它们只会让恢复失败。定时更新遇到这种错误时保持当前配置，与 mixin 出错相同。
+    - `external-controller` 有值而 `secret` 为空（`secret` 归 `tunlr:panel`，mixin 改不了，只会出现在工具之外改动的配置中）。
+    - 只检查重新合成的配置（`plan`、`apply`、`edit`、`sub use`、`tun on/off`、定时更新）。回滚到历史修订、自动关闭 TUN 时只重写独占的键、不重新合成，不检查：这些是已经发布过的内容，拦下它们只会让恢复失败。定时更新遇到这种错误时保持当前配置，与 mixin 出错相同。
     - 认证的用户名和密码由用户写在 mixin 里，tunlr 不生成、不保存。`doctor` 对生效的配置做同样的检查（`install.exposure`）。
   - mixin 有错时绝不丢掉它去发布（ShellCrash 的做法）：丢掉用户写的直连或拦截规则可能让流量走错路。定时更新遇到 mixin 错误同样保持当前配置。
 - **`tunlr edit [名称]`**：同 visudo、`kubectl edit`，在临时副本上编辑，保存后合成并运行 `-t`，有错就显示原因并让用户选择重新编辑或放弃，**通过后才写回 `mixin.d`**，然后显示 diff、确认后发布。有错的编辑因此不会进入 `mixin.d`，定时任务读不到。
@@ -248,7 +260,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - `-t` 在临时工作目录中运行，内核工作目录中的 geo 文件以符号链接提供：`-t` 可能写入缓存，直接用内核的工作目录会与运行中的内核冲突。
   - 校验失败时区分“配置错误”和“依赖下载失败”：mihomo 的错误消息含 `can't download` 时属于后者，不报告为配置问题（不映射到退出码 3）。
   - 实测 `-t` 不会抓取远程的 proxy-providers 和 rule-providers，它们暂时不可达不影响校验。
-  - 内核自己的 geo 定时更新（`geox-url`）同样受网络影响，其地址由工具按镜像设置写入“工具生成的调整”。用户在 mixin 中自己指定的地址优先，因此不放在强制项中。
+  - 内核自己的 geo 定时更新（`geox-url`）同样受网络影响，其地址由工具按镜像设置写入 `tunlr:mirror`。用户在 mixin 中自己指定的地址优先，因此它只提供默认值，不独占。
 - **内核自己的下载**：
 
   | 下载 | 发起者 | 路径 | 校验 |
@@ -261,10 +273,10 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   | 面板触发的内核升级 | 内核 | 按规则分流，直连 github.com | 无，事后由工具核对（见第 7 节） |
 
   - 读 mihomo 源码（`component/http`）确认：内核自己的 HTTP 请求交给内部 tunnel，按目标域名匹配规则，失败时才退回直连。所以策略组选中不可用的节点时，面板和 geo 下载全部失败（实测）。
-  - **镜像直连规则**：配置了 `github-mirror` 时，工具在订阅规则前插入 `DOMAIN,<镜像域名>,DIRECT`（镜像是 IP 时用 `IP-CIDR`/`IP-CIDR6`）。镜像本来就是为直连准备的；实测选中不可用的节点时，加上这条规则后面板经镜像下载成功。它属于“工具生成的调整”而不是强制项：用户有理由让镜像也走代理，可以用 `delete-rules` 去掉。没有配置镜像时不加，直连 github.com 在国内很慢，交给规则决定。将来 TUN 阶段需要直连的主机（如订阅域名）也放在这一层。
+  - **镜像直连规则**：配置了 `github-mirror` 时，工具在订阅规则前插入 `DOMAIN,<镜像域名>,DIRECT`（镜像是 IP 时用 `IP-CIDR`/`IP-CIDR6`）。镜像本来就是为直连准备的；实测选中不可用的节点时，加上这条规则后面板经镜像下载成功。它属于提供默认值的 `tunlr:mirror` 而不是独占的：用户有理由让镜像也走代理，可以用 `delete-rules` 去掉。没有配置镜像时不加，直连 github.com 在国内很慢，交给规则决定。将来 TUN 阶段需要直连的主机（如订阅域名）也放在这一层。
   - **信任边界**：镜像可以篡改它转发的内容。工具的下载有官方 sha256 兜底，内核的下载没有。其中面板在浏览器中运行并持有 API secret，geo 数据决定分流，被篡改的后果都很严重，因此改由工具下载并校验：
     - 面板：apply 时若面板目录不存在，工具从 zashboard 最新发布下载 `dist.zip`，按官方 sha256 校验，解压（拒绝指向目录外的路径和非普通文件，限制解压后大小）后原子地放到位。实测内核启动时发现面板目录已存在就跳过下载。只处理 `external-ui-url` 仍是 zashboard 官方地址或其镜像地址的配置，用户在 mixin 中换了面板时交给内核。面板不是必需的：下载失败（时限 5 分钟）照常发布，由内核按 `external-ui-url` 自己下载；下载在加锁之前进行，不阻塞定时任务。
-    - geo 数据：校验前缺失的文件由工具校验下载；定时更新默认由 `_update` 触发内核下载后按官方 sha256 核对（见第 7 节“geo 数据更新”）。内核自己的 `geo-auto-update` 下载后不做任何校验，由工具设置决定开关（强制项，mixin 改不了），默认关闭。
+    - geo 数据：校验前缺失的文件由工具校验下载；定时更新默认由 `_update` 触发内核下载后按官方 sha256 核对（见第 7 节“geo 数据更新”）。内核自己的 `geo-auto-update` 下载后不做任何校验，由工具设置决定开关（归 `tunlr:geo`，mixin 改不了），默认关闭。
     - `external-ui-url`、`geox-url` 仍写成经镜像的地址，用于 `_update` 触发的更新和用户在面板上主动点“更新”。
   - 实测：zashboard 与 meta-rules-dat 的发布资产都带有 GitHub 提供的 sha256 digest。
 - **充分利用内核已有能力**，由工具写入模板默认开启：
@@ -272,7 +284,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - proxy-providers / rule-providers 的 `interval`：订阅与规则集热更新
   - `profile.store-selected` / `store-fake-ip`：保存面板选择的节点和 fake-ip 映射
   - `ntp`：时间同步（或交给系统的 timesyncd）
-- 工具经 `external-controller-unix` 访问内核 API，路径以强制项写为相对路径 `api.sock`。内核相对于工作目录解析它，所以在临时目录中运行的 `-t` 不受影响。实测内核以 0666 创建这个 socket，访问也不需要 secret，因此只能靠工作目录的权限（0750）阻止其他本地用户。每次发布都会把工作目录的权限收紧到 0750。面板走 `external-controller`（HTTP，只监听本机），由 secret 保护：实测不带 secret 时返回 401。
+- 工具经 `external-controller-unix` 访问内核 API，路径由 `tunlr:core` 写为相对路径 `api.sock`。内核相对于工作目录解析它，所以在临时目录中运行的 `-t` 不受影响。实测内核以 0666 创建这个 socket，访问也不需要 secret，因此只能靠工作目录的权限（0750）阻止其他本地用户。每次发布都会把工作目录的权限收紧到 0750。面板走 `external-controller`（HTTP，只监听本机），由 secret 保护：实测不带 secret 时返回 401。
 - **发布分两步：预览（plan）与发布（apply）**（`pkg/core/pipeline`）：
   - plan：合成配置，与生效的配置比较，生成统一格式的 diff，并用 `mihomo -t` 校验。plan 不改动状态，只可能补齐校验需要的 geo 数据。内核未安装时 plan 仍可预览，但标明未校验；apply 则拒绝发布。
   - apply 先输出 plan 的结果，经确认后在文件锁内发布：原子写入 → 通知内核加载 → 记录历史。
@@ -298,7 +310,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 内核退出后 socket 文件仍会留下，连接时被拒绝。socket 不存在和连接被拒绝都视为内核没有运行：配置照常发布，由内核启动时加载。
   - 重载失败（返回错误，或重载后不再响应）时，恢复原配置并让内核重新加载它，退出码 4。重载后内核不再响应时，即使随后连接被拒绝，也不能当作“没有运行”，同样回滚，让内核下次启动时用回原配置。
   - 热重载只调用 `executor.ApplyConfig`，不重建 API 服务；geo 定时器也只在启动时注册（读源码 `hub/hub.go`、`main.go`，并实测改 `secret`、`external-controller` 后重载不生效）。以下键变化时，apply 改为重启内核，plan 中说明“本次会重启内核”：`external-controller`、`external-controller-tls`、`external-controller-unix`、`external-controller-pipe`、`external-controller-cors`、`external-doh-server`、`secret`、`external-ui`、`external-ui-name`、`tls`、`geo-auto-update`、`geo-update-interval`。重启后做健康检查，失败时恢复原配置并再次重启，退出码 4。没有安装服务时照常写入，并提示需要重启内核。
-- **回滚**：`rollback` 不带修订号时，回到最近一个与生效配置不同的修订，所以连续执行两次会在两个版本间来回切换（与 `helm rollback` 相同）。`rollback <号>` 恢复指定修订，`--list` 列出历史。回滚同样经过 `-t` 校验和确认，并记为新修订（来源为 rollback）。修订号递增、不复用。回滚恢复修订的内容后，强制项按当前状态重新写入（如透明代理开关，见 8.3）。回滚只恢复配置文件，下一次 apply（包括订阅更新）会按当前的订阅和 mixin 重新合成。
+- **回滚**：`rollback` 不带修订号时，回到最近一个与生效配置不同的修订，所以连续执行两次会在两个版本间来回切换（与 `helm rollback` 相同）。`rollback <号>` 恢复指定修订，`--list` 列出历史。回滚同样经过 `-t` 校验和确认，并记为新修订（来源为 rollback）。修订号递增、不复用。回滚恢复修订的内容后，独占的受管 mixin 按当前状态重新写入（如透明代理开关，见 8.3；面板的监听地址和 `secret`）。回滚只恢复配置文件，下一次 apply（包括订阅更新）会按当前的订阅和 mixin 重新合成。
 
 ## 7. 内核管理与救援
 
@@ -355,7 +367,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 内核的 geo 数据只能由内核自己的更新器重新加载（`mmdb.ReloadIP` 等只在更新器中调用）；工具替换文件后要重启内核才生效。
   - `POST /configs/geo` 同步执行：内容与磁盘上的相同时直接返回 204，不写文件也不记日志（之前“没有结果”的原因）；单个文件的下载时限 90 秒，经 gh-proxy 实测一次 64 秒成功、一次 90 秒超时。
   - 所以默认（`geo-updater: tunlr`）由 `_update` 先调用 `POST /configs/geo` 让内核经镜像更新，无需重启；成功后由工具查询 meta-rules-dat 最新发布的官方 sha256，核对工作目录中内核正在使用的 geo 文件。不一致时下载校验过的文件（经镜像校验不通过时改为直连）替换并重启内核；拿不到校验过的文件则记录错误。内核下载失败（如超时）时本次跳过，留给下一次。
-  - 也可以交给内核自己更新（`geo-updater: mihomo`）：配置中写入 `geo-auto-update: true` 和 `geo-update-interval`（周期换算成小时），不校验、不重启，`update show` 中“上次执行”是最新 geo 文件的修改时间（内核不报告结果），“下次到期”由内核决定。这两个键是强制项：由设置决定，mixin 改不了（否则 mixin 一开，tunlr 的校验更新和内核的更新会各做各的）。它们是重启键，所以 `update set geo --by` 在两种方式之间切换时要发布配置并重启内核：先保存设置，再像 `apply` 一样展示 diff 并确认，不发布（回答否或检查不通过）则把设置改回去，让设置和配置保持一致。
+  - 也可以交给内核自己更新（`geo-updater: mihomo`）：配置中写入 `geo-auto-update: true` 和 `geo-update-interval`（周期换算成小时），不校验、不重启，`update show` 中“上次执行”是最新 geo 文件的修改时间（内核不报告结果），“下次到期”由内核决定。这两个键归 `tunlr:geo`：由设置决定，mixin 改不了（关闭时不写间隔，但 mixin 同样不能写它）（否则 mixin 一开，tunlr 的校验更新和内核的更新会各做各的）。它们是重启键，所以 `update set geo --by` 在两种方式之间切换时要发布配置并重启内核：先保存设置，再像 `apply` 一样展示 diff 并确认，不发布（回答否或检查不通过）则把设置改回去，让设置和配置保持一致。
 - **状态以实际为准**：版本、TUN 状态等一律通过 API 查询内核实际情况；工具自己的记录只作为“已知可用的历史”。
 - 注意：内核 API 并不稳定（例如曾有标注为 break 的 `/proxies` 行为变更），API 调用集中封装在 `pkg/core/mihomo` 的 client 中，并随 mihomo 发版做兼容性测试。
 
@@ -402,9 +414,9 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 - **开关存在状态文件中**（`state.json` 的 `tun`），不放在 `settings.yaml`：手改设置文件打开 TUN 会绕过防失联检测。状态有三种：`off`、`pending`（已发布、检测中，带回滚期限）、`on`。新增的字段可以省略，旧状态文件视为 `off`，不需要迁移。
 - **配置复用分层合成**，`tun on/off` 本身只改开关，然后走与 `apply` 相同的流水线（`-t` 校验、原子写入、热重载、失败回滚、记入历史）。实测热重载即可开关 TUN，`tun` 不加入需要重启的键。
   - 模板（用户可以用 mixin 覆盖）：`stack: mixed`、`auto-detect-interface: true`、`dns-hijack: [any:53, tcp://any:53]`，附注释说明为什么不排除私有地址段。
-  - 强制项（mixin 无法覆盖，写了就警告并忽略）：`tun.enable`（取自开关：`pending` 与 `on` 为 true）、`auto-route: true`、`auto-redirect: true`、`strict-route: false`、`device: tunlr0`、`iproute2-table-index: 2022`、`iproute2-rule-index: 9000`。工具补的规则、清理和检测都依赖这些值；固定网卡名也让 `doctor` 和日志一眼认出它。
-  - 不写进 `mixin.d`，理由与“工具生成的调整”相同。
-- **回滚与开关**：`rollback` 恢复旧修订的内容后，再按当前开关写入强制项（与合成时最后一层相同）。否则回滚到开关不同的修订，配置就与工具的规则和防失联状态对不上。`plan` 照常显示差异。
+  - 由 `tunlr:tun` 独占（mixin 写了就拒绝发布，提示用 `tunlr tun on/off`）：`tun.enable`（取自开关：`pending` 与 `on` 为 true）、`auto-route: true`、`auto-redirect: true`、`strict-route: false`、`device: tunlr0`、`iproute2-table-index: 2022`、`iproute2-rule-index: 9000`。工具补的规则、清理和检测都依赖这些值；固定网卡名也让 `doctor` 和日志一眼认出它。
+  - 不写进 `mixin.d`，理由见第 6 节“受管 mixin”。
+- **回滚与开关**：`rollback` 恢复旧修订的内容后，再按当前开关写入独占的受管 mixin（与合成时最后一层相同）。否则回滚到开关不同的修订，配置就与工具的规则和防失联状态对不上。`plan` 照常显示差异。
 - **面板运行时切换**（见 3.3）：面板打开 TUN 不写回配置，也不经防失联检测。工具的规则不依赖开关（见 8.4），所以面板打开时同样生效。`status` 在内核实际状态与开关不一致时提示，执行 `tun on/off` 即以开关为准。
 
 ### 8.4 工具补充的规则及其生命周期
@@ -424,7 +436,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 `tun on`：
 
 1. 前置检查，不通过则退出码 3：服务已安装且内核在运行（不运行就无法检测，提示先 `start`）；`/dev/net/tun`、`nft`、`ip` 可用；优先级 8999～9010 没有他人的 ip rule；启用了 UFW、firewalld 时给出警告（未实测，见 8.8）。
-2. 显示 `plan`（diff 中是 `tun.enable` 等强制项的变化）并确认；非交互模式需要 `--yes`，`--dry-run` 只预览。
+2. 显示 `plan`（diff 中是 `tun.enable` 的变化）并确认；非交互模式需要 `--yes`，`--dry-run` 只预览。
 3. 加锁，开关记为 `pending`（期限为现在加 3 分钟），用 `systemd-run --on-active=3min --unit=tunlr-tun-guard` 布置回滚定时器，执行 `tunlr _tun-guard`。
 4. 加载工具的规则（见 8.4，让已经建立的连接也能标记），发布配置，内核热重载打开 TUN。发布失败时流水线自己回滚，开关恢复原状，退出码 4。然后释放锁，检测不需要持锁，这样卡住的检测不会挡住回滚定时器。
 5. 检测（30 秒内）：
@@ -441,7 +453,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 
 ### 8.6 与其他功能的关系
 
-- `apply`、`_update`、`sub use` 照常合成，强制项随开关写入，定时更新不会改变 TUN 状态。
+- `apply`、`_update`、`sub use` 照常合成，`tunlr:tun` 随开关写入，定时更新不会改变 TUN 状态。
 - `status`：开关（`pending` 时显示剩余时间）、内核实际的 TUN 状态、两张表是否存在。
 - `uninstall`：停止服务时 `_poststop` 清理规则（服务没在运行或 unit 是旧版时再直接清理一次）；删除 `tunlr-check.timer`，停止可能存在的回滚定时器；开关记为 `off`，重新 `init` 后 TUN 保持关闭。
 - `doctor`（MVP 4）复用第 1 步的前置检查。
@@ -595,6 +607,7 @@ tunlr plan                预览变更（--full 输出将写入系统的全部�
 tunlr apply               应用变更（默认先展示 diff，--yes 跳过确认；diff 超过 300 行时按段汇总，--full-diff 显示全部）
 tunlr rollback            回滚配置（--list 查看历史）
 tunlr edit [名称]         用 $EDITOR 编辑 mixin.d 中的文件，校验通过才保存，然后发布
+tunlr mixin [list]        列出 mixin 文件和 tunlr 管理的 mixin（独占的键、修改它们的命令）
 
 tunlr sub add | list | remove | update  订阅（可保存多个；add --update 指定自动更新周期）
 tunlr sub set [name] --update <period>  修改一个订阅的自动更新周期（6h、1d、off、default）
@@ -699,22 +712,22 @@ tunlr version
   - `label` 是 zashboard 后端列表中的名称，取主机名，经隧道的另加 `(SSH tunnel)`。zashboard 的 `addBackend` 只在各项（含 label、secret）完全相同时复用已有的后端，否则新增一个，所以 label 保持固定，重复打开链接不会多出后端；`--reset-secret` 之后旧的后端留在浏览器中，提示用户去面板的设置里删除。
   - 后端存在浏览器的 localStorage 中，第一次用链接打开之后直接打开 `http://<地址>:<端口>/ui/` 即可，输出中一并给出这个地址。
   - zashboard 可以从 `./zashboard-settings.json`（键为 localStorage 的键）或内核的 `/storage/zashboard` 导入设置，但都要用户先在浏览器里打开“自动导入”或手动导入；暂不预置，等有确定要预置的设置再做。
-- API 不只监听本机时（局域网访问开启，或 mixin 改了 `external-controller`），另外给出直接打开的链接：监听所有地址时，取默认路由网卡的 IPv4 地址，以及 SSH 会话进来的地址（如 Tailscale）。隧道照样列出，在外网时用。
+- API 不只监听本机时（局域网访问开启，或配置在工具之外被改过），另外给出直接打开的链接：监听所有地址时，取默认路由网卡的 IPv4 地址，以及 SSH 会话进来的地址（如 Tailscale）。隧道照样列出，在外网时用。
 - 显示面板是否已安装（`external-ui` 目录）、内核是否在运行，不满足时给出 `tunlr apply`、`tunlr start` 的提示。
 - 不使用 zashboard 的 `disableTunMode`、`disableUpgradeCore` 参数：不限制面板能力（见第 3 节）。
-- `--reset-secret`：生成新的 secret 并发布（diff、确认，同 `apply`；`secret` 需要重启内核才生效）。用户在 mixin 中设置了 `secret` 时拒绝，提示去改 mixin。用于 secret 可能泄漏时。
+- `--reset-secret`：生成新的 secret 并发布（diff、确认，同 `apply`；`secret` 需要重启内核才生效）。`secret` 归 `tunlr:panel`，mixin 不能设置。用于 secret 可能泄漏时。
 - 主菜单第一级“查看状态”之后是分类“Panel”：查看打开方式、开启或关闭局域网访问、更换 secret；`init` 成功后最后一行提示 `tunlr panel`。
 
 **面板的局域网访问（`tunlr panel lan on | off`）**：家庭网络中，其他设备（手机、平板）要能直接打开面板调整，不便每台都建 SSH 隧道。默认关闭。
 
-- 开关存在状态文件中（`panel_lan`），像透明代理开关一样作为合成的输入：开启时工具生成的调整中写 `external-controller: 0.0.0.0:9090`（实测内核按 `*:9090` 双栈监听，所以 nft 表也限制 IPv6 来源；链接只给 IPv4 地址）。经流水线发布：diff、确认、`mihomo -t`；`external-controller` 需要重启内核才生效，失败时回滚，开关恢复原状。
-- mixin 设置了 `external-controller` 时 `lan on` 拒绝，提示去改 mixin：工具的值不起作用。`secret` 不能为空由端口安全检查保证（第 5 节）。面板经明文 HTTP 访问，secret 在局域网中可见，`lan on` 时说明。
+- 开关存在状态文件中（`panel_lan`），像透明代理开关一样作为合成的输入：`tunlr:panel` 中写 `external-controller: 0.0.0.0:9090`（关闭时写 `127.0.0.1:9090`）（实测内核按 `*:9090` 双栈监听，所以 nft 表也限制 IPv6 来源；链接只给 IPv4 地址）。经流水线发布：diff、确认、`mihomo -t`；`external-controller` 需要重启内核才生效，失败时回滚，开关恢复原状。
+- `external-controller` 归 `tunlr:panel`，mixin 设置了它时合成就会拒绝，提示改用 `tunlr panel lan on/off`。面板经明文 HTTP 访问，secret 在局域网中可见，`lan on` 时说明。
 - 内核 API 不能限制来源，只监听 `0.0.0.0` 在公网 VPS 上等于把面板交给整个互联网。所以开关开启时另外加载 nft 表 `inet tunlr_panel`：input 链（优先级 `filter - 1`，策略 accept）中，目标为 API 端口、来源不在私有地址段（`127.0.0.0/8`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`100.64.0.0/10`（含 Tailscale）、`169.254.0.0/16`；IPv6 为 `::1`、`fe80::/10`、`fc00::/7`）的 TCP 包丢弃。在 tunlr-dev 上实测：从私有地址访问返回 200，从临时加在 lo 上的 `198.51.100.77` 访问超时。
   - 先加载表再发布配置，关闭时先发布再删表，API 对外的任何时刻都有这层保护。
   - 规则不跨重启保存：`_prestart` 在内核启动前补上；`_check` 只随透明代理运行，所以 `nft flush ruleset` 之后要到下次启动内核才补上，`doctor` 和 `tunlr panel` 会指出缺失。`_poststop` 保留它。`uninstall` 删除。
   - 这张表只能多挡一层，不能放行：机器上其他防火墙挡了这个端口时，它照样打不开，`lan on` 完成后提示检查已有的防火墙。
 - 默认路由网卡的 IPv4 地址不是私有地址时（服务器很可能直接在公网上），`lan on` 先给出警告，再单独确认一次（`--yes` 时两次都视为同意）。nft 表仍然只放行私有地址段。
-- 回滚、自动关闭透明代理只改写强制项，不改 `external-controller`：回滚到开启前的修订时，面板实际只监听本机，`tunlr panel` 以生效配置为准报告；下次发布恢复。
+- 回滚、自动关闭透明代理改写独占的键时，`external-controller` 和 `secret` 也按当前开关写入：回滚到开启前的修订，面板照样对局域网开放，与 nft 表一致。
 
 设计思路：高频的服务控制放在顶层，与 `systemctl` 的直觉一致；只保留 `sub`、`tun`、`env` 三组子命令（`sub use` 的说法与 `kubectl config use-context`、`nvm use` 一致）；合并含义重叠的命令。检验标准：没看过文档的人能猜对大部分常用操作。
 

@@ -1,8 +1,9 @@
-工具生成的值（secret、经镜像的下载地址）替换模板中已有键的值，保留其位置和注释；
-订阅中的同名键被丢弃，用户的 mixin 可以覆盖，覆盖记为 tunlr；强制项不能被覆盖。
+受管 mixin 的值（secret、经镜像的下载地址）替换模板中已有键的值，保留其位置和注释；
+订阅中的同名键被丢弃。提供默认值的（tunlr:mirror）用户的 mixin 可以覆盖，覆盖记为它的名称。
 
--- generated.yaml --
+-- managed/tunlr:panel --
 secret: generated-secret
+-- default/tunlr:mirror --
 external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
 geox-url:
   mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
@@ -16,7 +17,7 @@ rules:
 external-ui-url: https://example.net/ui.zip
 geox-url:
   geosite: https://example.net/geosite.dat
--- enforced.yaml --
+-- managed/tunlr:core --
 external-controller-unix: api.sock
 -- want.yaml --
 # 本文件由 tunlr 生成，直接修改会在下次 apply 时被覆盖。
@@ -96,4 +97,4 @@ rules:
 -- dropped --
 secret
 -- overrides --
-external-ui-url: 50-custom.yaml overrides tunlr
+external-ui-url: 50-custom.yaml overrides tunlr:mirror

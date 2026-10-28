@@ -1,6 +1,6 @@
 mixin 的普通键：映射逐层合并，标量和列表整体替换，null 删除键；前缀操作可用在任何一层，
 包括 mixin 新建的映射；mixin 的注释和顶层 x- 键不进入配置，锚点照常可用；
-写了强制项的被忽略并给出警告。
+受管 mixin 独占的键所在的映射中，其他键照常合并（tun.stack）。
 
 -- template.yaml --
 # 键上的注释应保留。
@@ -35,7 +35,7 @@ dns:
     geoip: null
 profile: null
 tun:
-  enable: true
+  stack: system
 sniffer:
   enable: true
   sniff:
@@ -44,9 +44,9 @@ sniffer:
       override-destination: null
   append-skip-domain:
     - Mijia Cloud
-external-controller-unix: /tmp/mixin.sock
--- enforced.yaml --
-external-controller-unix: api.sock
+-- managed/tunlr:tun --
+tun:
+  enable: true
 -- want.yaml --
 # 键上的注释应保留。
 mixed-port: 7891
@@ -66,6 +66,7 @@ hosts:
   a.example: 10.0.0.1
 
 tun:
+  stack: system
   enable: true
 
 sniffer:
@@ -75,7 +76,3 @@ sniffer:
       ports: [80]
   skip-domain:
     - Mijia Cloud
-
-external-controller-unix: api.sock
--- warnings --
-10-test.yaml:22: external-controller-unix is managed by tunlr; the value in the mixin is ignored

@@ -16,7 +16,7 @@ import (
 	"github.com/tunlr-app/cli/templates"
 )
 
-// 透明代理中与内核约定的值。它们作为强制项写入配置的 tun 段，工具的规则、清理和检测都依赖它们。
+// 透明代理中与内核约定的值。它们由受管 mixin tunlr:tun 写入配置的 tun 段，工具的规则、清理和检测都依赖它们。
 const (
 	// Device 是内核建立的 TUN 网卡。
 	Device = "tunlr0"
@@ -102,7 +102,7 @@ func (r *Rules) Up(ctx context.Context) error {
 
 // Down 删除 inet tunlr 表和工具的 ip rule。内核的 inet mihomo 表还在时（内核被 SIGKILL 或崩溃，
 // 没能自己清理）一并删除，否则它会把容器的 TCP 和 DNS 重定向到已不存在的监听端口；这时内核在
-// RuleIndex 到 RuleIndex+10 留下的 ip rule 也一并删除（优先级由强制项固定，可以确定是内核的）。
+// RuleIndex 到 RuleIndex+10 留下的 ip rule 也一并删除（优先级由 tunlr:tun 固定，可以确定是内核的）。
 // kernelLeftover 报告是否有这种残留。只在内核已经停止时调用。
 func (r *Rules) Down(ctx context.Context) (kernelLeftover bool, err error) {
 	tables, err := r.Tables(ctx)

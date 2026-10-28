@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -32,18 +31,12 @@ type Layers struct {
 	Template []byte
 	// Subscription 是机场提供的完整配置，只采用其中的路由部分。
 	Subscription []byte
-	// Generated 是工具为这台服务器生成的调整（如 API secret、经 GitHub 镜像的下载地址、
-	// 让镜像直连的规则），以 mixin 的语义应用在订阅之后、用户的 mixin 之前，用户可以在
-	// mixin 中覆盖或去掉。
-	Generated []byte
+	// Managed 是 tunlr 的交互功能生成的受管 mixin，语义见 Managed：提供默认值的在用户的 mixin
+	// 之前应用，独占键的在之后应用。
+	Managed []Managed
 	// Mixins 是用户的 mixin 文件，按顺序逐个应用，语义见 Mixin。
 	Mixins []Mixin
-	// Enforced 是工具运行所依赖的键，最后写入，mixin 无法覆盖。
-	Enforced []byte
 }
-
-// GeneratedName 是工具生成的调整在警告和覆盖记录中的名称。
-const GeneratedName = "tunlr"
 
 // Result 是合成的结果。
 type Result struct {
@@ -51,7 +44,7 @@ type Result struct {
 	Config []byte
 	// Dropped 是订阅中被丢弃的顶层键，按出现顺序排列。
 	Dropped []string
-	// Warnings 是不阻止发布的问题，例如 patch 没有匹配的项、mixin 写了强制项、有风险的设置。
+	// Warnings 是不阻止发布的问题，例如 patch 没有匹配的项。
 	Warnings []Warning
 	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键。
 	Overrides []Override
@@ -59,9 +52,9 @@ type Result struct {
 	Facts *Facts
 }
 
-// Compose 按 模板 → 订阅 → 工具生成的调整 → 用户的 mixin → 强制项 的顺序合成最终配置。
-// 合并基于 yaml.Node，保留模板的键顺序与注释；模板中没有的键追加在末尾。
-// mixin 有错时返回 *MixinError。
+// Compose 按 模板 → 订阅 → 提供默认值的受管 mixin → 用户的 mixin → 独占键的受管 mixin 的顺序
+// 合成最终配置。合并基于 yaml.Node，保留模板的键顺序与注释；模板中没有的键追加在末尾。
+// mixin 有错，或用户的 mixin 动了受管 mixin 独占的键时返回 *MixinError。
 func Compose(l Layers) (*Result, error) {
 	doc, err := parseDocument("template", l.Template)
 	if err != nil {
@@ -92,20 +85,21 @@ func Compose(l Layers) (*Result, error) {
 		}
 	}
 
-	enforced, err := parseDocument("enforced", l.Enforced)
-	if err != nil {
-		return nil, err
+	// 受管 mixin 是工具自己生成的，内容有错是程序的错误，不当作用户 mixin 的错误报告。
+	var defaults, exclusive []Mixin
+	for _, mg := range l.Managed {
+		if _, err := parseDocument(mg.Name, mg.Data); err != nil {
+			return nil, err
+		}
+		if mg.Default {
+			defaults = append(defaults, Mixin{Name: mg.Name, Data: mg.Data})
+		} else {
+			exclusive = append(exclusive, Mixin{Name: mg.Name, Data: mg.Data})
+		}
 	}
-	var enforcedPaths [][]string
-	if enforced != nil {
-		enforcedPaths = leafPaths(enforced.Content[0], nil)
-	}
+	keys := ownedKeys(l.Managed)
 
-	mixins := l.Mixins
-	if len(l.Generated) > 0 {
-		mixins = append([]Mixin{{Name: GeneratedName, Data: l.Generated}}, mixins...)
-	}
-	for _, mx := range mixins {
+	for _, mx := range append(defaults, l.Mixins...) {
 		doc, err := parseNode(mx.Data)
 		if err != nil {
 			return nil, &MixinError{File: mx.Name, Err: err}
@@ -115,9 +109,9 @@ func Compose(l Layers) (*Result, error) {
 		}
 		src := doc.Content[0]
 		stripComments(src)
-		before := make([]*yaml.Node, len(enforcedPaths))
-		for i, p := range enforcedPaths {
-			if n := lookup(root, p); n != nil {
+		before := make([]*yaml.Node, len(keys))
+		for i, k := range keys {
+			if n := lookup(root, k.path); n != nil {
 				before[i] = clone(n)
 			}
 		}
@@ -126,24 +120,19 @@ func Compose(l Layers) (*Result, error) {
 		if err := m.apply(root, src, ""); err != nil {
 			return nil, err
 		}
-		// mixin 改动或写明了强制项、且结果与强制的值不同时警告。只看改动会漏掉写明的值碰巧与模板
-		// 相同的情况，如透明代理开着时写 tun.enable: false。
-		for i, p := range enforcedPaths {
-			after := lookup(root, p)
-			touched := !sameNode(before[i], after) || lookup(src, p) != nil
-			if touched && !sameNode(after, lookup(enforced.Content[0], p)) {
-				m.warnf(keyLine(src, p), "%s is managed by tunlr; the value in the mixin is ignored", strings.Join(p, "."))
-			}
+		if err := conflicts(mx.Name, src, root, keys, before); err != nil {
+			return nil, err
 		}
 		slices.SortStableFunc(m.warnings[first:], func(a, b Warning) int { return a.Line - b.Line })
 	}
 	res.Warnings = append(orderWarnings(l.Mixins), m.warnings...)
 	res.Overrides = m.overrides
 
-	if enforced != nil {
-		mergeMapping(root, enforced.Content[0])
+	for _, mx := range exclusive {
+		if doc, _ := parseNode(mx.Data); doc != nil {
+			mergeMapping(root, doc.Content[0])
+		}
 	}
-	res.Warnings = append(res.Warnings, lint(root, m.setBy)...)
 	res.Facts = factsOf(root)
 
 	out, err := encode(doc)
@@ -154,9 +143,10 @@ func Compose(l Layers) (*Result, error) {
 	return res, nil
 }
 
-// Enforce 把强制项写入已经合成好的配置 cfg（例如回滚到的历史修订），其余内容不变。
-func Enforce(cfg, enforced []byte) ([]byte, *Facts, error) {
-	res, err := Compose(Layers{Template: cfg, Enforced: enforced})
+// Enforce 把 managed 中独占键的受管 mixin 写入已经合成好的配置 cfg（例如回滚到的历史修订），
+// 其余内容不变；提供默认值的受管 mixin 被忽略。
+func Enforce(cfg []byte, managed []Managed) ([]byte, *Facts, error) {
+	res, err := Compose(Layers{Template: cfg, Managed: slices.DeleteFunc(slices.Clone(managed), func(m Managed) bool { return m.Default })})
 	if err != nil {
 		return nil, nil, err
 	}

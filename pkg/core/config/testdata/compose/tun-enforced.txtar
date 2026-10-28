@@ -1,6 +1,8 @@
-透明代理：tun 段中由开关决定的键是强制项，mixin 写了只得到警告；其余键（stack、排除地址）可以覆盖。
--- enforced.yaml --
+透明代理：tun 段中由开关决定的键归 tunlr:tun，最后写入；其余键（stack、排除地址）mixin 可以设置。
+mixin 动了 tunlr:tun 的键时报错，见 TestComposeConflicts。
+-- managed/tunlr:core --
 external-controller-unix: api.sock
+-- managed/tunlr:tun --
 tun:
   enable: true
   auto-route: true
@@ -11,9 +13,7 @@ tun:
   iproute2-rule-index: 9000
 -- mixin.d/50-tun.yaml --
 tun:
-  enable: false
   stack: system
-  strict-route: true
   route-exclude-address:
     - 203.0.113.0/24
 -- want.yaml --
@@ -85,14 +85,11 @@ tun:
   dns-hijack:
     - any:53
     - tcp://any:53
-  strict-route: false
   route-exclude-address:
     - 203.0.113.0/24
   auto-route: true
   auto-redirect: true
+  strict-route: false
   device: tunlr0
   iproute2-table-index: 2022
   iproute2-rule-index: 9000
--- warnings --
-50-tun.yaml:1: tun.enable is managed by tunlr; the value in the mixin is ignored
-50-tun.yaml:1: tun.strict-route is managed by tunlr; the value in the mixin is ignored

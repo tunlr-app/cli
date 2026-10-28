@@ -249,7 +249,7 @@ func (i *Installer) TunGuard(ctx context.Context) (reverted bool, err error) {
 	return true, i.tunGuard(ctx, true)
 }
 
-// tunGuard 在开关为 pending 时关闭透明代理：开关记为 off，只改写生效配置中的强制项并发布。
+// tunGuard 在开关为 pending 时关闭透明代理：开关记为 off，只改写生效配置中受管 mixin 独占的键并发布。
 // 发布失败时停止内核，由 _poststop 清理规则，保证网络恢复直连。
 //
 // wait 为 false 用于内核服务启动前（_prestart）：只尝试一次加锁，锁被占用（有人正在操作）就什么都

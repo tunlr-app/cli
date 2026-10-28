@@ -38,7 +38,10 @@ proxy-groups:
 rules:
   - MATCH,节点选择
 `)
-	base := Layers{Template: templates.Config, Subscription: sub, Generated: []byte("secret: s\n")}
+	base := Layers{Template: templates.Config, Subscription: sub, Managed: []Managed{
+		{Name: "tunlr:tun", Data: []byte("tun:\n  enable: true\n  auto-route: true\n")},
+		{Name: "tunlr:panel", Data: []byte("external-controller: 127.0.0.1:9090\nsecret: s\n")},
+	}}
 	want, err := Compose(base)
 	if err != nil {
 		t.Fatal(err)
