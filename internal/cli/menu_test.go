@@ -194,7 +194,7 @@ func TestMenuNavigation(t *testing.T) {
 
 func TestMenuRun(t *testing.T) {
 	mt := newMenuTest(t, menuData{status: &setup.Status{}})
-	if got := strings.Join(mt.m.labels, "|"); got != "Install tunlr (init)|Show status|Quit" {
+	if got := strings.Join(mt.m.labels, "|"); got != "Install tunlr (init)|Show status|Run diagnostics|Quit" {
 		t.Fatalf("labels = %q", got)
 	}
 	if first := strings.SplitN(mt.view(), "\n", 2)[0]; first != "tunlr · not installed" {
@@ -349,7 +349,7 @@ func TestMenuItems(t *testing.T) {
 	}
 
 	for group, want := range map[string]string{
-		"":                 "tunlr: Show status|Subscriptions|Configuration|Transparent proxy|mihomo service|Scheduled updates|Quit",
+		"":                 "tunlr: Show status|Subscriptions|Configuration|Transparent proxy|mihomo service|Scheduled updates|Run diagnostics|Quit",
 		groupUpdates:       "tunlr › Scheduled updates: Show the schedule|Change the geo data update|Update everything now|← Back",
 		groupSubscriptions: "tunlr › Subscriptions: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|Change how often one is fetched|Remove subscriptions|← Back",
 		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|Roll back|List revisions|← Back",

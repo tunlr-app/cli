@@ -12,10 +12,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 
-	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/pkg/core/doctor"
 	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/fsutil"
 	"github.com/tunlr-app/cli/pkg/core/lock"
@@ -52,6 +51,8 @@ type Installer struct {
 	Rules *netfilter.Rules
 	// CheckNetwork 是开启透明代理后的检测，为空时使用默认的检测（测试时替换）。
 	CheckNetwork func(ctx context.Context, opts TunOptions) []TunCheck
+	// Host 是 doctor 检查的本机，为空时使用真实的系统（测试时替换）。
+	Host *doctor.Host
 }
 
 // InitOptions 是 init 的参数。
@@ -83,23 +84,6 @@ type InitResult struct {
 	NotStarted string         `json:"not_started,omitempty"`
 }
 
-// CheckEnvironment 检查 tunlr 能否在本机安装：Linux、root、systemd、amd64 或 arm64。
-func CheckEnvironment() error {
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("%w: tunlr only runs on Linux", core.ErrCheckFailed)
-	}
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("%w: tunlr must run as root", core.ErrCheckFailed)
-	}
-	if fi, err := os.Stat("/run/systemd/system"); err != nil || !fi.IsDir() {
-		return fmt.Errorf("%w: systemd is not running (tunlr needs a systemd-based Linux)", core.ErrCheckFailed)
-	}
-	if _, err := mihomo.DetectArch(); err != nil {
-		return fmt.Errorf("%w: %v", core.ErrCheckFailed, err)
-	}
-	return nil
-}
-
 // Init 安装或修复 tunlr，可以重复执行：检查环境 → 把自身复制到 /usr/local/bin/tunlr → 创建内核用户 →
 // 建目录并设置属主与权限 → 没有内核时安装 → 写入 unit、启用服务和定时更新 → 添加订阅 →
 // 有启用的订阅时发布配置 → 有配置时（重新）启动内核并做健康检查。
@@ -111,7 +95,7 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 	res := &InitResult{}
 
 	progress("Checking the environment")
-	if err := CheckEnvironment(); err != nil {
+	if err := i.CheckSupport(ctx); err != nil {
 		return nil, err
 	}
 	arch, err := mihomo.DetectArch()

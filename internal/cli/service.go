@@ -63,7 +63,7 @@ func (a *app) newInitCommand() *cobra.Command {
 				}
 				opts.SubName, opts.SubURL = name, url
 			}
-			if err := setup.CheckEnvironment(); err != nil {
+			if err := a.installer().CheckSupport(cmd.Context()); err != nil {
 				return err
 			}
 			if err := a.requireYes("init"); err != nil {
@@ -305,7 +305,13 @@ func (a *app) newStatusCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.render(s, func() error { a.printStatus(s); return nil })
+			return a.render(s, func() error {
+				a.printStatus(s)
+				// 快速诊断（不联网、不运行 mihomo -t），只在有失败项时提示；诊断本身出错时不影响 status。
+				r, _ := a.installer().Doctor(cmd.Context(), setup.DoctorOptions{Quick: true})
+				a.printProblems(r)
+				return nil
+			})
 		},
 	}
 }

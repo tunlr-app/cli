@@ -182,6 +182,17 @@ func (r *Rules) Preflight(ctx context.Context) (problems, warnings []string) {
 	if len(problems) > 0 {
 		return problems, nil
 	}
+	problems = append(problems, r.RuleConflicts(ctx)...)
+	for _, fw := range r.ActiveFirewalls(ctx) {
+		warnings = append(warnings, fmt.Sprintf("%s is active; its input policy may block the traffic mihomo redirects (not tested yet)", fw))
+	}
+	return problems, warnings
+}
+
+// RuleConflicts 返回占用了工具和内核所需 ip rule 优先级（RulePriority 到 RuleIndex+10）的他人规则，
+// 每条一句说明。TUN 网卡在时，RuleIndex 起的规则是内核自己的，不算冲突。
+func (r *Rules) RuleConflicts(ctx context.Context) []string {
+	var problems []string
 	tunUp := DeviceUp()
 	for _, family := range r.families() {
 		rules, err := r.listRules(ctx, family)
@@ -197,12 +208,18 @@ func (r *Rules) Preflight(ctx context.Context) (problems, warnings []string) {
 			}
 		}
 	}
+	return problems
+}
+
+// ActiveFirewalls 返回正在运行的 UFW、firewalld。它们的入站策略可能挡住内核重定向的流量（未实测）。
+func (r *Rules) ActiveFirewalls(ctx context.Context) []string {
+	var active []string
 	for _, fw := range []string{"ufw", "firewalld"} {
 		if out, _ := r.run(ctx, nil, "systemctl", "is-active", fw); strings.TrimSpace(string(out)) == "active" {
-			warnings = append(warnings, fmt.Sprintf("%s is active; its input policy may block the traffic mihomo redirects (not tested yet)", fw))
+			active = append(active, fw)
 		}
 	}
-	return problems, warnings
+	return active
 }
 
 // ruleSpec 是工具的 ip rule：带标记的包查主路由表。

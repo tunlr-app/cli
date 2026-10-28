@@ -10,6 +10,7 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/config"
+	"github.com/tunlr-app/cli/pkg/core/doctor"
 	"github.com/tunlr-app/cli/pkg/core/lock"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/netfilter"
@@ -83,8 +84,8 @@ func (i *Installer) TunStatus(ctx context.Context) (*TunStatus, error) {
 	return s, nil
 }
 
-// TunPreflight 检查能否开启透明代理：服务已安装、内核在运行（否则无法检测）、系统具备 TUN、nft、ip，
-// 需要的 ip rule 优先级没有被占用。不满足时返回满足 errors.Is(err, core.ErrCheckFailed) 的错误；
+// TunPreflight 检查能否开启透明代理：服务已安装、内核在运行（否则无法检测），以及 doctor 的 tun 组
+// （TUN 设备、nft、ip、ip rule 优先级等）。不满足时返回满足 errors.Is(err, core.ErrCheckFailed) 的错误；
 // warnings 是不阻止开启、但可能影响使用的情况。
 func (i *Installer) TunPreflight(ctx context.Context) (warnings []string, err error) {
 	if !i.systemd().Installed() {
@@ -93,11 +94,7 @@ func (i *Installer) TunPreflight(ctx context.Context) (warnings []string, err er
 	if _, err := mihomo.NewClient(i.Layout.CoreSocket()).Version(ctx); err != nil {
 		return nil, fmt.Errorf("%w: mihomo is not responding (%v); start it first: tunlr start", core.ErrCheckFailed, err)
 	}
-	problems, warnings := i.rules().Preflight(ctx)
-	if len(problems) > 0 {
-		return warnings, fmt.Errorf("%w: %s", core.ErrCheckFailed, strings.Join(problems, "; "))
-	}
-	return warnings, nil
+	return doctor.Failures(i.host().Tun(ctx, i.rules()))
 }
 
 // TunOn 开启透明代理并发布 plan（pipeline.PlanTun(ctx, true) 的结果，已经用户确认）：

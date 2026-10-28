@@ -1,0 +1,20 @@
+# doctor 只读，不联网（--offline）。测试不以 root 运行（开发机也不是 Linux），system 组必有失败项，退出码为 3。
+exitcode 3 tunlr doctor --offline
+stdout '^System$'
+stdout '^Installation$'
+stdout 'tunlr is not installed; run tunlr init'
+stdout '^Network$'
+stdout 'skipped \(--offline\)'
+stdout '(All checks passed|No failures|checks? failed)'
+
+exitcode 3 tunlr doctor --offline --json
+stdout '"version": 1'
+stdout '"id": "system.os"'
+stdout '"id": "install.installed"'
+stdout '"id": "network.all"'
+stdout '"status": "skip"'
+! stderr .
+
+# 参数用法错误
+exitcode 2 tunlr doctor extra
+stderr 'unknown command|accepts 0 arg'

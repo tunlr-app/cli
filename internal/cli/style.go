@@ -113,7 +113,7 @@ func (a *app) page(text string, atEnd bool) error {
 	return nil
 }
 
-// printCheck 输出一项检查或步骤的结果（status 为 ok、failed、skipped）。有样式时为
+// printCheck 输出一项检查或步骤的结果（status 为 ok、warn、fail/failed、skip/skipped）。有样式时为
 // “✓ 名称  说明”，跳过的项整行暗色；否则为“状态 名称 说明”三列，名称按 nameWidth 对齐。
 func (a *app) printCheck(status, name string, nameWidth int, message string) {
 	if !a.style.on {
@@ -124,8 +124,10 @@ func (a *app) printCheck(status, name string, nameWidth int, message string) {
 	switch status {
 	case "ok":
 		fmt.Fprintf(a.stdout, "%s %s\n", styleGood.Render("✓"), line)
-	case "failed":
+	case "failed", "fail":
 		fmt.Fprintf(a.stdout, "%s %s\n", styleBad.Render("✗"), line)
+	case "warn":
+		fmt.Fprintf(a.stdout, "%s %s\n", styleWarn.Render("!"), line)
 	default:
 		fmt.Fprintf(a.stdout, "%s\n", styleDim.Render("– "+line))
 	}

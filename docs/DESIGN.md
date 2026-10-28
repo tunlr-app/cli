@@ -72,6 +72,30 @@
 
 `doctor` 在安装时检查这些条件，不满足就拒绝并说明原因。架构上把 `service` 设计成接口（systemd 为第一个实现），为将来可能的 procd 支持留出扩展点，但 v1 不实现。
 
+### 4.1 诊断（doctor，MVP 4）
+
+参考 flutter doctor（分组列出）、brew doctor（只读，给出修复命令）、kubeadm 的 preflight（安装前复用同一套检查）。
+
+- **定位**：`status` 回答“现在是什么状态”，要快；`doctor` 回答“为什么不正常、这台机器能不能用”，可以慢一些、更彻底。doctor 只读、不修复，每个问题给一条修复建议（多数是 `tunlr init`、`tunlr start` 等已有命令：`init` 本来就是修复）。定时任务不调用它。
+- **四组检查**：
+
+  | 组 | 检查 | 何时 |
+  |---|---|---|
+  | `system` 支持条件 | Linux、root、PID 1 为 systemd、amd64 或 arm64（amd64 报告 CPU 级别，低于 v3 警告）、不在 WSL 中、不在容器中、发行版版本 | 总是。`init` 复用：有 fail 就拒绝安装 |
+  | `tun` 透明代理条件 | `/dev/net/tun`、`nft`、`ip`、需要的 ip rule 优先级没有被占用、UFW 和 firewalld、iptables-legacy 中的规则 | 总是。`tun on` 复用：有 fail 就不开启，warn 照常显示 |
+  | `install` 安装是否健康 | unit 与当前版本的模板一致；`/usr/local/bin/tunlr` 与正在运行的这个相同；内核用户存在，`bin/`、`core/` 归它所有；内核服务已启用、在运行，没有 failed 或反复重启；内核二进制存在且是已知可用版本；设置和状态文件能读取；生效配置存在并通过 `mihomo -t`；两个 timer 与设置和 TUN 开关一致，没有遗留的回滚定时器；TUN 开关与内核实际状态一致，内核在运行时两张 nft 表都在；配置中的端口没有被其他程序占用；订阅最近一次抓取是否失败、是否已到期或 7 天内到期、流量是否用完或超过 90% | 已安装（有 `tunlr-core.service`）时。没有安装时只有一项 skip，提示 `tunlr init` |
+  | `network` 网络 | 能解析域名；能访问 api.github.com（校验值的来源）；配置了镜像时镜像能连上；本机时钟与 GitHub 的偏差（超过 90 秒警告，VMess 等协议会失败；超过 1 天判失败，TLS 会失败）；内核在运行时经 mixed-port 访问一个测试地址 | 默认执行，并行进行，总时长约 10 秒；`--offline` 跳过 |
+
+- **分级**：ok、warn、fail、skip。有任何 fail 时退出码 3；只有 warn 时为 0。
+  - WSL、容器判 fail（第 3.4 节明确不做），`init` 直接拒绝，不提供跳过检查的参数：不做兜底兼容。
+  - 发行版不在 Debian 12+、Ubuntu 22.04+ 之列时判 warn，只要是 systemd 系统就允许安装。
+  - iptables-legacy 中有规则时判 warn：只影响透明代理，不拒绝安装。
+  - 订阅：启用的订阅已到期或流量用完判 fail，其余订阅判 warn。
+- **非 root 运行**：照常运行，root 一项 fail，需要 root 才能查的项为 skip，用户仍能看到完整的报告。
+- **输出**：按组输出，每项一行；warn、fail 下一行给出修复建议。`--json` 中每项有固定的 `id`（如 `system.wsl`、`install.units`），供脚本和将来的组件判断。
+- **`status` 的提示**：`status` 末尾执行一次快速检查（不联网、不调用 `mihomo -t`），有 fail 时提示“N problems found; run tunlr doctor”。只看 fail：CPU 级别、UFW 等长期存在的 warn 每次都提示只会让人忽略。
+- **菜单**：第一级加“Run diagnostics”（分类之后、退出之前），未安装时的菜单也有。
+
 ## 5. 技术选型
 
 ### 5.1 为什么是 Go 单文件，而不是 sh
@@ -471,7 +495,7 @@ tunlr-dev（环境同 8.2；SSH 客户端 192.168.11.41 不在服务器的直连
 ```
 tunlr init                首次安装向导
 tunlr status              当前状态（服务、版本、订阅、透明代理、漂移）
-tunlr doctor              诊断
+tunlr doctor              诊断（见 4.1；--offline 跳过网络检查）
 
 tunlr start | stop | restart | logs     服务控制
 
@@ -552,7 +576,7 @@ tunlr version
   | Transparent proxy | 开 / 关 / 检查中 | 开启或关闭、查看详情 |
   | mihomo service | 运行中 · 版本 / 未运行 | 启动或重启、停止，最近的日志，升级内核 |
 
-  第二级末尾是“← Back”。没安装时第一级只有“安装（init）”“查看状态”“退出”。菜单项随状态变化：有订阅才有切换、更新；订阅多于一个才有删除；有历史才有回滚。
+  分类之后、“退出”之前是“Run diagnostics”（doctor）。第二级末尾是“← Back”。没安装时第一级只有“安装（init）”“查看状态”“诊断”“退出”。菜单项随状态变化：有订阅才有切换、更新；订阅多于一个才有删除；有历史才有回滚。
 - 不清屏。在两级之间切换只是原地重画；列表标题是所在位置（`tunlr › Subscriptions`），光标停在上次在这一级选的那一项。
 - 选中操作后，菜单那块换成一行操作名和等价命令（订阅地址不含令牌），终端经 `tea.Exec` 交给子命令（Bubble Tea 先等读取输入的协程退出），子命令照常输出和提问，vim、less 也照常使用。结束后输出一行结果（`✓ Done`、`✗ Failed`、`✗ Failed; the change was rolled back`、`✗ Check failed`、`– Interrupted`，带耗时），菜单紧接着出现在结果下面，光标停在刚才那一项。结果就在菜单正上方，不必再按回车确认；所有输出都留在滚动记录里，退出菜单时菜单本身不留在屏幕上。提问被取消或确认时回答否（什么都没做）时结果为 `– Cancelled`，不算失败。
 - 按键规则处处相同：任何提问（列表、输入、确认）按 Esc 或 Ctrl-C 取消，回到上一级；在第一级按 Esc 退出菜单。列表不需要输入文字，`q` 也能取消（与 less 一致）。
@@ -605,6 +629,26 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 5. 本机/网关模式、端口安全（ShellCrash 借鉴项 1、2）
 
 其余功能在此之后按需求排期。
+
+进度（2026-10-27）：1～4 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）。
+
+### 13.1 已设计、尚未实现
+
+以下命令或机制已经写进本文（主要在第 10 节的命令树），但还没有实现。动手前先讨论用户可见的行为。
+
+| 项目 | 出处 | 说明 |
+|---|---|---|
+| 本机/网关模式、端口安全 | 第 9 节 1、2，MVP 5 | 网关模式需要转发、sysctl、局域网 DNS；`allow-lan` 时强制认证 |
+| `tunlr upgrade`（自身升级） | 第 10 节 | 现在 `upgrade` 只有 `core` 子命令。正式发布前必须实现：从 GitHub release 下载，按官方 sha256 校验，原子替换 `/usr/local/bin/tunlr`，必要时重写 unit。不做定时任务 |
+| `status` 的漂移 | 5.3、第 10 节 | 现场计算生效配置与“现在 apply 会生成的配置”是否一致（订阅更新后未发布、mixin 改了未发布、配置被手改等）。目前 `status` 不报告 |
+| `panel` | 第 10 节 | 面板地址与 SSH 隧道命令 |
+| `config` | 第 10 节 | 查看和修改 `settings.yaml`（交互式，或 `config set <key> <value>`）。目前 `github-mirror`、`user-agent` 只能在 `init` 时给出或手改文件 |
+| `backup`、`restore` | 第 9 节 9、第 10 节 | 备份与还原 |
+| `shell-init`、`env on/off` | 第 10 节 | 输出 shell 函数；当前 shell 的代理变量 |
+| 失败通知（webhook） | 5.3、第 9 节 6 | 更新失败、自动回滚、订阅即将到期时发送 |
+| 第 9 节 3～5 | 第 9 节 | 流量过滤开关、自定义保留地址段、开机联网检测 |
+
+已有但未经实际发布验证：`.goreleaser.yaml`（amd64、arm64，带 checksum）还没有跑过一次真正的发布，也没有 CI。`completion` 由 cobra 自动提供。
 
 ## 14. 待决事项
 

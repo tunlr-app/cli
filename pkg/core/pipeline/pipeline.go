@@ -602,6 +602,23 @@ func (p *Pipeline) installUI(ctx context.Context, facts *config.Facts) (string, 
 	return dir, nil
 }
 
+// CheckCurrent 用 mihomo -t 校验生效的配置，只读：不下载缺失的 geo 数据（缺了由 -t 报告）。
+// 没有生效的配置时 exists 为 false。
+func (p *Pipeline) CheckCurrent(ctx context.Context) (exists bool, err error) {
+	current, err := p.readCurrent()
+	if err != nil || current == nil {
+		return false, err
+	}
+	v, err := p.validator()
+	if err != nil {
+		return true, err
+	}
+	return true, v.Validate(ctx, current, &config.GeoNeeds{})
+}
+
+// Current 返回生效的配置，没有时为 nil。
+func (p *Pipeline) Current() ([]byte, error) { return p.readCurrent() }
+
 func (p *Pipeline) readCurrent() ([]byte, error) {
 	data, err := os.ReadFile(p.Layout.CoreConfig())
 	if errors.Is(err, fs.ErrNotExist) {

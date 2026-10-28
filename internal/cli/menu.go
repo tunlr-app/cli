@@ -423,12 +423,13 @@ func (a *app) result(code int, interrupted bool, took time.Duration) string {
 func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 	s := d.status
 	status := menuItem{label: "Show status", args: []string{"status"}}
+	diagnose := menuItem{label: "Run diagnostics", args: []string{"doctor"}}
 	if !s.Installed {
 		if group != "" {
 			return "", nil
 		}
 		return "tunlr · not installed yet", []menuItem{
-			{label: "Install tunlr (init)", args: []string{"init"}}, status, {label: menuQuit, quit: true}}
+			{label: "Install tunlr (init)", args: []string{"init"}}, status, diagnose, {label: menuQuit, quit: true}}
 	}
 	back := menuItem{label: menuBack, back: true}
 	var items []menuItem
@@ -441,6 +442,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 			{label: groupTun, group: groupTun, note: a.describeTun(s.Tun)},
 			{label: groupService, group: groupService, note: a.describeService(s)},
 			{label: groupUpdates, group: groupUpdates, note: a.describeUpdates(s.Updates)},
+			diagnose,
 			{label: menuQuit, quit: true},
 		}
 	case groupSubscriptions:
