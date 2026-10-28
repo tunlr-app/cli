@@ -39,7 +39,7 @@
 - 配置编排（模板 + 订阅 + mixin）、校验、原子发布、回滚、历史
 - 透明代理开关及其系统前置条件（sysctl、防火墙、DNS 端口）和防失联回滚
 - 面板部署与访问安全
-- 诊断、救援、失败通知、备份还原、当前 shell 代理变量
+- 诊断、救援、备份还原、当前 shell 代理变量
 
 ### 3.3 灰色地带的约定
 
@@ -56,6 +56,7 @@
 - 全屏 TUI（进入备用屏幕的界面）、常驻守护进程（v1）
 - sing-box 等其他内核、路由器固件、OpenRC/procd、WSL、iptables、容器化部署
 - Telegram 机器人、公网入站、内网穿透、DDNS
+- 失败通知（webhook 等，暂不做）：问题由 `doctor` 和 `status` 报告；需要时再议
 - 在命令行里逐条增删节点和规则（编辑 mixin 即可）
 - 遥测、账号体系、云同步
 
@@ -130,7 +131,6 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 | 内核崩溃后恢复与回滚 | unit 中配置 `OnFailure=`，触发 `tunlr _rescue` |
 | 开启 TUN 后的防失联回滚 | `systemd-run --on-active=<时长>` 创建临时回滚定时器 |
 | 透明代理的规则丢失检测 | TUN 开启期间 `tunlr-check.timer` 每 5 分钟调用 `tunlr _check` |
-| 失败通知 | 在上述一次性任务中发送 webhook |
 | 状态与漂移 | 执行 `status` 时现场计算 |
 
 好处：零常驻内存、更少的故障点、升级工具只需替换文件、日志由 journald 按 unit 归档。
@@ -576,18 +576,63 @@ tunlr-dev（环境同 8.2，装有 Docker：`ip_forward` 由 Docker 在运行时
 - 用 mihomo 的 `routing-mark` 防止回环；局域网与保留地址直接 return
 - 规则放在独立的 `inet tunlr` 表中，清理时整表删除；`_check` 检测规则是否被他人 flush
 
+### 8.12 局域网设备：列表与分流（已设计，尚未实现）
+
+家庭网络中（第 10 节“家庭网络中的用法”），有的设备不该走代理节点：游戏主机、IoT 设备、家人的手机。用户要能看到哪些设备在用这台服务器，并逐台决定它们走代理还是直连。
+
+**前提：把这台服务器设为代理或网关的设备，流量一律经过 mihomo**。直连也由 mihomo 按规则直连，不在系统层绕过内核。不需要经过 mihomo 的设备，网关直接用路由器即可（手动设置，或在路由器上给单台设备设 DHCP 选项）。
+
+**设备的两种走法**：
+
+| 走法 | 含义 | 实现 |
+|---|---|---|
+| `proxy`（默认） | 按规则分流 | — |
+| `direct` | 这台设备的流量全部直连 | 受管 mixin 在规则最前插入按来源匹配、`DIRECT` 的规则 |
+
+- 按来源 IP（`SRC-IP-CIDR,<ip>/32,DIRECT`）匹配；实现前确认 mihomo 是否有按来源 MAC 的规则，有则改用 MAC，免得 DHCP 换了地址后失效。只能按 IP 时，设置时建议在路由器上为它保留地址。
+- 网关模式与代理端口都适用：两种方式下内核看到的来源都是设备的地址。
+- 规则由提供默认值的受管 mixin `tunlr:devices` 插入，用户的 mixin 可以覆盖或删除；`plan`、`tunlr mixin list` 列出它的内容。名单变化经流水线发布（diff、确认、`mihomo -t`），失败时回滚，名单恢复原状。
+
+**不做系统层绕过**（2026-10-28 讨论后决定）：曾考虑让名单中的设备完全不经过内核（内核停止时照常上网），在 tunlr-dev 上验证过可行：内核的 `tun.exclude-mac-address` 只跳过 TCP 重定向和 DNS 劫持、不改路由，还要自己按 MAC 打标记加 `ip rule`、把 DNS 转给路由器、放行转发并做 masquerade。不做的理由：依赖 sing-tun 的 nft 表、ip rule 位置和标记位等内部行为，内核升级后可能悄悄失效且影响整个局域网；需要它的场景（路由器不能为单台设备设网关、设备自己也改不了）不多，多数情况下让设备直接用路由器做网关即可。
+
+**设备列表**：
+
+- 来源：
+  - **nft 动态集合**（主要）：表 `inet tunlr_devices`，prerouting（早于内核的 TCP 重定向）把来源的 `MAC . IPv4` 记入两个集合：经网关（从局域网网卡进来、目标不是本机）与用代理端口（目标是本机的代理端口）。每个包都刷新计时，24 小时没有流量即过期，由剩余时间算出最后出现的时间。在 tunlr-dev 上实测：`flags dynamic, timeout` 的集合几秒内记下了 3 台设备，`nft -j` 可解析。
+  - mihomo 的 `/connections`：当前连接数。
+  - 邻居表（`ip neigh`）：补全 MAC；`--all` 时列出在线但没有使用本机的设备，方便提前设置。
+  - 名称：用户起的名称优先，其次向路由器反向解析（家用路由器多数支持），都没有则空。
+- 状态：`online`（5 分钟内有流量）、`idle`（24 小时内来过）；过期的不列出。服务器重启后集合清空，设备再次使用即重新出现。
+- `inet tunlr_devices` 在网关或代理端口局域网访问开启时加载，两者都关闭时删除；生命周期同其他 nft 表（`_prestart` 加载、`_check` 补缺、`uninstall` 删除）。
+- 只在本机显示，不保存历史；持久保存的只有用户设置过走法或名称的设备（状态文件的 `devices`：名称、MAC、IP、走法）。
+
+**命令**：
+
+```
+tunlr devices [--all]                    列出使用本机的设备（名称、IP、MAC、用途、状态、最后出现、走法）
+tunlr devices set <设备> proxy|direct    设置走法（经 diff 确认后发布）
+tunlr devices name <设备> <名称>         起名
+tunlr devices forget <设备>              删除记录（恢复为 proxy）
+```
+
+- `<设备>` 可以是 IP、MAC 或名称。
+- 交互模式下省略 `<设备>` 时从列表选择，光标停在最近出现的设备上；省略走法时再选。
+- 主菜单新增分类“Devices”：选中设备后设置走法或起名。
+- `status` 一行摘要（在线设备数、直连的几台）；`--json` 全部支持。
+- 放在 `tunlr devices` 而不是 `tunlr filter` 下：走法是设备的属性，从设备出发操作更直接。`tunlr filter` 留给将来的全局过滤项（屏蔽 QUIC、只代理常用端口、目标地址不进 TUN），同样生成受管 mixin。
+
 ## 9. 从 ShellCrash 借鉴的功能
 
 纳入：
 
 1. **本机模式与网关模式**：二者需要的 sysctl、防火墙设置不同。（MVP 5，用 `tunlr gateway on/off` 切换，见 8.10；`init` 询问这台服务器的用途时可以一并开启，见第 10 节“家庭网络中的用法”）
 2. **端口访问安全**：代理端口默认只给本机用；允许局域网访问（`tunlr proxy lan on`）时由 `lan-allowed-ips` 只放行私有地址段，其他来源必须设置认证，避免成为开放代理。（MVP 5，见第 6 节“端口安全”）
-3. 流量过滤开关：按 IP/网段过滤局域网设备、只代理常用端口、屏蔽 QUIC、容器与虚拟机流量独立开关（翻译为 TUN 排除地址或 mihomo 规则）
-4. 自定义保留地址段 → `route-exclude-address`
-5. 开机联网检测与防自启死循环 → `network-online.target` + `StartLimitBurst`
-6. 失败通知：通用 webhook，覆盖更新失败、自动回滚、订阅即将到期
-7. 版本回退（已规划）
-8. 诊断与查看当前防火墙规则（`doctor`、`plan --full`）
+3. 流量过滤：按设备分流见 8.12（`tunlr devices`，逐台设置走代理或直连；不做绕过内核的系统层）。屏蔽 QUIC、只代理常用端口、目标地址不进 TUN、容器流量将来放在 `tunlr filter` 下，同样由命令生成受管 mixin，用户只填端口、网段等参数；容器一项先在 tunlr-dev 上实测。
+4. 自定义保留地址段：用 mixin 写 `tun.route-exclude-address`（不是受管的键），已可用。
+5. 开机联网检测与防自启死循环：已实现，`tunlr-core.service` 有 `After=/Wants=network-online.target`、`StartLimitBurst`、`OnFailure=tunlr-rescue.service`；开机时 `_prestart` 关闭过期仍未确认的 TUN（8.5）。
+6. 失败通知：暂不做（见 3.4）。
+7. 版本回退：已实现（`tunlr upgrade core --rollback`、配置的 `tunlr rollback`）。
+8. 诊断与查看当前防火墙规则：已实现（`doctor`、`plan --full`）。
 9. 备份与还原
 
 由内核能力替代：保存面板节点、规则集定时更新、NTP、订阅热更新（见第 6 节）。
@@ -614,6 +659,8 @@ tunlr sub set [name] --update <period>  修改一个订阅的自动更新周期�
 tunlr sub use [name]      切换启用的订阅（同一时间只启用一个；交互时省略名称则从列表选择）
 tunlr tun on | off        透明代理（--mode 预留给将来的 tproxy）
 tunlr gateway on | off    网关模式：局域网设备经本机分流（见 8.10；--interface 指定局域网网卡）
+tunlr devices             使用本机的局域网设备；set 逐台设置走代理或直连（见 8.12）
+tunlr filter              全局过滤项（屏蔽 QUIC、只代理常用端口等，尚未设计细节）
 tunlr env on | off        当前 shell 的代理变量（需先配置 shell-init）
 
 tunlr update [sub|geo]    立即执行订阅、geo 数据的更新（不看周期）
@@ -790,21 +837,22 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）、面板（`tunlr panel`，含局域网访问）、受管 mixin（第 6 节），以及家庭网络的用法：代理端口的局域网访问（`tunlr proxy lan`）和 `init` 的用途问题（第 10 节）。
 
-### 13.1 已设计、尚未实现
+### 13.1 待实现（按顺序）
 
-以下命令或机制已经写进本文（主要在第 10 节的命令树），但还没有实现。动手前先讨论用户可见的行为。
+动手前先讨论用户可见的行为；“设计”一列为“已定”的可以直接实现，其余先补全设计再动手。
 
-| 项目 | 出处 | 说明 |
-|---|---|---|
-| `tunlr upgrade`（自身升级） | 第 10 节 | 现在 `upgrade` 只有 `core` 子命令。正式发布前必须实现：从 GitHub release 下载，按官方 sha256 校验，原子替换 `/usr/local/bin/tunlr`，必要时重写 unit。不做定时任务 |
-| `status` 的漂移 | 5.3、第 10 节 | 现场计算生效配置与“现在 apply 会生成的配置”是否一致（订阅更新后未发布、mixin 改了未发布、配置被手改等）。目前 `status` 不报告 |
-| `config` | 第 10 节 | 查看和修改 `settings.yaml`（交互式，或 `config set <key> <value>`）。目前 `github-mirror`、`user-agent` 只能在 `init` 时给出或手改文件 |
-| `backup`、`restore` | 第 9 节 9、第 10 节 | 备份与还原 |
-| `shell-init`、`env on/off` | 第 10 节 | 输出 shell 函数；当前 shell 的代理变量 |
-| 失败通知（webhook） | 5.3、第 9 节 6 | 更新失败、自动回滚、订阅即将到期时发送 |
-| 第 9 节 3～5 | 第 9 节 | 流量过滤开关、自定义保留地址段、开机联网检测 |
+| 顺序 | 项目 | 出处 | 设计 | 要点 |
+|---|---|---|---|---|
+| 1 | `status` 的漂移 | 5.3、第 10 节 | 草案 | 现场合成一次（不跑 `mihomo -t`）与生效配置比较：最新 / 有待发布的改动（订阅更新、mixin 改了、模板变了）/ 生效配置被手改（与最新修订不同）/ 合成出错。`--json` 加 `drift`，主菜单状态行提示 |
+| 2 | 局域网设备的列表与分流 | 8.12 | 已定 | `tunlr devices`：nft 动态集合记录经网关、用代理端口的设备；逐台设置 `proxy` 或 `direct`（受管 mixin）。实现前确认 mihomo 是否有按来源 MAC 的规则 |
+| 3 | 全局过滤项 | 第 9 节 3 | 待补全 | `tunlr filter`：屏蔽 QUIC、只代理常用端口、目标地址不进 TUN（`route-exclude-address`）、容器流量；由命令生成受管 mixin，用户只填参数。容器一项先在 tunlr-dev 上实测 |
+| 4 | 代理变量 | 第 10 节 | 草案，待确认 | 不做 `shell-init`、`env on/off`（要先在 shell 配置中装函数，服务器上有 `tun on` 已覆盖本机流量），改为 `tunlr proxy env [--unset]` 输出 `export` 语句，用法 `eval "$(tunlr proxy env)"`；端口取自生效配置 |
+| 5 | `config` | 第 10 节 | 草案 | `tunlr config` 列出全部设置（标出默认值）；`config set/unset <key>` 校验后保存。改 `github-mirror` 时同 `apply`（diff、确认、发布），geo 两项走 `update set geo` 的同一个 core 函数 |
+| 6 | `backup`、`restore` | 第 9 节 9、第 10 节 | 草案，待确认 | 打包设置、mixin、订阅（含最近一次抓取的内容）、API secret 和开关记录（`--history` 附历史），不含内核与 geo 数据，0600。还原要求已 `init`，先自动备份当前内容，合并状态（保留实例 ID、内核、开关），再 diff 确认发布；TUN、网关、代理端口和面板的局域网访问不自动开启（待定：逐项询问还是只列命令） |
+| 7 | `tunlr upgrade`（自身升级） | 第 10 节 | 待补全 | 正式发布前必须有：查询最新版本、下载（可经镜像，只认官方 sha256）、用新文件跑 `version` 确认、原子替换 `/usr/local/bin/tunlr`、必要时重写 unit 和 timer。待定：是否保留旧版本以便回退、开发版如何处理。不做定时任务 |
+| 8 | 发布 | 第 12 节 | 待补全 | `.goreleaser.yaml`（amd64、arm64，带 checksum）还没跑过真正的发布，没有 CI；`install.sh` 与官网未做 |
 
-已有但未经实际发布验证：`.goreleaser.yaml`（amd64、arm64，带 checksum）还没有跑过一次真正的发布，也没有 CI。`completion` 由 cobra 自动提供。
+不做或暂不做：失败通知（3.4）；局域网设备绕过内核的系统层（8.12）。`completion` 由 cobra 自动提供。
 
 ## 14. 待决事项
 
