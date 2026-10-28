@@ -182,7 +182,7 @@ func Restore(path string, original []byte, existed bool) error {
 	return fsutil.WriteFile(path, original, 0o644)
 }
 
-// Entry 是 tunlr config 列出的一项设置。
+// Entry 是 tunlr settings 列出的一项设置。
 type Entry struct {
 	Key string `json:"key"`
 	// Value 是生效的值；Default 报告文件中没有设置，Value 为默认值（github-mirror 的默认值为空：直连）。

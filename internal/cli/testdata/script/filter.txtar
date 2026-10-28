@@ -2,7 +2,7 @@
 cp airport.yaml provider/airport.yaml
 exec tunlr sub add main $PROVIDER/airport.yaml
 install-mihomo
-exec tunlr apply --yes
+exec tunlr config apply --yes
 exec tunlr filter
 stdout 'Direct devices:\s+none'
 stdout 'Direct sources:\s+none'
@@ -59,7 +59,7 @@ grep '^  - AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT$' root/var/lib/tunlr/
 grep '"quic": true' root/var/lib/tunlr/state.json
 exec tunlr filter quic on --yes
 stdout 'Already so'
-exec tunlr mixin list
+exec tunlr config
 stdout 'tunlr:filter'
 
 # 只代理常用端口：关闭时改列表只保存，配置不变
@@ -87,7 +87,7 @@ exec tunlr filter ports off --yes
 stdout 'All ports follow the rules again'
 ! grep 'DST-PORT' root/var/lib/tunlr/core/config.yaml
 ! grep '"filter"' root/var/lib/tunlr/state.json
-exec tunlr mixin list
+exec tunlr config
 ! stdout 'tunlr:filter'
 
 -- airport.yaml --

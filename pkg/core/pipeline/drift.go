@@ -16,9 +16,9 @@ const (
 	DriftNone = "none"
 	// DriftPending 表示有尚未发布的改动：订阅更新了、mixin 或设置改了、升级 tunlr 后模板变了、回滚到了旧修订。
 	DriftPending = "pending"
-	// DriftEdited 表示生效的配置与所有历史修订都不同：在 tunlr 之外被改过，tunlr apply 会覆盖它。
+	// DriftEdited 表示生效的配置与所有历史修订都不同：在 tunlr 之外被改过，tunlr config apply 会覆盖它。
 	DriftEdited = "edited"
-	// DriftError 表示无法合成（mixin 有错、端口安全检查不通过、订阅没有内容等），tunlr plan 给出详情。
+	// DriftError 表示无法合成（mixin 有错、端口安全检查不通过、订阅没有内容等），tunlr config plan 给出详情。
 	DriftError = "error"
 )
 

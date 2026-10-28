@@ -1,5 +1,5 @@
 # 由 tunlr 生成，tunlr init 时重写；不要直接修改。
-# 每小时唤醒一次，由 tunlr _update 按设置的周期判断哪些更新到期（tunlr update show 查看）。
+# 每小时唤醒一次，由 tunlr _update 按设置的周期判断哪些更新到期（tunlr update 查看）。
 [Unit]
 Description=Run due tunlr updates (hourly check)
 Documentation=https://tunlr.app

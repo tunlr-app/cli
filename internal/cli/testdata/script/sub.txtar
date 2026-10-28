@@ -1,7 +1,7 @@
 # 尚未添加订阅
-exec tunlr sub list
+exec tunlr sub
 stdout 'No subscriptions'
-exec tunlr sub list --json
+exec tunlr sub --json
 stdout '"data": \[\]'
 
 # 添加：第一个订阅自动启用，带默认 User-Agent
@@ -18,11 +18,11 @@ exec tunlr sub add backup $PROVIDER/airport.yaml --user-agent custom/1.0
 grep '^custom/1\.0$' provider/.last-ua
 
 # 列表：启用标记、流量、到期时间；URL 缩写，不泄露令牌
-exec tunlr sub list
+exec tunlr sub
 stdout '^\*\s+main\s+2\s+\S+ \S+\s+daily\s+1\.0 GiB / 100\.0 GiB\s+2027-01-01\s+http://127\.0\.0\.1:\d+/\.\.\.$'
 stdout '^\s+backup\s+2\s+'
 ! stdout 'secret-token'
-exec tunlr sub list --json
+exec tunlr sub --json
 stdout '"active": true'
 stdout '"total": 107374182400'
 ! stdout 'secret-token'
@@ -77,7 +77,7 @@ stdout '^FAILED  other: '
 ! stdout 'secret-token'
 ! stderr .
 cmp root/var/lib/tunlr/subscriptions/other.yaml before.yaml
-exec tunlr sub list
+exec tunlr sub
 stdout 'other\s+2\s+\S+ \S+ \(last update failed\)'
 
 # --json 下部分失败只输出一份结果，不再追加错误
@@ -89,7 +89,7 @@ stdout '"ok": false'
 rm provider/.down
 exec tunlr sub update other
 stdout '^ok      other: 2 proxies, 1 groups, 2 rules$'
-exec tunlr sub list
+exec tunlr sub
 ! stdout 'other.*last update failed'
 stdout 'backup.*last update failed'
 exitcode 1 tunlr sub update nope
@@ -111,7 +111,7 @@ exec tunlr sub update other
 grep '^global/2\.0$' provider/.last-ua
 exec tunlr sub update other --user-agent own/3.0
 grep '^own/3\.0$' provider/.last-ua
-exec tunlr sub list --json
+exec tunlr sub --json
 stdout '"user_agent": "own/3\.0"'
 exec tunlr sub update other
 grep '^own/3\.0$' provider/.last-ua

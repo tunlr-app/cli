@@ -127,7 +127,7 @@ func (p *scriptedPrompt) Input(_ context.Context, _, description string, validat
 	return s, validate(s)
 }
 
-// editTest 是一次 tunlr mixin edit 的测试环境：编辑器每次被调用时依次写入 edits 中的内容
+// editTest 是一次 tunlr config edit 的测试环境：编辑器每次被调用时依次写入 edits 中的内容
 // （nil 表示不改动），并记录打开时看到的内容。
 type editTest struct {
 	t      *testing.T
@@ -204,7 +204,7 @@ func (et *editTest) mixin(name string) string {
 
 func TestEditNewFileAndApply(t *testing.T) {
 	et := newEditTest(t, "log-level: debug\n")
-	et.run(0, "mixin", "edit", "20-home", "--yes")
+	et.run(0, "config", "edit", "20-home", "--yes")
 	if len(et.seen) != 1 || et.seen[0] != string(templates.Mixin) {
 		t.Errorf("new file did not start from the example: %q", et.seen)
 	}
@@ -235,7 +235,7 @@ func TestEditFixMistake(t *testing.T) {
 			t.Error("the mistake was saved")
 		}
 	}
-	et.run(0, "mixin", "edit", "50-rules.yaml", "--yes")
+	et.run(0, "config", "edit", "50-rules.yaml", "--yes")
 	if !strings.Contains(et.stdout.String(), "mixin 50-rules.yaml:1: prepend-rules: value must be a list") {
 		t.Errorf("output:\n%s", et.stdout)
 	}
@@ -253,7 +253,7 @@ func TestEditCheckFailedDiscard(t *testing.T) {
 	// 先按 Esc，在确认时反悔，回到选项；再选放弃并确认。
 	et.prompt.choices = []int{-1, 1}
 	et.prompt.confirms = []bool{false, true}
-	et.run(0, "mixin", "edit", "50-rules")
+	et.run(0, "config", "edit", "50-rules")
 	out := et.stdout.String()
 	for _, want := range []string{"Check (mihomo -t): FAILED", "proxy [NOPE] not found", "Discarded; nothing saved."} {
 		if !strings.Contains(out, want) {
@@ -278,7 +278,7 @@ func TestEditCheckFailedDiscard(t *testing.T) {
 func TestEditCheckIncomplete(t *testing.T) {
 	et := newEditTest(t, "prepend-rules:\n  - GEOSITE,GEO-DOWN,DIRECT\n")
 	et.prompt.choices = []int{1}
-	et.run(0, "mixin", "edit", "50-rules")
+	et.run(0, "config", "edit", "50-rules")
 	if !strings.Contains(et.stdout.String(), "not applied") || !strings.Contains(et.mixin("50-rules.yaml"), "GEO-DOWN") {
 		t.Errorf("output:\n%s", et.stdout)
 	}
@@ -289,7 +289,7 @@ func TestEditCheckIncomplete(t *testing.T) {
 
 func TestEditNoChanges(t *testing.T) {
 	et := newEditTest(t, "")
-	et.run(0, "mixin", "edit", "20-home")
+	et.run(0, "config", "edit", "20-home")
 	if !strings.Contains(et.stdout.String(), "No changes.") {
 		t.Errorf("output:\n%s", et.stdout)
 	}
@@ -300,7 +300,7 @@ func TestEditNoChanges(t *testing.T) {
 
 func TestEditDryRun(t *testing.T) {
 	et := newEditTest(t, "log-level: debug\n")
-	et.run(0, "mixin", "edit", "20-home", "--dry-run")
+	et.run(0, "config", "edit", "20-home", "--dry-run")
 	if !strings.Contains(et.stdout.String(), "Dry run: the mixin was not saved.") {
 		t.Errorf("output:\n%s", et.stdout)
 	}
@@ -316,7 +316,7 @@ func TestEditChooseNewFile(t *testing.T) {
 	writeMixin(t, et.a.layout, "20-b.yaml", "log-level: info\n")
 	et.prompt.choices = []int{2}
 	et.prompt.inputs = []string{"30-new"}
-	et.run(0, "mixin", "edit", "--yes")
+	et.run(0, "config", "edit", "--yes")
 	if strings.Join(et.prompt.asked[0], "|") != "10-a.yaml|20-b.yaml|New file..." {
 		t.Errorf("choices = %v", et.prompt.asked)
 	}
@@ -333,7 +333,7 @@ func TestEditConcurrentChange(t *testing.T) {
 	et := newEditTest(t, "log-level: debug\n")
 	writeMixin(t, et.a.layout, "20-home.yaml", "log-level: info\n")
 	et.during = func() { writeMixin(t, et.a.layout, "20-home.yaml", "log-level: error\n") }
-	et.run(1, "mixin", "edit", "20-home", "--yes")
+	et.run(1, "config", "edit", "20-home", "--yes")
 	out := et.stdout.String()
 	if !strings.Contains(out, "changed by someone else") || et.mixin("20-home.yaml") != "log-level: error\n" {
 		t.Fatalf("output:\n%s", out)
@@ -348,10 +348,10 @@ func TestEditConcurrentChange(t *testing.T) {
 
 func TestEditUsage(t *testing.T) {
 	et := newEditTest(t)
-	et.run(2, "mixin", "edit", "../x")
+	et.run(2, "config", "edit", "../x")
 	et.a.terminal = func() bool { return false }
-	et.run(2, "mixin", "edit", "20-home")
-	if !strings.Contains(et.stdout.String(), "mixin edit needs a terminal") {
+	et.run(2, "config", "edit", "20-home")
+	if !strings.Contains(et.stdout.String(), "config edit needs a terminal") {
 		t.Errorf("output:\n%s", et.stdout)
 	}
 }

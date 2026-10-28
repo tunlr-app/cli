@@ -73,14 +73,14 @@ func (i *Installer) Panel(ctx context.Context, opts PanelOptions) (*Panel, error
 		return nil, err
 	}
 	if cfg == nil {
-		return nil, fmt.Errorf("%w: no configuration has been published yet; add a subscription (tunlr sub add), then tunlr apply", core.ErrCheckFailed)
+		return nil, fmt.Errorf("%w: no configuration has been published yet; add a subscription (tunlr sub add), then tunlr config apply", core.ErrCheckFailed)
 	}
 	api, err := config.API(cfg)
 	if err != nil {
 		return nil, err
 	}
 	if api.Controller == "" {
-		return nil, fmt.Errorf("%w: the configuration has no external-controller, so the panel is off (edited outside tunlr?); tunlr apply publishes it again", core.ErrCheckFailed)
+		return nil, fmt.Errorf("%w: the configuration has no external-controller, so the panel is off (edited outside tunlr?); tunlr config apply publishes it again", core.ErrCheckFailed)
 	}
 	host, portText, err := net.SplitHostPort(api.Controller)
 	port, perr := strconv.Atoi(portText)

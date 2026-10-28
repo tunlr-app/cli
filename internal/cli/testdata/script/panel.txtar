@@ -2,13 +2,13 @@
 exitcode 3 tunlr panel
 stderr 'no configuration has been published yet'
 
-# 非交互模式下 --reset-secret 没有 --yes 时报告用法错误
-exitcode 2 tunlr panel --reset-secret
-stderr 'panel --reset-secret needs confirmation; pass --yes'
+# 非交互模式下 reset-secret 没有 --yes 时报告用法错误
+exitcode 2 tunlr panel reset-secret
+stderr 'panel reset-secret needs confirmation; pass --yes'
 
-# 只查看时 --dry-run 没有意义
-exitcode 2 tunlr panel --dry-run
-stderr 'only applies to --reset-secret'
+# 原来的参数已删除
+exitcode 2 tunlr panel --reset-secret
+stderr 'unknown flag: --reset-secret'
 
 # 局域网访问默认关闭
 exec tunlr panel lan

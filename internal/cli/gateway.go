@@ -13,7 +13,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
-// gatewayView 是 gateway on 在 --json 输出中的形式。
+// gatewayView 是 tun gateway on 在 --json 输出中的形式。
 type gatewayView struct {
 	Plan    *setup.GatewayPlan   `json:"plan"`
 	Applied bool                 `json:"applied"`
@@ -24,6 +24,7 @@ func (a *app) newGatewayCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gateway",
 		Short: "Show gateway mode; turn it on or off (LAN devices route through mihomo)",
+		// 全称 tunlr tun gateway，tunlr tun 也显示网关模式的状态。
 		Long: "Gateway mode lets devices on the LAN use this server as their default gateway and DNS,\n" +
 			"so their traffic goes through mihomo (a \"side router\"). It needs the transparent proxy\n" +
 			"(TUN). When mihomo is not running, LAN devices lose internet access instead of going\n" +
@@ -61,7 +62,9 @@ func (a *app) printGatewayStatus(s *setup.GatewayStatus) {
 		}
 		return a.style.bad(bad)
 	}
-	fmt.Fprintf(w, "Transparent proxy: %s\n", mark(s.Tun == state.TunOn, "on", s.Tun+" (gateway mode needs it on)"))
+	if s.Tun != state.TunOn {
+		fmt.Fprintf(w, "Transparent proxy: %s\n", a.style.bad(s.Tun+" (gateway mode needs it on)"))
+	}
 	fmt.Fprintf(w, "IPv4 forwarding:   %s\n", mark(s.Forward, "on", "off"))
 	fmt.Fprintf(w, "sysctl file:       %s\n", mark(s.Sysctl, "present", "absent"))
 	if r := s.Rules; r != nil {
@@ -74,7 +77,7 @@ func (a *app) printGatewayStatus(s *setup.GatewayStatus) {
 		}
 	}
 	if s.Tun != state.TunOn || !s.Forward || !s.Sysctl || s.Rules == nil || !s.Rules.Complete() {
-		fmt.Fprintf(w, "\n%s tunlr gateway on --interface %s restores the missing parts.\n", a.style.warn("Hint:"), s.Interface)
+		fmt.Fprintf(w, "\n%s tunlr tun gateway on --interface %s restores the missing parts.\n", a.style.warn("Hint:"), s.Interface)
 	}
 }
 
@@ -87,22 +90,75 @@ func (a *app) newGatewayOnCommand() *cobra.Command {
 			"traffic not going through TUN, so LAN devices lose access rather than bypass mihomo when\n" +
 			"it stops. If Docker's DOCKER-USER chain exists, accept rules are added there, because\n" +
 			"Docker drops forwarded traffic by default.\n\n" +
-			"The LAN interface defaults to the one with the IPv4 default route. If the transparent\n" +
+			"Without --interface, a terminal lets you choose the LAN interface when there are several;\n" +
+			"otherwise (and with --yes) it is the one with the IPv4 default route. If the transparent\n" +
 			"proxy is off, it is turned on first, with its checks and rollback.\n\n" +
-			"Running it again restores missing parts (and switches to another --interface).",
+			"Running it again restores missing parts on the same interface (or switches to another\n" +
+			"--interface).",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := a.requireConfirmation("gateway on"); err != nil {
+			ctx := cmd.Context()
+			if err := a.requireConfirmation("tun gateway on"); err != nil {
 				return err
 			}
-			return a.gatewayOn(cmd.Context(), iface)
+			if iface == "" {
+				var err error
+				if iface, err = a.askGatewayInterface(ctx); err != nil {
+					_, err = a.cancelled(err)
+					return err
+				}
+			}
+			return a.gatewayOn(ctx, iface)
 		},
 	}
 	cmd.Flags().StringVar(&iface, "interface", "", "the LAN interface (default: the one with the IPv4 default route)")
 	return cmd
 }
 
-// gatewayOn 是 gateway on 的流程：前置检查、TUN 关闭时先开启、预览、确认、开启。iface 为空时用默认路由
+// askGatewayInterface 在交互模式下、网关模式还没有开启且有多个候选时让用户选局域网网卡；其余情况
+// （包括 --yes）返回空，由 GatewayPreflight 取默认路由所在的网卡或沿用正在使用的网卡。
+func (a *app) askGatewayInterface(ctx context.Context) (string, error) {
+	if !a.interactive() || a.opts.Yes {
+		return "", nil
+	}
+	inst := a.installer()
+	s, err := inst.GatewayStatus(ctx)
+	if err != nil || s.On {
+		return "", err
+	}
+	cands, err := inst.LANInterfaces(ctx)
+	if err != nil || len(cands) < 2 {
+		return "", err
+	}
+	c, err := a.chooseInterface(ctx, cands)
+	if err != nil {
+		return "", err
+	}
+	return c.Name, nil
+}
+
+// chooseInterface 让用户从局域网网卡的候选中选一个（见 setup.LANInterfaces，默认路由所在的排在最前），
+// 列表中标出有公网地址的网卡和默认路由所在的网卡。
+func (a *app) chooseInterface(ctx context.Context, cands []setup.LANInterface) (*setup.LANInterface, error) {
+	rows := make([][]string, len(cands))
+	for i, c := range cands {
+		note := ""
+		switch {
+		case len(c.PublicAddresses) > 0:
+			note = "public address"
+		case c.Default:
+			note = "default route"
+		}
+		rows[i] = []string{c.Name, strings.Join(c.Addresses, ", "), note}
+	}
+	i, err := a.prompt.Choose(ctx, "Which interface is on the LAN?", columns(rows), 0)
+	if err != nil {
+		return nil, err
+	}
+	return &cands[i], nil
+}
+
+// gatewayOn 是 tun gateway on 的流程：前置检查、TUN 关闭时先开启、预览、确认、开启。iface 为空时用默认路由
 // 所在的网卡。init 选择局域网网关时也走它。
 func (a *app) gatewayOn(ctx context.Context, iface string) error {
 	inst := a.installer()
@@ -204,7 +260,7 @@ func (a *app) printGatewayPlan(p *setup.GatewayPlan) {
 		fmt.Fprintf(w, "  - accept forwarding between %s and %s in Docker's %s chain (iptables)\n",
 			p.Interface, netfilter.Device, netfilter.DockerChain)
 	}
-	fmt.Fprintln(w, "This server's own traffic and SSH are not affected. tunlr gateway off undoes it all.")
+	fmt.Fprintln(w, "This server's own traffic and SSH are not affected. tunlr tun gateway off undoes it all.")
 	fmt.Fprintln(w)
 }
 
@@ -217,7 +273,7 @@ func (a *app) newGatewayOffCommand() *cobra.Command {
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if err := a.requireConfirmation("gateway off"); err != nil {
+			if err := a.requireConfirmation("tun gateway off"); err != nil {
 				return err
 			}
 			inst := a.installer()

@@ -1,12 +1,12 @@
-# tunlr mixin：在订阅之上叠加你自己的设置。下面全是注释掉的示例，按需取消注释。
+# mixin：在订阅之上叠加你自己的设置。下面全是注释掉的示例，按需取消注释。
 #
 # /etc/tunlr/mixin.d/ 下的 *.yaml 按文件名顺序逐个应用，后面的文件优先。
 # 可以按用途分文件，用数字前缀排序，例如 10-dns.yaml、20-nodes.yaml、50-rules.yaml。
 # 文件名逐字符比较，前缀请用相同的位数：9-a.yaml 会排在 10-b.yaml 之后。
 # tunlr 的命令管理的键（TUN 开关、API 的监听地址和 secret、geo 数据的自动更新等）这里不能写，
-# 写了会被拒绝并提示改用哪个命令；tunlr mixin list 列出它们。经 GitHub 镜像的下载地址和直连
+# 写了会被拒绝并提示改用哪个命令；tunlr config 列出它们。经 GitHub 镜像的下载地址和直连
 # 规则只是默认值，在所有文件之前应用，可以在这里覆盖。
-# 用 tunlr mixin edit 编辑会在保存时自动检查；直接改文件的，用 tunlr plan 预览、tunlr apply 发布。
+# 用 tunlr config edit 编辑会在保存时自动检查；直接改文件的，用 tunlr config plan 预览、tunlr config apply 发布。
 #
 # 写法与 mihomo 配置相同，另有几种前缀操作：
 #   键: 值                    映射逐层合并，标量和列表整体替换

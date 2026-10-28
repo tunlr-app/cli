@@ -14,8 +14,8 @@ func TestSwitchCommands(t *testing.T) {
 	}{
 		{setup.SwitchSuggestion{}, nil},
 		{setup.SwitchSuggestion{Tun: true, PanelLAN: true}, []string{"tunlr tun on", "tunlr panel lan on"}},
-		{setup.SwitchSuggestion{Gateway: true, Interface: "ens3", ProxyLAN: true}, []string{"tunlr gateway on --interface ens3", "tunlr proxy lan on"}},
-		{setup.SwitchSuggestion{Gateway: true, Was: "eth9"}, []string{"tunlr gateway on"}},
+		{setup.SwitchSuggestion{Gateway: true, Interface: "ens3", ProxyLAN: true}, []string{"tunlr tun gateway on --interface ens3", "tunlr proxy lan on"}},
+		{setup.SwitchSuggestion{Gateway: true, Was: "eth9"}, []string{"tunlr tun gateway on"}},
 	}
 	for _, tt := range tests {
 		if got := switchCommands(tt.s); !slices.Equal(got, tt.want) {

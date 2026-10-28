@@ -41,7 +41,7 @@ func columns(rows [][]string) []string {
 }
 
 // subscriptionOptions 是订阅的选择列表：名称、状态（启用、上次更新失败）、节点数、流量、到期日。
-// 要能放进 80 列的终端，更新时间等细节留给 sub list。
+// 要能放进 80 列的终端，更新时间等细节留给 tunlr sub。
 func subscriptionOptions(entries []subscription.Entry) []string {
 	rows := make([][]string, len(entries))
 	for i, e := range entries {

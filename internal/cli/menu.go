@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
 
+	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/setup"
@@ -22,18 +23,19 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
-// 主菜单的分类（第二级）。
+// 主菜单的分类（第二级），按 --help 的分组排列：Configuration、Network、Kernel。
 const (
 	groupSubscriptions = "Subscriptions"
 	groupConfiguration = "Configuration"
+	groupUpdates       = "Scheduled updates"
+	groupSettings      = "Settings"
+	groupBackup        = "Backup"
 	groupTun           = "Transparent proxy"
-	groupPanel         = "Panel"
 	groupProxy         = "Proxy port"
+	groupPanel         = "Panel"
 	groupDevices       = "LAN devices"
 	groupFilter        = "Filters"
-	groupService       = "mihomo service"
-	groupUpdates       = "Scheduled updates"
-	groupBackup        = "Backup"
+	groupKernel        = "Kernel (mihomo)"
 )
 
 const (
@@ -44,6 +46,9 @@ const (
 // menuRefresh 是菜单空闲时刷新状态行的间隔。
 const menuRefresh = 10 * time.Second
 
+// menuChrome 是菜单中选项以外的行数：状态行、空行、列表标题、空行、按键说明、等价命令，再留一行。
+const menuChrome = 7
+
 // menuItem 是主菜单的一项，按以下顺序判断：quit 退出菜单，back 回到第一级，group 进入这一分类，
 // ask 不为空时先在表单中询问这些项、由 build 得到参数，否则执行子命令 args。
 type menuItem struct {
@@ -51,7 +56,10 @@ type menuItem struct {
 	// note 是分类右侧的当前状态。
 	note  string
 	group string
-	args  []string
+	// args 是要执行的子命令；分类的 args 是对应的查看命令，只用于列表下方显示的等价命令。
+	args []string
+	// usage 是先询问再执行的项在列表下方显示的等价命令（不含 tunlr），如 "backup restore <file>"。
+	usage string
 	ask   []inputField
 	build func(values []string) []string
 	back  bool
@@ -177,7 +185,13 @@ func (m *menuModel) Init() tea.Cmd {
 func (m *menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		rows := m.listRows()
 		m.size = msg
+		// 列表的高度随终端高度变化。只在行数变了时重建：huh 的表单在 Init 时总会再请求一次终端大小，
+		// 每次都重建会没完没了地重画。
+		if m.adding == nil && m.listRows() != rows {
+			return m, m.showList(m.hoveredKey())
+		}
 	case menuTickMsg:
 		if int(msg) != m.tick || m.loading || m.running != nil {
 			return m, nil
@@ -207,7 +221,46 @@ func (m *menuModel) View() tea.View {
 	if m.quitting || m.running != nil || m.pending != nil {
 		return tea.NewView("")
 	}
-	return tea.NewView(m.statusLine() + "\n\n" + m.form.View())
+	return tea.NewView(m.statusLine() + "\n\n" + m.form.View() + "\n" + m.hint())
+}
+
+// hint 是光标所在那一项（或正在填写的表单）的等价命令，显示在列表下方。
+func (m *menuModel) hint() string {
+	it := m.adding
+	if it == nil {
+		i, ok := m.list.Hovered()
+		if !ok || i >= len(m.items) {
+			return ""
+		}
+		it = &m.items[i]
+	}
+	line := ""
+	switch {
+	case it.usage != "":
+		line = "$ tunlr " + it.usage
+	case it.args != nil:
+		line = commandLine(it.args)
+	}
+	if m.size.Width > 1 {
+		line = ansi.Truncate(line, m.size.Width-1, "…")
+	}
+	return m.a.style.dim(line)
+}
+
+// hoveredKey 是列表中光标所在那一项的 key，没有时为空。
+func (m *menuModel) hoveredKey() string {
+	if m.list == nil {
+		return ""
+	}
+	if i, ok := m.list.Hovered(); ok && i < len(m.items) {
+		return m.items[i].key()
+	}
+	return ""
+}
+
+// listRows 是列表一次显示的选项行数：按终端高度尽量让第一级一屏放下，至少 maxListRows 行，更多时滚动。
+func (m *menuModel) listRows() int {
+	return max(maxListRows, m.size.Height-menuChrome)
 }
 
 // showList 显示当前分类的列表，光标停在 hover（为空时为上次在这一级选的那一项）。
@@ -224,7 +277,7 @@ func (m *menuModel) showList(hover string) tea.Cmd {
 	m.title, m.items, m.labels = title, items, m.a.menuLabels(items)
 	m.choice = max(0, slices.IndexFunc(items, func(it menuItem) bool { return it.key() == hover }))
 	m.list = huh.NewSelect[int]().Title(title).Options(intOptions(m.labels)...).Value(&m.choice).
-		Height(listHeight(m.labels, 1))
+		Height(min(len(m.labels), m.listRows()) + 1)
 	m.adding = nil
 	return m.setForm(promptKeys("q"), m.list)
 }
@@ -346,11 +399,7 @@ func (m *menuModel) refreshList() tea.Cmd {
 	if title == m.title && slices.Equal(m.a.menuLabels(items), m.labels) {
 		return nil
 	}
-	hover := ""
-	if i, ok := m.list.Hovered(); ok && i < len(m.items) {
-		hover = m.items[i].key()
-	}
-	return m.showList(hover)
+	return m.showList(m.hoveredKey())
 }
 
 func (m *menuModel) nextTick() tea.Cmd {
@@ -432,7 +481,8 @@ func (a *app) result(code int, interrupted bool, took time.Duration) string {
 }
 
 // menuItems 返回分类 group（"" 为第一级）的标题和菜单项。没安装时第一级只能安装或查看状态，
-// 分类不存在；订阅、历史、透明代理和内核的操作只在有意义时出现。
+// 分类不存在；订阅、历史、透明代理和内核的操作只在有意义时出现。第一级最上面是需要处理的事项
+// （见 attention），分类的标题带上第一级中它右侧的状态。
 func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 	s := d.status
 	status := menuItem{label: "Show status", args: []string{"status"}}
@@ -444,53 +494,59 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		return "tunlr · not installed yet", []menuItem{
 			{label: "Install tunlr (init)", args: []string{"init"}}, status, diagnose, {label: menuQuit, quit: true}}
 	}
+	cat := func(name, note string, args ...string) menuItem {
+		return menuItem{label: name, group: name, note: note, args: args}
+	}
+	groups := []menuItem{
+		cat(groupSubscriptions, a.describeSubscriptions(s, d.subs), "sub"),
+		cat(groupConfiguration, a.describeRevision(s), "config"),
+		cat(groupUpdates, a.describeUpdates(s.Updates), "update"),
+		cat(groupSettings, "", "settings"),
+		cat(groupBackup, a.describeBackups(d.backups), "backup"),
+		cat(groupTun, a.describeTun(s.Tun), "tun"),
+		cat(groupProxy, a.describeProxyLAN(s.ProxyLAN), "proxy"),
+		cat(groupPanel, a.describePanelLAN(s.PanelLAN), "panel"),
+		cat(groupDevices, a.describeDevicesNote(s.Devices), "devices"),
+		cat(groupFilter, a.describeFilterNote(s.Filter), "filter"),
+		cat(groupKernel, a.describeService(s), "core"),
+	}
+	if group == "" {
+		items := append(a.attention(d), status)
+		items = append(items, groups...)
+		return "tunlr", append(items, diagnose, menuItem{label: menuQuit, quit: true})
+	}
+	title := "tunlr › " + group
+	if i := slices.IndexFunc(groups, func(it menuItem) bool { return it.group == group }); i >= 0 && groups[i].note != "" {
+		title += a.style.dim(" · ") + groups[i].note
+	}
 	back := menuItem{label: menuBack, back: true}
 	var items []menuItem
 	switch group {
-	case "":
-		return "tunlr", []menuItem{
-			status,
-			{label: groupPanel, group: groupPanel, note: a.describePanelLAN(s.PanelLAN)},
-			{label: groupProxy, group: groupProxy, note: a.describeProxyLAN(s.ProxyLAN)},
-			{label: groupSubscriptions, group: groupSubscriptions, note: a.describeSubscriptions(s, d.subs)},
-			{label: groupConfiguration, group: groupConfiguration, note: a.describeRevision(s)},
-			{label: groupTun, group: groupTun, note: a.describeTun(s.Tun)},
-			{label: groupDevices, group: groupDevices, note: a.describeDevicesNote(s.Devices)},
-			{label: groupFilter, group: groupFilter, note: a.describeFilterNote(s.Filter)},
-			{label: groupService, group: groupService, note: a.describeService(s)},
-			{label: groupUpdates, group: groupUpdates, note: a.describeUpdates(s.Updates)},
-			{label: groupBackup, group: groupBackup, note: a.describeBackups(d.backups)},
-			diagnose,
-			{label: menuQuit, quit: true},
-		}
 	case groupSubscriptions:
-		items = append(items, menuItem{label: "List subscriptions", args: []string{"sub", "list"}})
+		items = append(items, menuItem{label: "List subscriptions", args: []string{"sub"}})
 		if len(d.subs) > 0 {
 			items = append(items,
 				menuItem{label: "Switch subscription", args: []string{"sub", "use"}},
 				menuItem{label: "Update subscriptions", args: []string{"sub", "update"}})
 		}
-		items = append(items, menuItem{label: "Add a subscription", ask: subscriptionFields(),
+		items = append(items, menuItem{label: "Add a subscription", ask: subscriptionFields(), usage: "sub add <name> <url> --update <period>",
 			build: func(v []string) []string { return []string{"sub", "add", v[0], v[1], "--update", v[2]} }})
-		if len(d.subs) > 0 {
-			items = append(items, menuItem{label: "Change how often one is fetched", args: []string{"sub", "set"}})
-		}
 		if len(d.subs) > 1 {
 			items = append(items, menuItem{label: "Remove subscriptions", args: []string{"sub", "remove"}})
 		}
 	case groupConfiguration:
 		items = append(items,
-			menuItem{label: "Preview changes", args: []string{"plan"}},
-			menuItem{label: "Preview and apply", args: []string{"apply"}},
-			menuItem{label: "Edit a mixin", args: []string{"mixin", "edit"}})
+			menuItem{label: "Show the configuration, history and mixins", args: []string{"config"}},
+			menuItem{label: "Preview changes", args: []string{"config", "plan"}},
+			menuItem{label: "Preview and apply", args: []string{"config", "apply"}},
+			menuItem{label: "Edit a mixin", args: []string{"config", "edit"}})
 		if d.revisions > 0 {
-			items = append(items,
-				menuItem{label: "Roll back", args: []string{"rollback"}},
-				menuItem{label: "List revisions", args: []string{"rollback", "--list"}})
+			items = append(items, menuItem{label: "Roll back to an earlier revision", args: []string{"config", "rollback"}})
 		}
+	case groupSettings:
 		items = append(items,
-			menuItem{label: "Show tool settings", args: []string{"config"}},
-			menuItem{label: "Edit tool settings", args: []string{"config", "edit"}})
+			menuItem{label: "Show tool settings", args: []string{"settings"}},
+			menuItem{label: "Edit tool settings", args: []string{"settings", "edit"}})
 	case groupBackup:
 		items = append(items,
 			menuItem{label: "List automatic backups", args: []string{"backup"}},
@@ -507,7 +563,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 				}
 				return nil
 			},
-		}}, build: func(v []string) []string { return []string{"backup", "restore", v[0]} }})
+		}}, usage: "backup restore <file>", build: func(v []string) []string { return []string{"backup", "restore", v[0]} }})
 	case groupTun:
 		if s.Tun != nil && s.Tun.Switch != "off" {
 			items = append(items, menuItem{label: "Turn TUN off", args: []string{"tun", "off"}})
@@ -515,13 +571,11 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 			items = append(items, menuItem{label: "Turn TUN on", args: []string{"tun", "on"}})
 		}
 		if s.Tun != nil && s.Tun.Gateway != "" {
-			items = append(items, menuItem{label: "Turn gateway mode off", args: []string{"gateway", "off"}})
+			items = append(items, menuItem{label: "Turn gateway mode off", args: []string{"tun", "gateway", "off"}})
 		} else {
-			items = append(items, menuItem{label: "Turn gateway mode on (LAN devices route through mihomo)", args: []string{"gateway", "on"}})
+			items = append(items, menuItem{label: "Turn gateway mode on (LAN devices route through mihomo)", args: []string{"tun", "gateway", "on"}})
 		}
-		items = append(items,
-			menuItem{label: "Show details", args: []string{"tun"}},
-			menuItem{label: "Show gateway details", args: []string{"gateway"}})
+		items = append(items, menuItem{label: "Show details", args: []string{"tun"}})
 	case groupPanel:
 		items = append(items, menuItem{label: "Show how to open it", args: []string{"panel"}})
 		if s.PanelLAN {
@@ -529,7 +583,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		} else {
 			items = append(items, menuItem{label: "Let LAN devices open it", args: []string{"panel", "lan", "on"}})
 		}
-		items = append(items, menuItem{label: "Replace the API secret", args: []string{"panel", "--reset-secret"}})
+		items = append(items, menuItem{label: "Replace the API secret", args: []string{"panel", "reset-secret"}})
 	case groupProxy:
 		items = append(items, menuItem{label: "Show the proxy address", args: []string{"proxy"}})
 		if s.ProxyLAN {
@@ -562,26 +616,84 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		if s.Filter != nil && len(s.Filter.Sources) > 0 {
 			items = append(items, menuItem{label: "Stop sending a network direct", args: []string{"filter", "source", "remove"}})
 		}
-	case groupService:
+	case groupKernel:
+		items = append(items, menuItem{label: "Show the kernel and its service", args: []string{"core"}})
 		if s.Service != nil && s.Service.Active() {
 			items = append(items,
-				menuItem{label: "Restart mihomo", args: []string{"restart"}},
-				menuItem{label: "Stop mihomo", args: []string{"stop"}})
+				menuItem{label: "Restart mihomo", args: []string{"core", "restart"}},
+				menuItem{label: "Stop mihomo", args: []string{"core", "stop"}})
 		} else {
-			items = append(items, menuItem{label: "Start mihomo", args: []string{"start"}})
+			items = append(items, menuItem{label: "Start mihomo", args: []string{"core", "start"}})
 		}
 		items = append(items,
-			menuItem{label: "Show recent logs", args: []string{"logs", "-n", "50"}},
-			menuItem{label: "Upgrade mihomo to the latest release", args: []string{"upgrade", "core"}})
+			menuItem{label: "Show recent logs", args: []string{"core", "logs", "-n", "50"}},
+			menuItem{label: "Upgrade mihomo to the latest release", args: []string{"core", "upgrade"}})
+		if canRollBackKernel(s.Kernel) {
+			items = append(items, menuItem{label: "Roll back to the previous known-good version", args: []string{"core", "rollback"}})
+		}
+		items = append(items, menuItem{label: "Repair the installation (init)", args: []string{"init"}})
 	case groupUpdates:
+		items = append(items, menuItem{label: "Show the schedule", args: []string{"update"}})
+		if len(d.subs) > 0 {
+			items = append(items, menuItem{label: "Change how often a subscription is fetched", args: []string{"update", "set", "sub"}})
+		}
 		items = append(items,
-			menuItem{label: "Show the schedule", args: []string{"update", "show"}},
 			menuItem{label: "Change the geo data update", args: []string{"update", "set", "geo"}},
-			menuItem{label: "Update everything now", args: []string{"update"}})
+			menuItem{label: "Update everything now", args: []string{"update", "run"}})
 	default:
 		return "", nil
 	}
-	return "tunlr › " + group, append(items, back)
+	return title, append(items, back)
+}
+
+// attention 是第一级最上面需要处理的事项，每项对应一个命令：有还没发布的改动、内核服务失败或没有运行
+// （发布过配置时）、最近一次定时更新失败。
+func (a *app) attention(d menuData) []menuItem {
+	s := d.status
+	mark := a.style.warn("!") + " "
+	var items []menuItem
+	if s.Drift != nil && s.Drift.State == pipeline.DriftPending {
+		items = append(items, menuItem{label: mark + "Publish the changes not yet published", args: []string{"config", "apply"}})
+	}
+	if s.Service != nil && !s.Service.Active() && d.revisions > 0 {
+		why := "not running"
+		if s.Service.ActiveState == "failed" {
+			why = "failed"
+		}
+		items = append(items, menuItem{label: mark + "Start mihomo (" + why + ")", args: []string{"core", "start"}})
+	}
+	var failed []string
+	for _, sc := range s.Updates {
+		if sc.Last == nil || sc.Last.Status != setup.StepFailed {
+			continue
+		}
+		task := "sub"
+		if sc.Task == setup.TaskGeo {
+			task = "geo"
+		}
+		if !slices.Contains(failed, task) {
+			failed = append(failed, task)
+		}
+	}
+	switch len(failed) {
+	case 0:
+	case 1:
+		items = append(items, menuItem{label: mark + "Run the failed update again", args: []string{"update", "run", failed[0]}})
+	default:
+		items = append(items, menuItem{label: mark + "Run the failed updates again", args: []string{"update", "run"}})
+	}
+	return items
+}
+
+// canRollBackKernel 报告 tunlr core rollback 有没有可以换回的已知可用版本（与当前二进制不同的那一份）。
+func canRollBackKernel(k *mihomo.KernelStatus) bool {
+	if k == nil {
+		return false
+	}
+	if k.KnownGood {
+		return len(k.Kernels) > 1
+	}
+	return len(k.Kernels) > 0
 }
 
 // menuLabels 是菜单项显示的文字：分类右侧对齐显示当前状态（暗色）。
@@ -696,7 +808,7 @@ func subscriptionFields() []inputField {
 	return []inputField{
 		{title: "Name of the subscription", description: "e.g. home or work; letters, digits, '.', '_' and '-'", validate: subscription.ValidateName},
 		{title: "Subscription URL", description: "The URL your provider gives for Clash/mihomo.", validate: subscription.ValidateURL},
-		{title: "Fetch it again how often?", description: "Change later with tunlr sub set.", options: periods, initial: state.DefaultUpdate},
+		{title: "Fetch it again how often?", description: "Change later with tunlr update set sub.", options: periods, initial: state.DefaultUpdate},
 	}
 }
 

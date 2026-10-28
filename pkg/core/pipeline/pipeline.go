@@ -231,7 +231,7 @@ func (p *Pipeline) CheckMixins(ctx context.Context) error {
 }
 
 // Managed 返回按状态文件和工具设置生成的受管 mixin，与发布时所用的相同；还没有生成过 API secret 时
-// secret 为空。用于展示（tunlr mixin list）。
+// secret 为空。用于展示（tunlr config）。
 func (p *Pipeline) Managed() ([]config.Managed, error) {
 	set, err := settings.Load(p.Layout.SettingsFile())
 	if err != nil {
@@ -439,7 +439,7 @@ func (p *Pipeline) PlanRollback(ctx context.Context, n int) (*Plan, error) {
 	data, rev, err := h.Read(n)
 	if err != nil {
 		if errors.Is(err, config.ErrNoRevision) {
-			err = fmt.Errorf("%w (see: tunlr rollback --list)", errors.Join(core.ErrInvalidArgument, err))
+			err = fmt.Errorf("%w (the history: tunlr config)", errors.Join(core.ErrInvalidArgument, err))
 		}
 		return nil, err
 	}
@@ -882,9 +882,9 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
   iproute2-rule-index: %d
 `, sw.tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex)},
 		{Name: ManagedGeo, Command: "tunlr update set geo", Data: []byte(geo), Owns: []string{"geo-auto-update", "geo-update-interval"}},
-		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel --reset-secret", Data: panel},
+		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel reset-secret", Data: panel},
 		{Name: ManagedProxy, Command: "tunlr proxy lan on/off", Data: proxy, Owns: []string{"allow-lan", "lan-allowed-ips"}},
-		{Name: ManagedMirror, Command: "tunlr config edit", Default: true, Data: mirrorData},
+		{Name: ManagedMirror, Command: "tunlr settings edit", Default: true, Data: mirrorData},
 	}
 	if rules := filterRules(sw); len(rules) > 0 {
 		list = append(list, config.Managed{Name: ManagedFilter, Command: "tunlr filter", Default: true,
@@ -895,7 +895,7 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 	return list
 }
 
-// marshal 以与生成的配置相同的缩进（2 格）编码受管 mixin 的内容，tunlr mixin list 和 plan 照原样显示。
+// marshal 以与生成的配置相同的缩进（2 格）编码受管 mixin 的内容，tunlr config 和 plan 照原样显示。
 // 内容都是字符串、映射和列表，编码不会失败。
 func marshal(v any) []byte {
 	var b bytes.Buffer

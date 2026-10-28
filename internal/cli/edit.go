@@ -145,7 +145,7 @@ const (
 	choiceDiscard = "Discard my changes"
 )
 
-func (a *app) newMixinEditCommand() *cobra.Command {
+func (a *app) newConfigEditCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "edit [name]",
 		Short: "Edit a mixin file, check it, then apply",
@@ -158,7 +158,7 @@ func (a *app) newMixinEditCommand() *cobra.Command {
 		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !a.interactive() {
-				return usageErrorf("mixin edit needs a terminal; edit the files in %s directly, then run tunlr apply", a.layout.MixinDir())
+				return usageErrorf("config edit needs a terminal; edit the files in %s directly, then run tunlr config apply", a.layout.MixinDir())
 			}
 			var name string
 			var err error
@@ -291,7 +291,7 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 				if err := a.saveMixin(edited, original, existed, &keep, tmp.Name()); err != nil {
 					return err
 				}
-				fmt.Fprintf(a.stdout, "Saved %s; not applied. Run tunlr apply once the check can complete.\n", path)
+				fmt.Fprintf(a.stdout, "Saved %s; not applied. Run tunlr config apply once the check can complete.\n", path)
 				return nil
 			}
 			a.aborted = true

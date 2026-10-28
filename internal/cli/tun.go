@@ -19,6 +19,12 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
+// tunStatusView 是 tunlr tun 在 --json 输出中的形式。
+type tunStatusView struct {
+	Tun     *setup.TunStatus     `json:"tun"`
+	Gateway *setup.GatewayStatus `json:"gateway"`
+}
+
 // tunView 是 tun on/off 在 --json 输出中的形式。
 type tunView struct {
 	Plan     planView         `json:"plan"`
@@ -30,19 +36,30 @@ type tunView struct {
 func (a *app) newTunCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tun",
-		Short: "Show the transparent proxy (TUN) status; turn it on or off",
+		Short: "Show the transparent proxy (TUN) and gateway mode; turn them on or off",
 		Long: "Without a subcommand, show whether the transparent proxy is on, what mihomo actually\n" +
-			"runs (the panel can switch TUN temporarily) and whether the network rules are in place.",
+			"runs (the panel can switch TUN temporarily), whether the network rules are in place,\n" +
+			"and the state of gateway mode (tunlr tun gateway).",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := a.installer().TunStatus(cmd.Context())
+			inst := a.installer()
+			ts, err := inst.TunStatus(cmd.Context())
 			if err != nil {
 				return err
 			}
-			return a.render(s, func() error { a.printTunStatus(s); return nil })
+			gs, err := inst.GatewayStatus(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return a.render(tunStatusView{ts, gs}, func() error {
+				a.printTunStatus(ts)
+				fmt.Fprintln(a.stdout)
+				a.printGatewayStatus(gs)
+				return nil
+			})
 		},
 	}
-	cmd.AddCommand(a.withFullDiff(a.newTunOnCommand()), a.withFullDiff(a.newTunOffCommand()))
+	cmd.AddCommand(a.withFullDiff(a.newTunOnCommand()), a.withFullDiff(a.newTunOffCommand()), a.newGatewayCommand())
 	return cmd
 }
 
@@ -80,11 +97,6 @@ func (a *app) printTunStatus(s *setup.TunStatus) {
 	}
 	fmt.Fprintf(w, "Interface:         %s %s\n", netfilter.Device, yes(s.Device))
 	fmt.Fprintf(w, "nftables:          inet %s %s, inet %s %s\n", netfilter.Table, yes(s.Rules), netfilter.KernelTable, yes(s.KernelRules))
-	if s.Gateway != "" {
-		fmt.Fprintf(w, "Gateway mode:      on, LAN interface %s (details: tunlr gateway)\n", s.Gateway)
-	} else {
-		fmt.Fprintf(w, "Gateway mode:      %s\n", a.style.dim("off"))
-	}
 }
 
 func (a *app) newTunOnCommand() *cobra.Command {
@@ -119,7 +131,7 @@ func (a *app) printWarnings(warnings []string) {
 	}
 }
 
-// tunOn 是 tun on 在前置检查之后的流程：预览、确认、开启并检测。gateway on 在 TUN 关闭时也走它。
+// tunOn 是 tun on 在前置检查之后的流程：预览、确认、开启并检测。tun gateway on 在 TUN 关闭时也走它。
 func (a *app) tunOn(ctx context.Context, warnings []string) error {
 	inst := a.installer()
 	s, err := inst.TunStatus(ctx)

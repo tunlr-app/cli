@@ -4,10 +4,12 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -131,6 +133,7 @@ func (a *app) run(ctx context.Context, args []string) (code int, interrupted boo
 }
 
 func (a *app) newRootCommand() *cobra.Command {
+	var showVersion bool
 	root := &cobra.Command{
 		Use:   "tunlr",
 		Short: "Operate mihomo on Linux servers",
@@ -151,6 +154,9 @@ func (a *app) newRootCommand() *cobra.Command {
 			cmd.SetContext(download.WithProgress(cmd.Context(), a.downloadProgress))
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if showVersion && len(args) == 0 {
+				return a.printVersion()
+			}
 			if len(args) == 0 {
 				// 在终端里只输入 tunlr 时进入主菜单，否则显示帮助。
 				if a.interactive() {
@@ -166,6 +172,8 @@ func (a *app) newRootCommand() *cobra.Command {
 		},
 	}
 
+	// 版本只有 tunlr --version，没有 version 子命令；不用 cobra 的版本参数，以便支持 --json。
+	root.Flags().BoolVar(&showVersion, "version", false, "print the tunlr version")
 	pf := root.PersistentFlags()
 	pf.BoolVar(&a.opts.JSON, "json", false, "output machine-readable JSON")
 	pf.BoolVarP(&a.opts.Yes, "yes", "y", false, "assume yes for all confirmations")
@@ -178,39 +186,71 @@ func (a *app) newRootCommand() *cobra.Command {
 		return usageError{err}
 	})
 
+	// shell 补全和 help 子命令照常可用，只是不显示在帮助中（cobra 的模板总是列出 help，这里去掉）。
+	root.CompletionOptions.HiddenDefaultCmd = true
+	root.SetUsageTemplate(strings.ReplaceAll(root.UsageTemplate(), `(or .IsAvailableCommand (eq .Name "help"))`, ".IsAvailableCommand"))
+	root.SetHelpCommand(&cobra.Command{Use: "help [command]", Hidden: true, GroupID: "overview",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, _, err := root.Find(args)
+			if err != nil || c == nil {
+				return usageErrorf("unknown help topic %q", strings.Join(args, " "))
+			}
+			return c.Help()
+		}})
+
+	// 命令树见 docs/DESIGN.md 第 10 节：顶层只放领域名词和总览命令，--help 按分组显示。
+	groups := []struct {
+		id, title string
+		cmds      []*cobra.Command
+	}{
+		{"overview", "Overview:", []*cobra.Command{a.newStatusCommand(), a.newDoctorCommand()}},
+		{"setup", "Setup:", []*cobra.Command{a.newInitCommand(), a.newUninstallCommand()}},
+		{"config", "Configuration:", []*cobra.Command{a.newConfigCommand(), a.newSubCommand(), a.newUpdateCommand(), a.newSettingsCommand(), a.newBackupCommand()}},
+		{"network", "Network:", []*cobra.Command{a.newTunCommand(), a.newProxyCommand(), a.newPanelCommand(), a.newDevicesCommand(), a.newFilterCommand()}},
+		{"kernel", "Kernel:", []*cobra.Command{a.newCoreCommand()}},
+	}
+	for _, g := range groups {
+		root.AddGroup(&cobra.Group{ID: g.id, Title: g.title})
+		for _, c := range g.cmds {
+			c.GroupID = g.id
+			root.AddCommand(c)
+		}
+	}
+	// systemd 执行的内部命令，不显示在帮助中。
 	root.AddCommand(
-		a.newInitCommand(),
-		a.newStatusCommand(),
-		a.newPanelCommand(),
-		a.newProxyCommand(),
-		a.newDevicesCommand(),
-		a.newFilterCommand(),
-		a.newDoctorCommand(),
-		a.newStartCommand(),
-		a.newStopCommand(),
-		a.newRestartCommand(),
-		a.newLogsCommand(),
-		a.newUpgradeCommand(),
-		a.newUninstallCommand(),
 		a.newRescueCommand(),
-		a.newUpdateCommand(),
 		a.newInternalUpdateCommand(),
-		a.withFullDiff(a.newPlanCommand()),
-		a.withFullDiff(a.newApplyCommand()),
-		a.withFullDiff(a.newRollbackCommand()),
-		a.newConfigCommand(),
-		a.newBackupCommand(),
-		a.newMixinCommand(),
-		a.newSubCommand(),
-		a.newTunCommand(),
-		a.newGatewayCommand(),
 		a.newPreStartCommand(),
 		a.newPostStopCommand(),
 		a.newTunGuardCommand(),
 		a.newCheckCommand(),
-		a.newVersionCommand(),
 	)
 	return root
+}
+
+type versionData struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Date    string `json:"date"`
+	Go      string `json:"go"`
+	OS      string `json:"os"`
+	Arch    string `json:"arch"`
+}
+
+func (a *app) printVersion() error {
+	d := versionData{
+		Version: a.info.Version,
+		Commit:  a.info.Commit,
+		Date:    a.info.Date,
+		Go:      runtime.Version(),
+		OS:      runtime.GOOS,
+		Arch:    runtime.GOARCH,
+	}
+	return a.render(d, func() error {
+		_, err := fmt.Fprintf(a.stdout, "tunlr %s (commit %s, built %s, %s %s/%s)\n",
+			d.Version, d.Commit, d.Date, d.Go, d.OS, d.Arch)
+		return err
+	})
 }
 
 // interactive 报告能否向用户提问。标准输入不是终端，或要求 JSON 输出时，

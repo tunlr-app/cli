@@ -5,13 +5,25 @@ stdout 'Usage:'
 # 内部命令不出现在帮助中
 ! stdout '_check|_rescue|_update'
 
+# 按分组显示；completion 和 help 子命令可用但不显示
+stdout '^Overview:$'
+stdout '^Configuration:$'
+stdout '^Network:$'
+stdout '^Kernel:$'
+! stdout '^\s+(completion|help)\s'
+! stdout 'Additional Commands'
+exec tunlr completion bash
+stdout 'bash completion'
+exec tunlr help core
+stdout 'tunlr core \[command\]'
+
 # 未知命令：退出码 2，并给出建议
-exitcode 2 tunlr verison
-stderr 'unknown command "verison"; did you mean version\?'
+exitcode 2 tunlr stauts
+stderr 'unknown command "stauts"; did you mean status\?'
 stderr 'Run ''tunlr --help'' for usage.'
 
 # 未知参数：退出码 2
-exitcode 2 tunlr version --nope
+exitcode 2 tunlr status --nope
 stderr 'unknown flag: --nope'
 
 # --json 时错误也以 envelope 写到标准输出
@@ -20,3 +32,15 @@ stdout '"version": 1,'
 stdout '"code": 2,'
 stdout '"message": "unknown command \\"nosuch\\""'
 ! stderr .
+
+# 旧命令一律删除，不留别名
+exitcode 2 tunlr plan
+stderr 'unknown command "plan"'
+exitcode 2 tunlr mixin
+exitcode 2 tunlr start
+exitcode 2 tunlr upgrade
+exitcode 2 tunlr sub list
+exitcode 2 tunlr update show
+exitcode 2 tunlr update sub
+exitcode 2 tunlr config rollback --list
+stderr 'unknown flag: --list'

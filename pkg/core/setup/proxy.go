@@ -86,7 +86,7 @@ func (i *Installer) ProxyEnv() ([]EnvVar, error) {
 		return nil, err
 	}
 	if cfg == nil {
-		return nil, fmt.Errorf("%w: no configuration has been published yet (tunlr apply)", core.ErrCheckFailed)
+		return nil, fmt.Errorf("%w: no configuration has been published yet (tunlr config apply)", core.ErrCheckFailed)
 	}
 	l, err := config.Listen(cfg)
 	if err != nil {

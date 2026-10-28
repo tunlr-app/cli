@@ -12,7 +12,7 @@ install-mihomo
 mkdir root/etc/tunlr/mixin.d
 cp home.yaml root/etc/tunlr/mixin.d/20-home.yaml
 cp settings.yaml root/etc/tunlr/settings.yaml
-exec tunlr apply --yes
+exec tunlr config apply --yes
 exec tunlr filter quic on --yes
 
 # 备份：写到当前目录或 -o 指定的文件，输出概要，不含订阅地址
@@ -47,7 +47,7 @@ cp other.yaml root/etc/tunlr/mixin.d/30-other.yaml
 rm root/etc/tunlr/settings.yaml
 exec tunlr filter quic off --yes
 exec tunlr sub remove spare --yes
-exec tunlr apply --yes
+exec tunlr config apply --yes
 exec tunlr backup restore b.tar.gz --yes
 stdout '^\+  - DOMAIN,home\.example,DIRECT$'
 stdout '^-  - DOMAIN,other\.example,DIRECT$'
@@ -60,7 +60,7 @@ exists root/etc/tunlr/settings.yaml
 exists root/var/lib/tunlr/subscriptions/spare.yaml
 grep '"quic": true' root/var/lib/tunlr/state.json
 grep '^  - DOMAIN,home.example,DIRECT$' root/var/lib/tunlr/core/config.yaml
-exec tunlr sub list
+exec tunlr sub
 stdout 'spare'
 
 # 自动备份可以还原回去；只保留最近 3 份
@@ -86,7 +86,7 @@ stdout 'The backup is restored'
 exec tunlr backup create -o c.tar.gz
 exec tunlr filter quic off --yes
 cp other.yaml root/etc/tunlr/mixin.d/30-other.yaml
-exec tunlr apply --yes
+exec tunlr config apply --yes
 kernel start
 exitcode 4 tunlr backup restore c.tar.gz --yes
 stderr 'the previous configuration and files are back in place'

@@ -1,11 +1,11 @@
 # 没有设置文件：全是默认值
-exec tunlr config
+exec tunlr settings
 stdout '^github-mirror +none \(direct\)$'
 stdout '^user-agent +clash\.meta mihomo tunlr/.* \(default\)$'
 stdout '^geo-update +7d \(default\)$'
 stdout '^geo-updater +tunlr \(default\)$'
-stdout 'tunlr config edit changes it'
-exec tunlr config --json
+stdout 'tunlr settings edit changes it'
+exec tunlr settings --json
 stdout '"key": "github-mirror"'
 stdout '"value": ""'
 stdout '"default": true'
@@ -13,21 +13,21 @@ stdout '"default": true'
 # 文件中设置的值
 mkdir root/etc/tunlr
 cp settings.yaml root/etc/tunlr/settings.yaml
-exec tunlr config
+exec tunlr settings
 stdout '^github-mirror +https://gh-proxy\.com/$'
 stdout '^geo-update +1d$'
 stdout '^geo-updater +tunlr \(default\)$'
-exec tunlr config --json
+exec tunlr settings --json
 stdout '"value": "https://gh-proxy.com/"'
 
 # 文件有错：报告出来
 cp bad.yaml root/etc/tunlr/settings.yaml
-! exec tunlr config
+! exec tunlr settings
 stderr 'field github_mirror not found'
 
 # edit 需要终端
-exitcode 2 tunlr config edit
-stderr 'config edit needs a terminal; edit .*settings\.yaml directly, then run tunlr apply'
+exitcode 2 tunlr settings edit
+stderr 'settings edit needs a terminal; edit .*settings\.yaml directly, then run tunlr config apply'
 
 -- settings.yaml --
 github-mirror: https://gh-proxy.com/

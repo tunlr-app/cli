@@ -17,7 +17,7 @@ import (
 )
 
 // sysctlContent 是网关模式的 sysctl 配置，开机时由 systemd-sysctl 加载。
-const sysctlContent = "# 由 tunlr 生成：网关模式需要 IPv4 转发（tunlr gateway off 时删除）。\nnet.ipv4.ip_forward = 1\n"
+const sysctlContent = "# 由 tunlr 生成：网关模式需要 IPv4 转发（tunlr tun gateway off 时删除）。\nnet.ipv4.ip_forward = 1\n"
 
 // GatewayStatus 是网关模式的状态。开关以状态文件为准，其余以实际情况为准。
 type GatewayStatus struct {
@@ -89,18 +89,36 @@ func (p *GatewayPlan) InPlace() bool {
 	return c != nil && c.On && c.Interface == p.Interface && c.Forward && c.Sysctl && c.Rules != nil && c.Rules.Complete()
 }
 
-// GatewayPreflight 检查能否开启网关（iface 为空时取 IPv4 默认路由所在的网卡），包括透明代理的前置检查
-// （TunPreflight）。不满足时返回满足 errors.Is(err, core.ErrCheckFailed) 的错误；网卡名不合法时满足
+// gatewayInterface 是开启网关要用的局域网网卡：给出的 iface；为空时沿用网关模式正在使用的网卡（再次执行
+// 是为了恢复缺失的部分），没有开启时取 IPv4 默认路由所在的网卡。
+func (i *Installer) gatewayInterface(ctx context.Context, iface string, s *GatewayStatus) (string, error) {
+	switch {
+	case iface != "":
+		return iface, nil
+	case s.On:
+		return s.Interface, nil
+	}
+	def, err := i.rules().DefaultInterface(ctx)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", core.ErrCheckFailed, err)
+	}
+	return def, nil
+}
+
+// GatewayPreflight 检查能否开启网关，包括透明代理的前置检查（TunPreflight）。iface 为空时的取法见
+// gatewayInterface。不满足时返回满足 errors.Is(err, core.ErrCheckFailed) 的错误；网卡名不合法时满足
 // errors.Is(err, core.ErrInvalidArgument)。透明代理是否开启不在这里检查。
 func (i *Installer) GatewayPreflight(ctx context.Context, iface string) (*GatewayPlan, error) {
 	warnings, err := i.TunPreflight(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if iface == "" {
-		if iface, err = i.rules().DefaultInterface(ctx); err != nil {
-			return nil, fmt.Errorf("%w: %w", core.ErrCheckFailed, err)
-		}
+	s, err := i.GatewayStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if iface, err = i.gatewayInterface(ctx, iface, s); err != nil {
+		return nil, err
 	}
 	if err := netfilter.ValidInterface(iface); err != nil {
 		return nil, fmt.Errorf("%w: %w", core.ErrInvalidArgument, err)
@@ -128,10 +146,6 @@ func (i *Installer) GatewayPreflight(ctx context.Context, iface string) (*Gatewa
 		return nil, err
 	}
 	p.Docker = rs.DockerChain
-	s, err := i.GatewayStatus(ctx)
-	if err != nil {
-		return nil, err
-	}
 	if s.On {
 		p.Current = s
 	}

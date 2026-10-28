@@ -31,7 +31,7 @@ func (a *app) newProxyCommand() *cobra.Command {
 		Long: "mihomo's proxy port (mixed-port, HTTP and SOCKS5 on one port) listens on 127.0.0.1 only by\n" +
 			"default. With LAN access on (tunlr proxy lan on), devices at home can set this server as\n" +
 			"their HTTP or SOCKS5 proxy; mihomo refuses connections from addresses that are not private.\n" +
-			"To route devices through this server without setting a proxy on each, see tunlr gateway.",
+			"To route devices through this server without setting a proxy on each, see tunlr tun gateway.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.showProxyLAN(cmd.Context()) },
 	}

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -141,7 +140,7 @@ func (a *app) writePlan(w io.Writer, v planView) {
 				names = append(names, m.Name)
 			}
 		}
-		fmt.Fprintf(w, "Managed by tunlr: %s (mixins cannot change their keys; see: tunlr mixin list)\n", strings.Join(names, ", "))
+		fmt.Fprintf(w, "Managed by tunlr: %s (mixins cannot change their keys; see: tunlr config)\n", strings.Join(names, ", "))
 		writeDefaults(w, v.Managed)
 	}
 	if len(v.Warnings) > 0 {
@@ -192,7 +191,7 @@ func (a *app) writePlan(w io.Writer, v planView) {
 	}
 }
 
-// hideSecretInDiff 把差异中顶层 secret 行的值换成 hiddenSecret（如 panel --reset-secret 的差异），
+// hideSecretInDiff 把差异中顶层 secret 行的值换成 hiddenSecret（如 panel reset-secret 的差异），
 // 终端滚动记录和 --json 输出里都不出现 secret；查看它用 tunlr panel。
 func hideSecretInDiff(diff string) string {
 	lines := strings.SplitAfter(diff, "\n")
@@ -276,7 +275,7 @@ func (a *app) newPlanCommand() *cobra.Command {
 	var full bool
 	cmd := &cobra.Command{
 		Use:   "plan",
-		Short: "Preview the configuration that apply would publish",
+		Short: "Preview the configuration that config apply would publish",
 		Long: "Compose the configuration from the template, the active subscription and the mixin\n" +
 			"files in /etc/tunlr/mixin.d, show how it differs from the published one, and check it\n" +
 			"with mihomo -t. A mistake in a mixin file fails the check (exit code 3).\n" +
@@ -304,10 +303,10 @@ func (a *app) newApplyCommand() *cobra.Command {
 		Short: "Check and publish the configuration",
 		Long: "Compose the configuration like plan, show the diff, and publish it after confirmation.\n" +
 			"The configuration must pass mihomo -t; the previous one is kept in the history\n" +
-			"(see tunlr rollback --list). Use --yes to skip the confirmation, --dry-run to only preview.",
+			"(see tunlr config). Use --yes to skip the confirmation, --dry-run to only preview.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := a.requireConfirmation("apply"); err != nil {
+			if err := a.requireConfirmation("config apply"); err != nil {
 				return err
 			}
 			plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().Plan(cmd.Context()) })
@@ -320,22 +319,16 @@ func (a *app) newApplyCommand() *cobra.Command {
 }
 
 func (a *app) newRollbackCommand() *cobra.Command {
-	var list bool
 	cmd := &cobra.Command{
 		Use:   "rollback [revision]",
-		Short: "Publish an earlier configuration again (--list shows the history)",
+		Short: "Publish an earlier configuration again (tunlr config lists the history)",
 		Long: "Publish a configuration from the history again. Without a revision, choose it from\n" +
 			"the history in a terminal; otherwise (or with --yes) go back to the most recent one\n" +
 			"that differs from the published configuration, so running it twice switches back.\n" +
-			"The next apply composes from the subscription and mixins again.",
+			"The next config apply composes from the subscription and mixins again. tunlr config lists\n" +
+			"the history.",
 		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if list {
-				if len(args) > 0 {
-					return usageErrorf("--list takes no revision")
-				}
-				return a.listRevisions()
-			}
 			n := 0
 			if len(args) == 1 {
 				var err error
@@ -343,7 +336,7 @@ func (a *app) newRollbackCommand() *cobra.Command {
 					return usageErrorf("revision must be a positive number, got %q", args[0])
 				}
 			}
-			if err := a.requireConfirmation("rollback"); err != nil {
+			if err := a.requireConfirmation("config rollback"); err != nil {
 				return err
 			}
 			if n == 0 && a.interactive() && !a.opts.Yes {
@@ -360,7 +353,6 @@ func (a *app) newRollbackCommand() *cobra.Command {
 			return a.publish(cmd, plan, fmt.Sprintf("Roll back to revision %d?", plan.RollbackTo))
 		},
 	}
-	cmd.Flags().BoolVar(&list, "list", false, "list the configuration history")
 	return cmd
 }
 
@@ -407,7 +399,7 @@ func (a *app) requireConfirmation(command string) error {
 	return usageErrorf("%s needs confirmation; pass --yes to proceed without asking (or --dry-run to preview)", command)
 }
 
-// requireYes 同 requireConfirmation，用于不支持 --dry-run 的命令（如 stop、upgrade core）：
+// requireYes 同 requireConfirmation，用于不支持 --dry-run 的命令（如 core stop、core upgrade）：
 // 带 --dry-run 时报告用法错误，不把它当作不必确认。
 func (a *app) requireYes(command string) error {
 	if a.opts.DryRun {
@@ -515,43 +507,35 @@ func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) 
 	})
 }
 
-func (a *app) listRevisions() error {
-	revs, current, err := a.pipeline().Revisions()
-	if err != nil {
-		return err
-	}
+// newRevisionViews 是配置历史的展示形式，current 是与生效配置相同的修订（0 为没有）。
+func newRevisionViews(revs []config.Revision, current int) []revisionView {
 	views := make([]revisionView, 0, len(revs))
 	for _, r := range revs {
 		views = append(views, revisionView{r, r.Number == current})
 	}
-	return a.render(views, func() error {
-		if len(views) == 0 {
-			_, err := fmt.Fprintln(a.stdout, "No configuration has been published yet.")
-			return err
+	return views
+}
+
+// writeRevisions 输出配置历史（tunlr config），最新的在前，* 标出与生效配置相同的那一份。
+func writeRevisions(w io.Writer, views []revisionView) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "  \tREVISION\tCREATED\tSOURCE\tSUBSCRIPTION")
+	current := false
+	for _, v := range views {
+		mark := ""
+		if v.Current {
+			mark, current = "*", true
 		}
-		var buf bytes.Buffer
-		tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "\tREVISION\tCREATED\tSOURCE\tSUBSCRIPTION")
-		for _, v := range views {
-			mark := ""
-			if v.Current {
-				mark = "*"
-			}
-			sub := v.Subscription
-			if sub == "" {
-				sub = "-"
-			}
-			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", mark, v.Number, v.CreatedAt.Local().Format(time.DateTime), describeReason(v.Revision), sub)
+		sub := v.Subscription
+		if sub == "" {
+			sub = "-"
 		}
-		if err := tw.Flush(); err != nil {
-			return err
-		}
-		if current == 0 {
-			buf.WriteString("\nThe published configuration matches no revision (edited by hand?); apply or rollback archives it first.\n")
-		}
-		_, err := a.stdout.Write(buf.Bytes())
-		return err
-	})
+		fmt.Fprintf(tw, "  %s\t%d\t%s\t%s\t%s\n", mark, v.Number, v.CreatedAt.Local().Format(time.DateTime), describeReason(v.Revision), sub)
+	}
+	tw.Flush()
+	if !current {
+		fmt.Fprintln(w, "  The published configuration matches no revision (edited by hand?); apply or rollback archives it first.")
+	}
 }
 
 func describeReason(r config.Revision) string {

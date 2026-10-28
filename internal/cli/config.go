@@ -1,183 +1,142 @@
 package cli
 
 import (
-	"bytes"
-	"errors"
+	"context"
 	"fmt"
-	"io/fs"
-	"os"
+	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/tunlr-app/cli/pkg/core/pipeline"
-	"github.com/tunlr-app/cli/pkg/core/settings"
-	"github.com/tunlr-app/cli/templates"
+	"github.com/tunlr-app/cli/pkg/core/config"
+	"github.com/tunlr-app/cli/pkg/core/setup"
 )
+
+// managedView 是受管 mixin 的展示形式。独占键的只列出键（其中有 API secret）；提供默认值的给出内容。
+type managedView struct {
+	Name    string `json:"name"`
+	Command string `json:"command,omitempty"`
+	// Default 为 true 时它只提供默认值，用户的 mixin 可以覆盖；否则 Keys 中的键用户的 mixin 不能改动。
+	Default bool     `json:"default"`
+	Keys    []string `json:"keys,omitempty"`
+	Content string   `json:"content,omitempty"`
+}
+
+func newManagedViews(ms []config.Managed) []managedView {
+	vs := make([]managedView, 0, len(ms))
+	for _, m := range ms {
+		v := managedView{Name: m.Name, Command: m.Command, Default: m.Default, Keys: m.Keys()}
+		if m.Default {
+			v.Content = string(m.Data)
+		}
+		vs = append(vs, v)
+	}
+	return vs
+}
+
+// writeManaged 输出受管 mixin：独占的每个一行，列出键和修改它们的命令；提供默认值的给出内容。
+func writeManaged(w io.Writer, vs []managedView) {
+	fmt.Fprintln(w, "Managed by tunlr (mixins cannot change these keys; use the command shown):")
+	for _, v := range vs {
+		if v.Default {
+			continue
+		}
+		how := ""
+		if v.Command != "" {
+			how = " (" + v.Command + ")"
+		}
+		fmt.Fprintf(w, "  %s%s: %s\n", v.Name, how, strings.Join(v.Keys, ", "))
+	}
+	writeDefaults(w, vs)
+}
+
+// writeDefaults 输出提供默认值的受管 mixin 的内容，没有内容的省略。
+func writeDefaults(w io.Writer, vs []managedView) {
+	for _, v := range vs {
+		if !v.Default || strings.TrimSpace(v.Content) == "{}" {
+			continue
+		}
+		fmt.Fprintf(w, "Defaults from %s (%s; a mixin can override these, remove rules with delete-rules):\n", v.Name, v.Command)
+		for l := range strings.SplitSeq(strings.TrimRight(v.Content, "\n"), "\n") {
+			fmt.Fprintf(w, "  %s\n", l)
+		}
+	}
+}
 
 // configView 是 tunlr config 在 --json 输出中的形式。
 type configView struct {
-	File     string           `json:"file"`
-	Settings []settings.Entry `json:"settings"`
+	*setup.ConfigStatus
+	History []revisionView `json:"history"`
+	Dir     string         `json:"dir"`
+	Files   []string       `json:"files"`
+	Managed []managedView  `json:"managed"`
 }
 
 func (a *app) newConfigCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Show tunlr's own settings; edit changes them",
-		Long: "tunlr's own settings live in /etc/tunlr/settings.yaml: the GitHub mirror, the default\n" +
-			"User-Agent for subscriptions, and how the geo data is updated. They are not part of the\n" +
-			"mihomo configuration (change that with tunlr mixin edit). tunlr config edit opens the file in an\n" +
-			"editor, checks it, and applies the configuration when a change affects it.",
+		Short: "Show the published configuration, its history and the mixins; plan, apply, rollback, edit",
+		Long: "The configuration mihomo runs is composed from the template, the active subscription and\n" +
+			"the mixin files in /etc/tunlr/mixin.d, checked with mihomo -t and published with apply.\n\n" +
+			"Without a subcommand, show the published revision and whether there are changes not yet\n" +
+			"published, the history rollback can go back to, your mixin files in the order they apply,\n" +
+			"and the mixins tunlr generates for its own settings (TUN, the panel, geo data updates).\n" +
+			"Your mixins may not set, change or delete the keys tunlr manages; plan, apply and edit\n" +
+			"refuse such a mixin and name the command that changes the key instead. tunlr:mirror only\n" +
+			"gives defaults you can override.",
 		Args: usageArgs(cobra.NoArgs),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			entries, err := a.installer().SettingsEntries()
-			if err != nil {
-				return err
-			}
-			v := configView{File: a.layout.SettingsFile(), Settings: entries}
-			return a.render(v, func() error {
-				for _, e := range entries {
-					value := e.Value
-					switch {
-					case e.Value == "":
-						value = a.style.dim("none (direct)")
-					case e.Default:
-						value += a.style.dim(" (default)")
-					}
-					fmt.Fprintf(a.stdout, "%-13s %s\n", e.Key, value)
-					fmt.Fprintf(a.stdout, "%-13s %s\n", "", a.style.dim(e.Help))
-				}
-				fmt.Fprintf(a.stdout, "\n(file %s; tunlr config edit changes it)\n", v.File)
-				return nil
-			})
-		},
+		RunE: func(cmd *cobra.Command, args []string) error { return a.showConfig(cmd.Context()) },
 	}
-	cmd.AddCommand(a.withFullDiff(a.newConfigEditCommand()))
+	cmd.AddCommand(
+		a.withFullDiff(a.newPlanCommand()),
+		a.withFullDiff(a.newApplyCommand()),
+		a.withFullDiff(a.newRollbackCommand()),
+		a.withFullDiff(a.newConfigEditCommand()),
+	)
 	return cmd
 }
 
-func (a *app) newConfigEditCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "edit",
-		Short: "Edit tunlr's settings, check them, then apply",
-		Long: "Edit /etc/tunlr/settings.yaml with $VISUAL, $EDITOR, or else vim, nano or vi. A new file\n" +
-			"starts from commented defaults that explain each setting. A mistake takes you back to the\n" +
-			"editor, and nothing is saved until the file is valid. When the change affects the\n" +
-			"configuration (the GitHub mirror, geo data updated by mihomo), the diff is shown and the\n" +
-			"configuration is applied after confirmation.",
-		Args: usageArgs(cobra.NoArgs),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if !a.interactive() {
-				return usageErrorf("config edit needs a terminal; edit %s directly, then run tunlr apply", a.layout.SettingsFile())
-			}
-			return a.editSettings(cmd)
-		},
-	}
-}
-
-// editSettings 在临时副本上编辑设置文件，检查通过后才写回，然后发布。与 editMixin 一样，有错的编辑
-// 不会写到设置文件中。
-func (a *app) editSettings(cmd *cobra.Command) error {
-	ctx := cmd.Context()
-	path := a.layout.SettingsFile()
-	original, err := os.ReadFile(path)
-	existed := err == nil
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	start := original
-	if !existed {
-		start = templates.Settings
-	}
-
-	tmp, err := os.CreateTemp("", "tunlr-settings-*.yaml")
+func (a *app) showConfig(ctx context.Context) error {
+	cs, err := a.installer().ConfigStatus(ctx)
 	if err != nil {
 		return err
 	}
-	keep := false
-	defer func() {
-		if !keep {
-			os.Remove(tmp.Name())
-		}
-	}()
-	_, err = tmp.Write(start)
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
+	revs, current, err := a.pipeline().Revisions()
 	if err != nil {
 		return err
 	}
-
-	fmt.Fprintln(a.stdout, a.style.dim("After you save and quit, the settings are checked; changes to the configuration\n"+
-		"are shown and nothing is applied until you confirm. Quit without saving to change nothing."))
-	for {
-		if err := a.editor(tmp.Name()); err != nil {
-			return err
+	mixins, err := config.LoadMixins(a.layout.MixinDir())
+	if err != nil {
+		return err
+	}
+	managed, err := a.pipeline().Managed()
+	if err != nil {
+		return err
+	}
+	v := configView{ConfigStatus: cs, History: newRevisionViews(revs, current), Dir: a.layout.MixinDir(), Files: []string{}, Managed: newManagedViews(managed)}
+	for _, m := range mixins {
+		v.Files = append(v.Files, m.Name)
+	}
+	return a.render(v, func() error {
+		if cs.Revision == nil && cs.Drift == nil {
+			fmt.Fprintf(a.stdout, "Configuration: %s (tunlr config apply publishes it)\n", a.style.warn("not published"))
 		}
-		data, err := os.ReadFile(tmp.Name())
-		if err != nil {
-			return err
-		}
-		if bytes.Equal(data, start) {
-			fmt.Fprintln(a.stdout, "No changes.")
-			return nil
-		}
-		set, err := settings.Parse(data)
-		if err != nil {
-			fmt.Fprintf(a.stdout, "\nsettings: %v\n\n", err)
-			choice, err := a.chooseAfterCheck(ctx, []string{choiceEdit, choiceDiscard},
-				"The settings were not saved.", "The settings file stays as it was.")
-			if err != nil {
-				return err
-			}
-			if choice == choiceEdit {
-				continue
-			}
-			a.aborted = true
-			fmt.Fprintln(a.stdout, "Discarded; nothing saved.")
-			return nil
-		}
-
-		if a.opts.DryRun {
-			plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().PlanWithSettings(ctx, set) })
-			if err != nil {
-				return err
-			}
-			if plan.Current != nil && plan.Changed() {
-				a.printPlan(newPlanView(plan, false))
-				fmt.Fprintln(a.stdout)
-			}
-			fmt.Fprintln(a.stdout, "Dry run: the settings were not saved.")
-			return nil
-		}
-
-		err = a.installer().SaveSettings(ctx, data, original, existed)
-		if errors.Is(err, settings.ErrChanged) {
-			keep = true
-			return fmt.Errorf("%w; your version is kept in %s", err, tmp.Name())
-		}
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(a.stdout, "Saved %s.\n", path)
-
-		plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().Plan(ctx) })
-		switch {
-		case err != nil:
-			return fmt.Errorf("the settings are saved, but the configuration could not be composed: %w", err)
-		case plan.Current == nil:
-			fmt.Fprintln(a.stdout, "No configuration has been published yet; the settings take effect with tunlr apply.")
-			return nil
-		case !plan.Changed():
-			fmt.Fprintln(a.stdout, "The configuration stays the same.")
-			return nil
+		a.printRevision(cs.Revision, cs.Drift)
+		if len(v.History) > 0 {
+			fmt.Fprintln(a.stdout, "\nHistory (tunlr config rollback publishes an earlier one again):")
+			writeRevisions(a.stdout, v.History)
 		}
 		fmt.Fprintln(a.stdout)
-		err = a.publish(cmd, plan, "Apply this configuration?")
-		if err == nil && a.aborted {
-			fmt.Fprintln(a.stdout, "The settings stay saved; tunlr apply publishes them later.")
+		if len(v.Files) == 0 {
+			fmt.Fprintf(a.stdout, "No mixin files in %s (create one with: tunlr config edit).\n", v.Dir)
+		} else {
+			fmt.Fprintf(a.stdout, "Mixin files in %s (in order):\n", v.Dir)
+			for _, f := range v.Files {
+				fmt.Fprintf(a.stdout, "  %s\n", f)
+			}
 		}
-		a.aborted = false // 设置已经保存，不发布也不是什么都没做。
-		return err
-	}
+		fmt.Fprintln(a.stdout)
+		writeManaged(a.stdout, v.Managed)
+		return nil
+	})
 }

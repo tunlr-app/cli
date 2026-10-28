@@ -8,7 +8,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
-// SettingsEntries 列出全部工具设置（tunlr config）。
+// SettingsEntries 列出全部工具设置（tunlr settings）。
 func (i *Installer) SettingsEntries() ([]settings.Entry, error) {
 	set, err := settings.Load(i.Layout.SettingsFile())
 	if err != nil {

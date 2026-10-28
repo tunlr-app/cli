@@ -97,7 +97,7 @@ func (i *Installer) TunPreflight(ctx context.Context) (warnings []string, err er
 		return nil, fmt.Errorf("%w: %w", core.ErrCheckFailed, mihomo.ErrServiceNotInstalled)
 	}
 	if _, err := mihomo.NewClient(i.Layout.CoreSocket()).Version(ctx); err != nil {
-		return nil, fmt.Errorf("%w: mihomo is not responding (%v); start it first: tunlr start", core.ErrCheckFailed, err)
+		return nil, fmt.Errorf("%w: mihomo is not responding (%v); start it first: tunlr core start", core.ErrCheckFailed, err)
 	}
 	return doctor.Failures(i.host().Tun(ctx, i.rules()))
 }
@@ -306,7 +306,7 @@ func (i *Installer) tunGuard(ctx context.Context, wait bool) error {
 
 // PreStart 是内核服务启动前（ExecStartPre，以 root）执行的 _prestart：开关仍为 pending 且已过期限时
 // 先关闭 TUN（重启机器会丢掉回滚定时器），再加载工具的规则；网关开启、面板对局域网开放时重新加载
-// 它们的规则（nft 规则不跨重启保存），面板的表在内核开始监听之前就位。不等待文件锁：tunlr start 等命令持锁调用 systemctl start 时会死锁。
+// 它们的规则（nft 规则不跨重启保存），面板的表在内核开始监听之前就位。不等待文件锁：tunlr core start 等命令持锁调用 systemctl start 时会死锁。
 func (i *Installer) PreStart(ctx context.Context) error {
 	st, err := state.Load(i.Layout.StateFile())
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {

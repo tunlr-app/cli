@@ -121,13 +121,13 @@ func TestSubRemoveChooses(t *testing.T) {
 func TestRollbackChooses(t *testing.T) {
 	et := newEditTest(t)
 	addSubscriptions(t, et.a, "main", "main", "backup")
-	et.run(0, "apply", "--yes")
+	et.run(0, "config", "apply", "--yes")
 	et.run(0, "sub", "use", "backup", "--apply", "--yes")
 	et.stdout.Reset()
 
 	// 修订 2 是生效的配置，光标停在修订 1 上。
 	et.prompt.choices = []int{1}
-	et.run(0, "rollback", "--dry-run")
+	et.run(0, "config", "rollback", "--dry-run")
 	opts := et.prompt.asked[0]
 	if len(opts) != 2 || !strings.HasPrefix(opts[0], "#2  ") || !strings.HasSuffix(opts[0], "(current)") || !strings.Contains(opts[1], "main") {
 		t.Errorf("options = %q", opts)
@@ -141,8 +141,31 @@ func TestRollbackChooses(t *testing.T) {
 
 	// --yes 时不询问，回到默认的那一份。
 	et.stdout.Reset()
-	et.run(0, "rollback", "--yes")
+	et.run(0, "config", "rollback", "--yes")
 	if len(et.prompt.asked) != 1 || !strings.Contains(et.stdout.String(), "Rolling back to revision 1") {
 		t.Errorf("asked = %q, output:\n%s", et.prompt.asked, et.stdout)
+	}
+}
+
+func TestUpdateSetChooses(t *testing.T) {
+	et := newEditTest(t)
+	addSubscriptions(t, et.a, "main", "main", "backup")
+	// 先选要设置的一项（订阅和 geo 数据都列出），再选周期。
+	et.prompt.picks = []string{"sub backup", "every 6 hours"}
+	et.run(0, "update", "set")
+	if opts := strings.Join(et.prompt.asked[0], "|"); !strings.Contains(opts, "sub main * (daily (1d))") || !strings.Contains(opts, "geo (by tunlr)") {
+		t.Errorf("options = %q", opts)
+	}
+	st, _ := state.Load(et.a.layout.StateFile())
+	if got := st.Subscriptions[1].Update; got != "6h" {
+		t.Errorf("backup update = %q\n%s", got, et.stdout)
+	}
+
+	// 取消时什么都不改。
+	et.stdout.Reset()
+	et.prompt.picks = []string{""}
+	et.run(0, "update", "set")
+	if !strings.Contains(et.stdout.String(), "Cancelled") {
+		t.Errorf("output:\n%s", et.stdout)
 	}
 }

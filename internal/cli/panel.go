@@ -25,24 +25,15 @@ type panelLANView struct {
 }
 
 func (a *app) newPanelCommand() *cobra.Command {
-	var reset bool
 	cmd := &cobra.Command{
 		Use:   "panel",
-		Short: "Show how to open the panel (SSH tunnel and link); --reset-secret replaces the API secret",
+		Short: "Show how to open the panel (SSH tunnel and link); lan, reset-secret",
 		Long: "The panel (zashboard) talks to mihomo's API, which listens on 127.0.0.1 only. Show the SSH\n" +
 			"command that forwards it to your computer, and the link that opens the panel already\n" +
 			"connected (it carries the API secret). Run the SSH command on your computer, not here.\n" +
-			"With LAN access on (tunlr panel lan on), also show the links for devices on the LAN.\n\n" +
-			"--reset-secret publishes the configuration with a new random API secret; mihomo restarts,\n" +
-			"and panels opened with the old link have to connect again with the new one.",
+			"With LAN access on (tunlr panel lan on), also show the links for devices on the LAN.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if reset {
-				return a.resetSecret(cmd)
-			}
-			if a.opts.DryRun {
-				return usageErrorf("panel changes nothing; --dry-run only applies to --reset-secret")
-			}
 			p, err := a.panel(cmd.Context())
 			if err != nil {
 				return err
@@ -50,9 +41,20 @@ func (a *app) newPanelCommand() *cobra.Command {
 			return a.render(p, func() error { a.printPanel(p); return nil })
 		},
 	}
-	cmd.Flags().BoolVar(&reset, "reset-secret", false, "publish the configuration with a new API secret (mihomo restarts)")
-	cmd.AddCommand(a.newPanelLANCommand())
+	cmd.AddCommand(a.newPanelLANCommand(), a.withFullDiff(a.newPanelResetSecretCommand()))
 	return cmd
+}
+
+func (a *app) newPanelResetSecretCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset-secret",
+		Short: "Replace the API secret with a new random one (mihomo restarts)",
+		Long: "Publish the configuration with a new random API secret (shown as a diff first, the secret\n" +
+			"itself hidden); mihomo restarts, and panels opened with the old link have to connect again\n" +
+			"with the new one. Use it when the secret may have leaked.",
+		Args: usageArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, args []string) error { return a.resetSecret(cmd) },
+	}
 }
 
 func (a *app) panel(ctx context.Context) (*setup.Panel, error) {
@@ -65,10 +67,10 @@ func (a *app) panel(ctx context.Context) (*setup.Panel, error) {
 func (a *app) printPanel(p *setup.Panel) {
 	w := a.stdout
 	if p.Running == "" {
-		fmt.Fprintf(w, "%s mihomo is not running; start it with: tunlr start\n\n", a.style.warn("Note:"))
+		fmt.Fprintf(w, "%s mihomo is not running; start it with: tunlr core start\n\n", a.style.warn("Note:"))
 	}
 	if p.UIDir != "" && !p.UIInstalled {
-		fmt.Fprintf(w, "%s the panel is not installed in %s yet; tunlr apply installs it.\n\n", a.style.warn("Note:"), p.UIDir)
+		fmt.Fprintf(w, "%s the panel is not installed in %s yet; tunlr config apply installs it.\n\n", a.style.warn("Note:"), p.UIDir)
 	}
 	if p.Public {
 		a.printPanelLAN(p)
@@ -95,7 +97,7 @@ func (a *app) printPanel(p *setup.Panel) {
 	fmt.Fprintf(w, "     %s\n", p.URL)
 	fmt.Fprintf(w, "   The browser remembers it as %q; later just open %s\n", p.Label+" (SSH tunnel)", p.Bookmark)
 	if p.Secret != "" {
-		fmt.Fprintln(w, "\nThe links carry the API secret; keep them private (tunlr panel --reset-secret replaces it).")
+		fmt.Fprintln(w, "\nThe links carry the API secret; keep them private (tunlr panel reset-secret replaces it).")
 	}
 }
 
@@ -127,7 +129,7 @@ func (a *app) describePanelLAN(on bool) string {
 
 // resetSecret 经流水线换一个新的 API secret 并发布，成功后输出新的面板链接。
 func (a *app) resetSecret(cmd *cobra.Command) error {
-	if err := a.requireConfirmation("panel --reset-secret"); err != nil {
+	if err := a.requireConfirmation("panel reset-secret"); err != nil {
 		return err
 	}
 	plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().PlanResetSecret(cmd.Context()) })

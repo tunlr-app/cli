@@ -18,7 +18,7 @@ tun:
     - 203.0.113.0/24
 -- want.yaml --
 # 本文件由 tunlr 生成，直接修改会在下次 apply 时被覆盖。
-# 自定义设置请写在 mixin 中（tunlr mixin edit）。
+# 自定义设置请写在 mixin 中（tunlr config edit）。
 
 # 代理端口默认只给本机用；tunlr proxy lan on 让局域网设备使用。
 mixed-port: 7890

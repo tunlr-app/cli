@@ -157,13 +157,13 @@ func (i *Installer) installChecks(ctx context.Context, h *doctor.Host, quick boo
 	case err != nil:
 		c.Add("service", doctor.Fail, "Service", err.Error(), "")
 	case status.ActiveState == "failed":
-		c.Add("service", doctor.Fail, "Service", service.CoreUnit+" has failed", "see tunlr logs, then tunlr start")
+		c.Add("service", doctor.Fail, "Service", service.CoreUnit+" has failed", "see tunlr core logs, then tunlr core start")
 	case !status.Active():
-		c.Add("service", doctor.Warn, "Service", service.CoreUnit+" is "+status.ActiveState, "tunlr start")
+		c.Add("service", doctor.Warn, "Service", service.CoreUnit+" is "+status.ActiveState, "tunlr core start")
 	case running == "":
-		c.Add("service", doctor.Fail, "Service", "the service is running but mihomo does not answer on its API socket", "see tunlr logs, or tunlr restart")
+		c.Add("service", doctor.Fail, "Service", "the service is running but mihomo does not answer on its API socket", "see tunlr core logs, or tunlr core restart")
 	case status.NRestarts > 0:
-		c.Add("service", doctor.Warn, "Service", fmt.Sprintf("running %s, restarted %d times by systemd", running, status.NRestarts), "see tunlr logs")
+		c.Add("service", doctor.Warn, "Service", fmt.Sprintf("running %s, restarted %d times by systemd", running, status.NRestarts), "see tunlr core logs")
 	default:
 		c.Add("service", doctor.OK, "Service", "running "+running, "")
 	}
@@ -181,7 +181,7 @@ func (i *Installer) installChecks(ctx context.Context, h *doctor.Host, quick boo
 		c.Add("kernel", doctor.Fail, "Kernel", "mihomo is not installed", "tunlr init")
 	case !ks.KnownGood:
 		c.Add("kernel", doctor.Warn, "Kernel", "bin/mihomo is not a known-good version (replaced outside tunlr?)",
-			"tunlr upgrade core installs a verified release")
+			"tunlr core upgrade installs a verified release")
 	default:
 		c.Add("kernel", doctor.OK, "Kernel", ks.Version+", known good", "")
 	}
@@ -283,7 +283,7 @@ func (i *Installer) checkConfig(ctx context.Context, c *doctor.Checker, owner *f
 		case err != nil:
 			c.Add("config", doctor.Fail, "Configuration", err.Error(), "")
 		case cfg == nil:
-			c.Add("config", doctor.Warn, "Configuration", "nothing has been published", "add a subscription (tunlr sub add), then tunlr apply")
+			c.Add("config", doctor.Warn, "Configuration", "nothing has been published", "add a subscription (tunlr sub add), then tunlr config apply")
 		default:
 			c.Add("config", doctor.Skip, "Configuration", "published; not checked with mihomo -t", "")
 		}
@@ -292,10 +292,10 @@ func (i *Installer) checkConfig(ctx context.Context, c *doctor.Checker, owner *f
 	exists, err := p.CheckCurrent(ctx)
 	switch {
 	case !exists && err == nil:
-		c.Add("config", doctor.Warn, "Configuration", "nothing has been published", "add a subscription (tunlr sub add), then tunlr apply")
+		c.Add("config", doctor.Warn, "Configuration", "nothing has been published", "add a subscription (tunlr sub add), then tunlr config apply")
 	case err != nil:
 		c.Add("config", doctor.Fail, "Configuration", "the published configuration fails mihomo -t: "+err.Error(),
-			"tunlr apply publishes a fresh one; tunlr rollback goes back to an earlier one")
+			"tunlr config apply publishes a fresh one; tunlr config rollback goes back to an earlier one")
 	default:
 		c.Add("config", doctor.OK, "Configuration", "passes mihomo -t", "")
 	}
@@ -307,7 +307,7 @@ func (i *Installer) checkMixins(ctx context.Context, c *doctor.Checker) {
 	var me *config.MixinError
 	switch err := i.pipeline(nil).CheckMixins(ctx); {
 	case errors.As(err, &me):
-		c.Add("mixins", doctor.Fail, "Mixins", err.Error(), "tunlr mixin edit "+me.File+", then tunlr apply")
+		c.Add("mixins", doctor.Fail, "Mixins", err.Error(), "tunlr config edit "+me.File+", then tunlr config apply")
 	case err != nil:
 		c.Add("mixins", doctor.Warn, "Mixins", "could not compose the configuration: "+err.Error(), "")
 	default:
@@ -357,12 +357,12 @@ func (i *Installer) checkTun(ctx context.Context, c *doctor.Checker, st *state.S
 	case !running:
 		c.Add("tun", doctor.Skip, "Transparent proxy", "switch "+ts.Switch+"; mihomo is not running", "")
 	case !ts.Rules:
-		c.Add("tun", doctor.Fail, "Transparent proxy", "the nftables table inet "+"tunlr is missing", "tunlr restart")
+		c.Add("tun", doctor.Fail, "Transparent proxy", "the nftables table inet "+"tunlr is missing", "tunlr core restart")
 	case on && ts.Running != nil && !*ts.Running:
 		c.Add("tun", doctor.Fail, "Transparent proxy", "the switch is "+ts.Switch+" but mihomo has TUN off (turned off in the panel?)",
 			"tunlr tun on, or tunlr tun off to match")
 	case on && !ts.KernelRules:
-		c.Add("tun", doctor.Fail, "Transparent proxy", "TUN is on but the nftables table inet mihomo is missing", "tunlr restart")
+		c.Add("tun", doctor.Fail, "Transparent proxy", "TUN is on but the nftables table inet mihomo is missing", "tunlr core restart")
 	case !on && ts.Running != nil && *ts.Running:
 		c.Add("tun", doctor.Warn, "Transparent proxy", "TUN was turned on from the panel; tunlr does not protect it with checks and rollback",
 			"use tunlr tun on instead")
@@ -405,9 +405,9 @@ func (i *Installer) checkGateway(ctx context.Context, c *doctor.Checker, st *sta
 	}
 	switch {
 	case len(fails) > 0:
-		c.Add("gateway", doctor.Fail, "Gateway", strings.Join(append(fails, warns...), "; "), "tunlr gateway on --interface "+iface+" restores it")
+		c.Add("gateway", doctor.Fail, "Gateway", strings.Join(append(fails, warns...), "; "), "tunlr tun gateway on --interface "+iface+" restores it")
 	case len(warns) > 0:
-		c.Add("gateway", doctor.Warn, "Gateway", strings.Join(warns, "; "), "tunlr gateway on --interface "+iface)
+		c.Add("gateway", doctor.Warn, "Gateway", strings.Join(warns, "; "), "tunlr tun gateway on --interface "+iface)
 	default:
 		c.Add("gateway", doctor.OK, "Gateway", "on "+iface+": forwarding, nftables and Docker rules in place", "")
 	}
@@ -423,7 +423,7 @@ func (i *Installer) checkExposure(c *doctor.Checker) {
 	var ee *config.ExposureError
 	switch err := config.CheckExposure(cfg); {
 	case errors.As(err, &ee):
-		c.Add("exposure", doctor.Fail, "Port security", strings.Join(ee.Problems, "; "), "fix it in a mixin (tunlr mixin edit), then tunlr apply")
+		c.Add("exposure", doctor.Fail, "Port security", strings.Join(ee.Problems, "; "), "fix it in a mixin (tunlr config edit), then tunlr config apply")
 	case err != nil:
 		c.Add("exposure", doctor.Fail, "Port security", err.Error(), "")
 	default:
@@ -452,7 +452,7 @@ func (i *Installer) checkPanelLAN(ctx context.Context, c *doctor.Checker, st *st
 	}
 	if api, err := config.API(cfg); err == nil && api.Controller != pipeline.LANController {
 		c.Add("panel", doctor.Warn, "Panel LAN access", "the switch is on but the published configuration has external-controller "+
-			strconv.Quote(api.Controller)+" (edited outside tunlr?)", "tunlr apply")
+			strconv.Quote(api.Controller)+" (edited outside tunlr?)", "tunlr config apply")
 		return
 	}
 	c.Add("panel", doctor.OK, "Panel LAN access", "on; port "+strconv.Itoa(pipeline.APIPort)+" only accepts private addresses", "")
@@ -472,9 +472,9 @@ func (i *Installer) checkProxyLAN(c *doctor.Checker, st *state.State) {
 	case err != nil:
 		c.Add("proxy", doctor.Fail, "Proxy LAN access", err.Error(), "")
 	case !allow:
-		c.Add("proxy", doctor.Warn, "Proxy LAN access", "the switch is on but the published configuration has allow-lan off (edited outside tunlr?)", "tunlr apply")
+		c.Add("proxy", doctor.Warn, "Proxy LAN access", "the switch is on but the published configuration has allow-lan off (edited outside tunlr?)", "tunlr config apply")
 	case !private:
-		c.Add("proxy", doctor.Warn, "Proxy LAN access", "the switch is on but lan-allowed-ips in the published configuration is not limited to private addresses", "tunlr apply")
+		c.Add("proxy", doctor.Warn, "Proxy LAN access", "the switch is on but lan-allowed-ips in the published configuration is not limited to private addresses", "tunlr config apply")
 	default:
 		c.Add("proxy", doctor.OK, "Proxy LAN access", "on; the proxy ports only accept private addresses", "")
 	}
@@ -507,7 +507,7 @@ func (i *Installer) checkPorts(ctx context.Context, h *doctor.Host, c *doctor.Ch
 		}
 	}
 	if len(taken) > 0 {
-		c.Add("ports", doctor.Fail, "Ports", strings.Join(taken, "; "), "stop that program, or change the port in a mixin (tunlr mixin edit)")
+		c.Add("ports", doctor.Fail, "Ports", strings.Join(taken, "; "), "stop that program, or change the port in a mixin (tunlr config edit)")
 		return
 	}
 	if running {

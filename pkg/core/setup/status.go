@@ -71,10 +71,18 @@ func (i *Installer) drift(ctx context.Context) (*pipeline.Drift, error) {
 	return d, nil
 }
 
-// Status 返回当前状态。
-func (i *Installer) Status(ctx context.Context) (*Status, error) {
+// CoreStatus 是内核服务的状态（tunlr core），字段与 Status 中的同名字段相同。
+type CoreStatus struct {
+	Installed bool                 `json:"installed"`
+	Service   *service.Status      `json:"service,omitempty"`
+	Running   string               `json:"running,omitempty"`
+	Kernel    *mihomo.KernelStatus `json:"kernel"`
+}
+
+// CoreStatus 返回内核服务的状态。
+func (i *Installer) CoreStatus(ctx context.Context) (*CoreStatus, error) {
 	sd := i.systemd()
-	s := &Status{Installed: sd.Installed()}
+	s := &CoreStatus{Installed: sd.Installed()}
 	if s.Installed {
 		st, err := sd.Status(ctx, service.CoreUnit)
 		if err != nil {
@@ -89,14 +97,18 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 	if s.Kernel, err = i.kernels(nil, mihomo.Arch{}).Status(); err != nil {
 		return nil, err
 	}
-	st, err := state.Load(i.Layout.StateFile())
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, err
-	}
-	if st != nil {
-		s.Subscription, s.PanelLAN, s.ProxyLAN = st.Active, st.PanelLAN != nil, st.ProxyLAN != nil
-		s.Filter = filterStatus(st)
-	}
+	return s, nil
+}
+
+// ConfigStatus 是生效配置的概况（tunlr config），字段与 Status 中的同名字段相同。
+type ConfigStatus struct {
+	Revision *config.Revision `json:"revision,omitempty"`
+	Drift    *pipeline.Drift  `json:"drift,omitempty"`
+}
+
+// ConfigStatus 返回生效配置对应的修订和漂移。
+func (i *Installer) ConfigStatus(ctx context.Context) (*ConfigStatus, error) {
+	s := &ConfigStatus{}
 	revs, current, err := i.pipeline(nil).Revisions()
 	if err != nil {
 		return nil, err
@@ -107,15 +119,38 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 			break
 		}
 	}
+	if s.Drift, err = i.drift(ctx); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// Status 返回当前状态。
+func (i *Installer) Status(ctx context.Context) (*Status, error) {
+	cs, err := i.CoreStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s := &Status{Installed: cs.Installed, Service: cs.Service, Running: cs.Running, Kernel: cs.Kernel}
+	st, err := state.Load(i.Layout.StateFile())
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	if st != nil {
+		s.Subscription, s.PanelLAN, s.ProxyLAN = st.Active, st.PanelLAN != nil, st.ProxyLAN != nil
+		s.Filter = filterStatus(st)
+	}
 	if s.Updates, err = i.Schedules(); err != nil {
 		return nil, err
 	}
 	if s.Tun, err = i.TunStatus(ctx); err != nil {
 		return nil, err
 	}
-	if s.Drift, err = i.drift(ctx); err != nil {
+	cfg, err := i.ConfigStatus(ctx)
+	if err != nil {
 		return nil, err
 	}
+	s.Revision, s.Drift = cfg.Revision, cfg.Drift
 	s.Devices = i.deviceSummary(ctx, st)
 	return s, nil
 }

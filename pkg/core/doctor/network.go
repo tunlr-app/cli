@@ -133,7 +133,7 @@ func Network(ctx context.Context, opts NetworkOptions) []Check {
 		c.Add("mirror", Skip, "GitHub mirror", "no mirror configured", "")
 	} else if mirrorErr != nil {
 		c.Add("mirror", Fail, "GitHub mirror", fmt.Sprintf("cannot reach %s: %v", opts.Mirror, mirrorErr),
-			"change or remove it with tunlr config edit")
+			"change or remove it with tunlr settings edit")
 	} else {
 		c.Add("mirror", OK, "GitHub mirror", fmt.Sprintf("%s answered HTTP %d", opts.Mirror, mirrorStatus), "")
 	}
@@ -180,7 +180,7 @@ func describeProxyFailure(proxy string, err error, status int) (msg, hint string
 		return fmt.Sprintf("the site answered HTTP %d through mihomo", status), "a rule may send it to a proxy that the site blocks; check the connection in the panel"
 	case errors.As(err, &op) && op.Op == "proxyconnect":
 		// 连不上 mixed-port 本身（Go 把连接代理的错误标为 proxyconnect）。
-		return "cannot connect to mihomo's mixed-port " + proxy, "check tunlr status and tunlr logs; tunlr restart"
+		return "cannot connect to mihomo's mixed-port " + proxy, "check tunlr status and tunlr core logs; tunlr core restart"
 	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, syscall.ECONNRESET):
 		return "mihomo closed the connection: the selected proxy did not respond", selectedProxyHint
 	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne) && ne.Timeout():

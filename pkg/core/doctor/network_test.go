@@ -147,7 +147,7 @@ func TestNetworkProxyClosed(t *testing.T) {
 	// mixed-port 上没有程序在监听。
 	proxy.Close()
 	c = networkStatuses(t, NetworkOptions{APIBase: gh.URL, Proxy: addr, ProbeURL: "http://probe.test/"})["network.proxy"]
-	if !strings.HasPrefix(c.Message, "cannot connect to mihomo's mixed-port "+addr) || !strings.Contains(c.Hint, "tunlr restart") {
+	if !strings.HasPrefix(c.Message, "cannot connect to mihomo's mixed-port "+addr) || !strings.Contains(c.Hint, "tunlr core restart") {
 		t.Errorf("refused: %+v", c)
 	}
 }

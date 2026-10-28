@@ -23,7 +23,7 @@ stderr 'the name cannot be an address'
 cp airport.yaml provider/airport.yaml
 exec tunlr sub add main $PROVIDER/airport.yaml
 install-mihomo
-exec tunlr apply --yes
+exec tunlr config apply --yes
 exec tunlr filter device 192.168.1.50 direct --dry-run
 stdout '^\+  - SRC-IP-CIDR,192\.168\.1\.50/32,DIRECT$'
 stdout 'Dry run: nothing changed'
@@ -35,7 +35,7 @@ grep '^  - SRC-IP-CIDR,192.168.1.50/32,DIRECT$' root/var/lib/tunlr/core/config.y
 grep '"route": "direct"' root/var/lib/tunlr/state.json
 exec tunlr devices
 stdout '^-\s+192\.168\.1\.50\s+-\s+-\s+away\s+-\s+0\s+direct$'
-exec tunlr mixin list
+exec tunlr config
 stdout 'tunlr:filter'
 
 # 起名不改配置，不需要确认

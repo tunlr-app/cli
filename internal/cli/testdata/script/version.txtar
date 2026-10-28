@@ -1,15 +1,15 @@
-# 文本输出
-exec tunlr version
+# 文本输出（没有 version 子命令，只有 --version）
+exec tunlr --version
 stdout '^tunlr v0.0.0-test \(commit abc1234, built 2026-01-01, '
 ! stderr .
 
 # --json 输出带 schema 版本号
-exec tunlr version --json
+exec tunlr --version --json
 stdout '"version": 1,'
 stdout '"version": "v0.0.0-test"'
 stdout '"commit": "abc1234"'
 ! stderr .
 
-# 多余参数是用法错误
-exitcode 2 tunlr version extra
-stderr 'unknown command "extra"|accepts 0 arg'
+# version 子命令已删除
+exitcode 2 tunlr version
+stderr 'unknown command "version"'

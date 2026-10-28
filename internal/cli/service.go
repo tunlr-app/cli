@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/service"
@@ -38,7 +39,7 @@ func (a *app) kernels() (*mihomo.Manager, error) {
 type lanUsage struct {
 	// proxy 让局域网设备使用代理端口（tunlr proxy lan on）。
 	proxy bool
-	// gateway 不为空时开启网关模式（tunlr gateway on），"auto" 表示默认路由所在的网卡。网关模式也开启 proxy。
+	// gateway 不为空时开启网关模式（tunlr tun gateway on），"auto" 表示默认路由所在的网卡。网关模式也开启 proxy。
 	gateway string
 	// panel 让局域网设备打开面板（tunlr panel lan on）。
 	panel bool
@@ -74,11 +75,11 @@ func (a *app) newInitCommand() *cobra.Command {
 		Short: "Install or repair tunlr: kernel, systemd service and scheduled updates",
 		Long: "Set up this server: copy tunlr to /usr/local/bin, create the user tunlr that runs\n" +
 			"mihomo, install the latest mihomo release (checksum verified), install and enable\n" +
-			"tunlr-core.service and tunlr-update.timer (see: tunlr update show), add a subscription,\n" +
+			"tunlr-core.service and tunlr-update.timer (see: tunlr update), add a subscription,\n" +
 			"publish the configuration and start mihomo. Running it again repairs the installation.\n\n" +
 			"Interactively it asks for a GitHub mirror and a subscription (both optional), and what\n" +
 			"this server is for: only itself, a proxy for LAN devices (tunlr proxy lan on), or their\n" +
-			"gateway (tunlr gateway on); otherwise pass --mirror, --sub <name>=<url>, --lan-proxy,\n" +
+			"gateway (tunlr tun gateway on); otherwise pass --mirror, --sub <name>=<url>, --lan-proxy,\n" +
 			"--gateway and --lan-panel.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -87,7 +88,7 @@ func (a *app) newInitCommand() *cobra.Command {
 				usage.proxy = true
 			}
 			if usage.any() && a.opts.JSON {
-				return usageErrorf("--lan-proxy, --gateway and --lan-panel cannot be combined with --json; run init, then tunlr proxy lan on, tunlr gateway on or tunlr panel lan on with --json")
+				return usageErrorf("--lan-proxy, --gateway and --lan-panel cannot be combined with --json; run init, then tunlr proxy lan on, tunlr tun gateway on or tunlr panel lan on with --json")
 			}
 			opts := setup.InitOptions{KernelVersion: version}
 			if cmd.Flags().Changed("mirror") {
@@ -158,17 +159,17 @@ func (a *app) newInitCommand() *cobra.Command {
 	f.StringVar(&sub, "sub", "", "add a subscription, as <name>=<url>")
 	f.StringVar(&version, "version", "", "mihomo version to install when none is installed (default: latest release)")
 	f.BoolVar(&usage.proxy, "lan-proxy", false, "then let LAN devices use the proxy port (tunlr proxy lan on)")
-	f.StringVar(&usage.gateway, "gateway", "", `then make this server the LAN gateway on this interface, or "auto" (tunlr gateway on; implies --lan-proxy)`)
+	f.StringVar(&usage.gateway, "gateway", "", `then make this server the LAN gateway on this interface, or "auto" (tunlr tun gateway on; implies --lan-proxy)`)
 	f.BoolVar(&usage.panel, "lan-panel", false, "then let LAN devices open the panel (tunlr panel lan on)")
 	return cmd
 }
 
-// initLAN 在 init 成功之后开启选定的局域网功能，依次走 gateway on、proxy lan on、panel lan on 的流程。
+// initLAN 在 init 成功之后开启选定的局域网功能，依次走 tun gateway on、proxy lan on、panel lan on 的流程。
 // 这些步骤已经在 init 的确认中列出，不再逐一确认。失败时说明 tunlr 已经装好，保留原错误的退出码。
 func (a *app) initLAN(ctx context.Context, res *setup.InitResult, u lanUsage) error {
 	if res.Started == nil {
 		return fmt.Errorf("%w: tunlr is installed, but mihomo is not running, so the LAN setup is skipped; "+
-			"once it runs, use tunlr proxy lan on, tunlr gateway on or tunlr panel lan on", core.ErrCheckFailed)
+			"once it runs, use tunlr proxy lan on, tunlr tun gateway on or tunlr panel lan on", core.ErrCheckFailed)
 	}
 	a.opts.Yes = true
 	step := func(title, what string, run func() error) error {
@@ -234,22 +235,9 @@ func (a *app) askUsage(ctx context.Context, cands []setup.LANInterface, u *lanUs
 			continue
 		case len(cands) == 0:
 		case choice == 2 && len(cands) > 1:
-			rows := make([][]string, len(cands))
-			for i, c := range cands {
-				note := ""
-				switch {
-				case len(c.PublicAddresses) > 0:
-					note = "public address"
-				case c.Default:
-					note = "default route"
-				}
-				rows[i] = []string{c.Name, strings.Join(c.Addresses, ", "), note}
-			}
-			i, err := a.prompt.Choose(ctx, "Which interface is on the LAN?", columns(rows), 0)
-			if err != nil {
+			if iface, err = a.chooseInterface(ctx, cands); err != nil {
 				return err
 			}
-			iface = &cands[i]
 		default:
 			iface = &cands[0]
 		}
@@ -313,7 +301,7 @@ func (a *app) renderInit(res *setup.InitResult, hint, panelNext bool) error {
 		}
 		if hint {
 			fmt.Fprintln(w, "Only this server uses the proxy port (tunlr proxy). tunlr tun on sends all its traffic\n"+
-				"through mihomo; tunlr proxy lan on or tunlr gateway on serves devices on the LAN.")
+				"through mihomo; tunlr proxy lan on or tunlr tun gateway on serves devices on the LAN.")
 		}
 		return nil
 	})
@@ -385,13 +373,16 @@ func (a *app) newStartCommand() *cobra.Command {
 	}
 }
 
-// sectionList 列出有变化的顶层键，太多时只列前几个。
+// sectionList 是“ in 有变化的顶层键”，太多时只列前几个；只有文件开头的注释变了时为空。
 func sectionList(keys []string) string {
 	const max = 4
-	if len(keys) > max {
-		return strings.Join(keys[:max], ", ") + fmt.Sprintf(" and %d more", len(keys)-max)
+	switch {
+	case len(keys) == 0:
+		return ""
+	case len(keys) > max:
+		return " in " + strings.Join(keys[:max], ", ") + fmt.Sprintf(" and %d more", len(keys)-max)
 	}
-	return strings.Join(keys, ", ")
+	return " in " + strings.Join(keys, ", ")
 }
 
 // bullets 把每项写成一行，用作确认问题下的说明。
@@ -405,7 +396,7 @@ func (a *app) newRestartCommand() *cobra.Command {
 		Short: "Restart mihomo and check that it is healthy",
 		Args:  usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := a.requireYes("restart"); err != nil {
+			if err := a.requireYes("core restart"); err != nil {
 				return err
 			}
 			k, err := a.kernels()
@@ -445,7 +436,7 @@ func (a *app) newStopCommand() *cobra.Command {
 		Args:  usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if err := a.requireYes("stop"); err != nil {
+			if err := a.requireYes("core stop"); err != nil {
 				return err
 			}
 			k, err := a.kernels()
@@ -454,7 +445,7 @@ func (a *app) newStopCommand() *cobra.Command {
 			}
 			// 没有安装时不问，直接报告（见 Stop）。
 			if !a.opts.Yes && k.Service.Installed() {
-				desc := "Nothing goes through the proxy until you start it again (tunlr start, or at boot)."
+				desc := "Nothing goes through the proxy until you start it again (tunlr core start, or at boot)."
 				if s, err := a.installer().TunStatus(ctx); err == nil && s.Switch != "off" {
 					desc += "\nTUN is on: this server's own traffic goes out directly meanwhile."
 				}
@@ -466,7 +457,7 @@ func (a *app) newStopCommand() *cobra.Command {
 				return err
 			}
 			return a.render(map[string]bool{"stopped": true}, func() error {
-				_, err := fmt.Fprintln(a.stdout, "mihomo is stopped. It starts again at boot; run tunlr start to start it now.")
+				_, err := fmt.Fprintln(a.stdout, "mihomo is stopped. It starts again at boot; run tunlr core start to start it now.")
 				return err
 			})
 		},
@@ -482,7 +473,7 @@ func (a *app) newLogsCommand() *cobra.Command {
 		Args:  usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.opts.JSON {
-				return usageErrorf("logs does not support --json; use journalctl -u %s -o json", service.CoreUnit)
+				return usageErrorf("core logs does not support --json; use journalctl -u %s -o json", service.CoreUnit)
 			}
 			if lines < 0 {
 				return usageErrorf("--lines must not be negative")
@@ -527,6 +518,38 @@ func (a *app) newStatusCommand() *cobra.Command {
 
 func (a *app) printStatus(s *setup.Status) {
 	w := a.stdout
+	a.printCore(&setup.CoreStatus{Installed: s.Installed, Service: s.Service, Running: s.Running, Kernel: s.Kernel})
+	if s.Subscription != "" {
+		fmt.Fprintf(w, "Subscription:  %s\n", s.Subscription)
+	} else {
+		fmt.Fprintf(w, "Subscription:  %s (add one with: tunlr sub add)\n", a.style.warn("none"))
+	}
+	a.printRevision(s.Revision, s.Drift)
+	for i, u := range s.Updates {
+		label := "Updates:"
+		if i > 0 {
+			label = ""
+		}
+		fmt.Fprintf(w, "%-15s%s\n", label, a.describeSchedule(u))
+	}
+	if s.Tun != nil {
+		fmt.Fprintf(w, "TUN:           %s\n", a.describeTun(s.Tun))
+	}
+	if s.Installed {
+		fmt.Fprintf(w, "Panel:         %s (open it with: tunlr panel)\n", a.describePanelLAN(s.PanelLAN))
+		fmt.Fprintf(w, "Proxy port:    %s (details: tunlr proxy)\n", a.describeProxyLAN(s.ProxyLAN))
+	}
+	if s.Devices != nil {
+		fmt.Fprintf(w, "LAN devices:   %s (list them: tunlr devices)\n", a.describeDevices(s.Devices))
+	}
+	if s.Filter != nil {
+		fmt.Fprintf(w, "Filters:       %s (details: tunlr filter)\n", a.describeFilter(s.Filter))
+	}
+}
+
+// printCore 输出内核服务的状态：服务、运行中的版本、已知可用的版本（status 与 core 共用）。
+func (a *app) printCore(s *setup.CoreStatus) {
+	w := a.stdout
 	switch {
 	case !s.Installed:
 		fmt.Fprintf(w, "Service:       %s (run: tunlr init)\n", a.style.warn("not installed"))
@@ -559,44 +582,25 @@ func (a *app) printStatus(s *setup.Status) {
 		}
 		fmt.Fprintf(w, "Known-good:    %s\n", strings.Join(vs, ", "))
 	}
-	if s.Subscription != "" {
-		fmt.Fprintf(w, "Subscription:  %s\n", s.Subscription)
-	} else {
-		fmt.Fprintf(w, "Subscription:  %s (add one with: tunlr sub add)\n", a.style.warn("none"))
+}
+
+// printRevision 输出生效配置的修订和漂移（status 与 config 共用）。
+func (a *app) printRevision(rev *config.Revision, d *pipeline.Drift) {
+	w := a.stdout
+	if rev != nil {
+		fmt.Fprintf(w, "Configuration: revision %d, published %s\n", rev.Number, rev.CreatedAt.Local().Format(time.DateTime))
 	}
-	if s.Revision != nil {
-		fmt.Fprintf(w, "Configuration: revision %d, published %s\n", s.Revision.Number, s.Revision.CreatedAt.Local().Format(time.DateTime))
+	if d == nil {
+		return
 	}
-	if d := s.Drift; d != nil {
-		switch d.State {
-		case pipeline.DriftPending:
-			fmt.Fprintf(w, "               %s in %s (tunlr plan shows them)\n", a.style.warn("changes not published"), sectionList(d.Sections))
-		case pipeline.DriftEdited:
-			fmt.Fprintf(w, "Configuration: %s in %s (tunlr apply overwrites it)\n", a.style.warn("edited outside tunlr"), sectionList(d.Sections))
-		case pipeline.DriftError:
-			msg, _, _ := strings.Cut(d.Error, "\n")
-			fmt.Fprintf(w, "               %s: %s (details: tunlr plan)\n", a.style.bad("cannot compose a new one"), msg)
-		}
-	}
-	for i, u := range s.Updates {
-		label := "Updates:"
-		if i > 0 {
-			label = ""
-		}
-		fmt.Fprintf(w, "%-15s%s\n", label, a.describeSchedule(u))
-	}
-	if s.Tun != nil {
-		fmt.Fprintf(w, "TUN:           %s\n", a.describeTun(s.Tun))
-	}
-	if s.Installed {
-		fmt.Fprintf(w, "Panel:         %s (open it with: tunlr panel)\n", a.describePanelLAN(s.PanelLAN))
-		fmt.Fprintf(w, "Proxy port:    %s (details: tunlr proxy)\n", a.describeProxyLAN(s.ProxyLAN))
-	}
-	if s.Devices != nil {
-		fmt.Fprintf(w, "LAN devices:   %s (list them: tunlr devices)\n", a.describeDevices(s.Devices))
-	}
-	if s.Filter != nil {
-		fmt.Fprintf(w, "Filters:       %s (details: tunlr filter)\n", a.describeFilter(s.Filter))
+	switch d.State {
+	case pipeline.DriftPending:
+		fmt.Fprintf(w, "               %s%s (tunlr config plan shows them)\n", a.style.warn("changes not published"), sectionList(d.Sections))
+	case pipeline.DriftEdited:
+		fmt.Fprintf(w, "Configuration: %s%s (tunlr config apply overwrites it)\n", a.style.warn("edited outside tunlr"), sectionList(d.Sections))
+	case pipeline.DriftError:
+		msg, _, _ := strings.Cut(d.Error, "\n")
+		fmt.Fprintf(w, "               %s: %s (details: tunlr config plan)\n", a.style.bad("cannot compose a new one"), msg)
 	}
 }
 
@@ -653,34 +657,43 @@ func (a *app) newUninstallCommand() *cobra.Command {
 	return cmd
 }
 
-func (a *app) newUpgradeCommand() *cobra.Command {
+func (a *app) newCoreCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "upgrade",
-		Short: "Upgrade the mihomo kernel (upgrade core)",
-		Args:  usageArgs(cobra.NoArgs),
+		Use:   "core",
+		Short: "Show the mihomo kernel and its service; start, stop, restart, logs, upgrade, rollback",
+		Long: "Without a subcommand, show the state of tunlr-core.service, the running mihomo version\n" +
+			"and the known-good versions kept for rollback.",
+		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmd.Help()
+			s, err := a.installer().CoreStatus(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return a.render(s, func() error { a.printCore(s); return nil })
 		},
 	}
-	cmd.AddCommand(a.newUpgradeCoreCommand())
+	cmd.AddCommand(
+		a.newStartCommand(),
+		a.newStopCommand(),
+		a.newRestartCommand(),
+		a.newLogsCommand(),
+		a.newCoreUpgradeCommand(),
+		a.newCoreRollbackCommand(),
+	)
 	return cmd
 }
 
-func (a *app) newUpgradeCoreCommand() *cobra.Command {
+func (a *app) newCoreUpgradeCommand() *cobra.Command {
 	var version string
-	var rollback bool
 	cmd := &cobra.Command{
-		Use:   "core",
-		Short: "Upgrade mihomo to the latest release, or --rollback to the previous known-good one",
+		Use:   "upgrade",
+		Short: "Upgrade mihomo to the latest release (or --version)",
 		Long: "Download mihomo (the latest release, or --version), verify it against the official\n" +
 			"sha256, check the published configuration with it (mihomo -t) and replace the running\n" +
 			"kernel. If the new kernel does not pass the health check, the previous one is put back\n" +
-			"(exit code 4). --rollback switches to the previous known-good version the same way.",
+			"(exit code 4). tunlr core rollback goes back to the previous known-good version.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if rollback && version != "" {
-				return usageErrorf("--rollback and --version cannot be used together")
-			}
 			if version != "" {
 				v, err := mihomo.NormalizeVersion(version)
 				if err != nil {
@@ -688,51 +701,69 @@ func (a *app) newUpgradeCoreCommand() *cobra.Command {
 				}
 				version = v
 			}
-			if err := a.requireYes("upgrade core"); err != nil {
-				return err
-			}
-			k, err := a.kernels()
-			if err != nil {
-				return err
-			}
-			if !a.opts.Yes {
-				if ok, err := a.confirmUpgrade(cmd.Context(), k, rollback, &version); !ok {
-					return err
-				}
-			}
-			var res *mihomo.UpgradeResult
-			title := "Upgrading mihomo (download, verify, check, restart)"
-			if rollback {
-				title = "Switching back to the previous known-good mihomo"
-			}
-			err = a.spin(title, func() (err error) {
-				if rollback {
-					res, err = k.Rollback(cmd.Context())
-				} else {
-					res, err = k.Upgrade(cmd.Context(), version)
-				}
-				return err
-			})
-			if err != nil {
-				return err
-			}
-			return a.render(res, func() error {
-				w := a.stdout
-				switch {
-				case !res.Changed:
-					fmt.Fprintf(w, "mihomo %s is already installed.\n", res.To)
-				case res.Restarted:
-					fmt.Fprintf(w, "mihomo %s (%s) is running and passed the health check.\n", res.To, res.Asset)
-				default:
-					fmt.Fprintf(w, "Installed mihomo %s (%s); it is not running and will be used when it starts.\n", res.To, res.Asset)
-				}
-				return nil
-			})
+			return a.changeKernel(cmd, "core upgrade", false, version)
 		},
 	}
 	cmd.Flags().StringVar(&version, "version", "", "install this version instead of the latest release, e.g. v1.19.33")
-	cmd.Flags().BoolVar(&rollback, "rollback", false, "switch back to the previous known-good version")
 	return cmd
+}
+
+func (a *app) newCoreRollbackCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rollback",
+		Short: "Switch back to the previous known-good mihomo version",
+		Long: "Switch to the previous known-good mihomo kept on disk (tunlr core lists them). Nothing is\n" +
+			"downloaded; it is checked against the published configuration (mihomo -t) and goes through\n" +
+			"the same health check as an upgrade, with the current one put back if it fails (exit code 4).",
+		Args: usageArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.changeKernel(cmd, "core rollback", true, "")
+		},
+	}
+}
+
+// changeKernel 是 core upgrade 与 core rollback 共同的流程：确认、替换内核、健康检查，失败时换回原来的。
+func (a *app) changeKernel(cmd *cobra.Command, name string, rollback bool, version string) error {
+	if err := a.requireYes(name); err != nil {
+		return err
+	}
+	k, err := a.kernels()
+	if err != nil {
+		return err
+	}
+	if !a.opts.Yes {
+		if ok, err := a.confirmUpgrade(cmd.Context(), k, rollback, &version); !ok {
+			return err
+		}
+	}
+	var res *mihomo.UpgradeResult
+	title := "Upgrading mihomo (download, verify, check, restart)"
+	if rollback {
+		title = "Switching back to the previous known-good mihomo"
+	}
+	err = a.spin(title, func() (err error) {
+		if rollback {
+			res, err = k.Rollback(cmd.Context())
+		} else {
+			res, err = k.Upgrade(cmd.Context(), version)
+		}
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	return a.render(res, func() error {
+		w := a.stdout
+		switch {
+		case !res.Changed:
+			fmt.Fprintf(w, "mihomo %s is already installed.\n", res.To)
+		case res.Restarted:
+			fmt.Fprintf(w, "mihomo %s (%s) is running and passed the health check.\n", res.To, res.Asset)
+		default:
+			fmt.Fprintf(w, "Installed mihomo %s (%s); it is not running and will be used when it starts.\n", res.To, res.Asset)
+		}
+		return nil
+	})
 }
 
 // confirmUpgrade 在替换内核前确认，问题中给出现在和将换成的版本。升级时先查询目标版本并写回 version，

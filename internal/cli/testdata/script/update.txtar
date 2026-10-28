@@ -1,22 +1,22 @@
 # 还没有订阅：只有 geo 数据，默认每周由 tunlr 更新，从现在起算
-exec tunlr update show
+exec tunlr update
 stdout '^geo \(by tunlr\)\s+weekly \(7d\)\s+never\s+'
 ! stdout '^sub '
-exec tunlr update show --json
+exec tunlr update --json
 stdout '"updater": "tunlr"'
 
-# 订阅各有自己的周期：非交互时默认每天，--update 指定；sub list 和 update show 都显示
+# 订阅各有自己的周期：非交互时默认每天，--update 指定；sub 和 update 都显示
 cp airport.yaml provider/airport.yaml
 exec tunlr sub add main $PROVIDER/airport.yaml
 stdout 'fetched again daily'
 exec tunlr sub add spare $PROVIDER/airport.yaml --update off
 stdout 'not fetched again automatically'
-exec tunlr sub list
+exec tunlr sub
 stdout '^\*\s+main\s+2\s+\S+ \S+\s+daily\s+'
 stdout '^\s+spare\s+2\s+\S+ \S+\s+never\s+'
-exec tunlr sub list --json
+exec tunlr sub --json
 stdout '"update": "off"'
-exec tunlr update show
+exec tunlr update
 stdout '^sub main \*\s+daily \(1d\)\s+\S+ \S+ ok\s+\S+ \S+$'
 stdout '^sub spare\s+never \(off\)\s+\S+ \S+ ok\s+-$'
 exec tunlr status
@@ -24,20 +24,24 @@ stdout '^Updates:\s+sub main daily, last ok '
 stdout '^\s+sub spare never$'
 stdout '^\s+geo weekly by tunlr, not run yet$'
 
-# sub set 改周期，保存在状态文件中；default 恢复默认值
-exec tunlr sub set main --update 6h
+# update set sub 改订阅的周期，保存在状态文件中；default 恢复默认值
+exec tunlr update set sub main 6h
 stdout '^"main" is fetched again every 6 hours\.$'
 grep '"update": "6h"' root/var/lib/tunlr/state.json
-exec tunlr sub set main --update default
+exec tunlr update set sub main default
 ! grep '"update": "6h"' root/var/lib/tunlr/state.json
-exec tunlr sub set spare --update 1d
-exec tunlr sub set spare --update off
+exec tunlr update set sub spare 1d
+exec tunlr update set sub spare off
 stdout 'no longer fetched automatically'
-exitcode 2 tunlr sub set main --update 2w
+exitcode 2 tunlr update set sub main 2w
 stderr 'invalid update period "2w"'
+exitcode 2 tunlr update set sub main
+stderr 'update set sub needs the name of a subscription and the period'
+exitcode 2 tunlr update set sub main 6h --by tunlr
+stderr '--by is for the geo data only'
 exitcode 2 tunlr sub set main
-stderr 'sub set needs the name'
-exitcode 1 tunlr sub set nope --update off
+stderr 'unknown command "set" for "tunlr sub"'
+exitcode 1 tunlr update set sub nope off
 stderr 'subscription not found: nope'
 
 # geo 数据的周期保存在设置文件中；由 tunlr 更新时不涉及配置
@@ -46,14 +50,14 @@ stdout '^The geo data is updated daily by tunlr; next due '
 grep '^geo-update: 1d$' root/etc/tunlr/settings.yaml
 exec tunlr update set geo off
 stdout 'no longer updated automatically'
-exec tunlr update show
+exec tunlr update
 stdout '^geo \(by tunlr\)\s+never \(off\)\s+never\s+-$'
 exec tunlr update set geo default
 ! grep 'geo-update' root/etc/tunlr/settings.yaml
 
 # 交给内核自己更新要改配置：非交互时需要 --yes；发布后配置中打开 geo-auto-update
 install-mihomo
-exec tunlr apply --yes
+exec tunlr config apply --yes
 exitcode 2 tunlr update set geo --by mihomo
 stderr 'update set geo needs confirmation; pass --yes'
 ! grep 'geo-updater' root/etc/tunlr/settings.yaml
@@ -65,7 +69,7 @@ stdout '^\+geo-update-interval: 48$'
 stdout 'Published revision'
 grep '^geo-updater: mihomo$' root/etc/tunlr/settings.yaml
 grep '^geo-auto-update: true$' root/var/lib/tunlr/core/config.yaml
-exec tunlr update show
+exec tunlr update
 stdout '^geo \(by mihomo\)\s+every 2 days \(2d\)\s+never\s+mihomo$'
 exec tunlr status
 stdout '^\s+geo every 2 days by mihomo, not run yet$'
@@ -75,7 +79,7 @@ stdout '^\s+geo every 2 days by mihomo, not run yet$'
 mkdir root/etc/tunlr/mixin.d
 cp log.yaml root/etc/tunlr/mixin.d/10-log.yaml
 exec tunlr status
-stdout '^\s+changes not published in log-level \(tunlr plan shows them\)$'
+stdout '^\s+changes not published in log-level \(tunlr config plan shows them\)$'
 exec tunlr status --json
 stdout '"state": "pending"'
 stdout '"log-level"'
@@ -89,20 +93,22 @@ stdout '^\+geo-auto-update: false$'
 grep '^geo-auto-update: false$' root/var/lib/tunlr/core/config.yaml
 ! grep 'geo-updater' root/etc/tunlr/settings.yaml
 
-# 用法错误：非法周期或方式、订阅的周期不在这里设、非交互时省略参数、--dry-run
+# 用法错误：非法周期或方式、目标不是 geo 或 sub、非交互时省略参数、--dry-run
 exitcode 2 tunlr update set geo 2w
 stderr 'invalid update period "2w"'
-exitcode 2 tunlr update set sub 1d
-stderr 'tunlr sub set'
+exitcode 2 tunlr update set 1d
+stderr 'update set takes geo or sub first, got "1d"'
 exitcode 2 tunlr update set geo --by clash
 stderr 'geo-updater must be tunlr or mihomo'
 exitcode 2 tunlr update set
-stderr 'update set needs the period or --by'
+stderr 'update set needs geo or sub'
+exitcode 2 tunlr update set geo
+stderr 'update set geo needs the period or --by'
 exitcode 2 tunlr update set geo 1d --dry-run
 stderr 'does not support --dry-run'
-exitcode 2 tunlr update bogus
+exitcode 2 tunlr update run bogus
 stderr 'unknown update "bogus"'
-exitcode 2 tunlr update --dry-run
+exitcode 2 tunlr update run --dry-run
 stderr 'does not support --dry-run'
 
 # 刚抓取的订阅和从安装起算的 geo 数据都没有到期：_update 什么都不输出

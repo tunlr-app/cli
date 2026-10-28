@@ -194,7 +194,7 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 	}
 
 	if _, err := os.Stat(i.Layout.CoreConfig()); err != nil {
-		res.NotStarted = "no configuration has been published yet: add a subscription (tunlr sub add), then run tunlr apply and tunlr start"
+		res.NotStarted = "no configuration has been published yet: add a subscription (tunlr sub add), then run tunlr config apply and tunlr core start"
 	} else {
 		progress("Starting mihomo")
 		if res.Started, err = kernels.Restart(ctx); err != nil {

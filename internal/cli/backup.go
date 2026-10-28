@@ -395,9 +395,9 @@ func switchCommands(s setup.SwitchSuggestion) []string {
 	var cmds []string
 	switch {
 	case s.Gateway && s.Interface != "":
-		cmds = append(cmds, "tunlr gateway on --interface "+s.Interface)
+		cmds = append(cmds, "tunlr tun gateway on --interface "+s.Interface)
 	case s.Gateway:
-		cmds = append(cmds, "tunlr gateway on")
+		cmds = append(cmds, "tunlr tun gateway on")
 	case s.Tun:
 		cmds = append(cmds, "tunlr tun on")
 	}

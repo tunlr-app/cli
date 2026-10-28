@@ -128,6 +128,34 @@ func TestGatewayDocker(t *testing.T) {
 	}
 }
 
+// 不给网卡时取默认路由所在的网卡；已经开启时沿用正在使用的网卡（再次执行是为了恢复缺失的部分）。
+func TestGatewayInterface(t *testing.T) {
+	i, _ := newGatewayInstaller(t, "0")
+	ctx := context.Background()
+	iface := func(given string) string {
+		t.Helper()
+		s, err := i.GatewayStatus(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := i.gatewayInterface(ctx, given, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := iface(""); got != "ens3" {
+		t.Errorf("off: %q", got)
+	}
+	gatewayOn(t, i, "eth1")
+	if got := iface(""); got != "eth1" {
+		t.Errorf("on eth1: %q", got)
+	}
+	if got := iface("ens3"); got != "ens3" {
+		t.Errorf("given ens3: %q", got)
+	}
+}
+
 func TestGatewayNeedsTun(t *testing.T) {
 	i, _, _ := newTunInstaller(t)
 	if _, err := i.GatewayOn(context.Background(), "ens3"); !errors.Is(err, core.ErrCheckFailed) {

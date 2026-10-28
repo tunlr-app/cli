@@ -97,7 +97,7 @@ func (a *app) showFilter() error {
 			fmt.Fprintf(w, "Ports:           %s (tunlr filter ports on)\n", a.style.dim("all proxied"))
 			fmt.Fprintf(w, "                 when on: %s (%s)\n", list, note)
 		}
-		fmt.Fprintln(w, "\nThe rules go before all others (the managed mixin tunlr:filter; see tunlr mixin list).")
+		fmt.Fprintln(w, "\nThe rules go before all others (the managed mixin tunlr:filter; see tunlr config).")
 		return nil
 	})
 }

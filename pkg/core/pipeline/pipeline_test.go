@@ -634,7 +634,7 @@ func TestManagedConflicts(t *testing.T) {
 	mustApply(t, p, mustPlan(t, p))
 
 	for _, tt := range []struct{ mixin, want string }{
-		{"secret: mine\n", "mixin 10-a.yaml:1: secret is managed by tunlr:panel (change it with: tunlr panel lan on/off, tunlr panel --reset-secret)"},
+		{"secret: mine\n", "mixin 10-a.yaml:1: secret is managed by tunlr:panel (change it with: tunlr panel lan on/off, tunlr panel reset-secret)"},
 		{"x: 1\nexternal-controller: 0.0.0.0:9091\n", "mixin 10-a.yaml:2: external-controller is managed by tunlr:panel"},
 		{"tun:\n  stack: system\n  enable: true\n", "mixin 10-a.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off)"},
 		{"geo-update-interval: 6\n", "mixin 10-a.yaml:1: geo-update-interval is managed by tunlr:geo (change it with: tunlr update set geo)"},

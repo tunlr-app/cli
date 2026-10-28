@@ -1,29 +1,35 @@
 # 默认关闭，并说明依赖透明代理
-exec tunlr gateway
+exec tunlr tun gateway
 stdout '^Gateway mode: +off$'
 stdout 'it needs the transparent proxy: tunlr tun on'
 
-exec tunlr gateway --json
+exec tunlr tun gateway --json
 stdout '"on": false'
 stdout '"version"'
 
 # 非交互模式下没有 --yes 时，在开始工作前报告用法错误
-exitcode 2 tunlr gateway on
-stderr 'gateway on needs confirmation; pass --yes'
-exitcode 2 tunlr gateway off
-stderr 'gateway off needs confirmation; pass --yes'
+exitcode 2 tunlr tun gateway on
+stderr 'tun gateway on needs confirmation; pass --yes'
+exitcode 2 tunlr tun gateway off
+stderr 'tun gateway off needs confirmation; pass --yes'
 
 # 服务没有安装时前置检查不通过：退出码 3
-exitcode 3 tunlr gateway on --yes
+exitcode 3 tunlr tun gateway on --yes
 stderr 'the mihomo service is not installed'
 
 # 关闭时什么都不做
-exec tunlr gateway off --yes
+exec tunlr tun gateway off --yes
 stdout 'already off'
 
-# tun 的状态中有一行
+# tun 的状态中也显示网关模式
 exec tunlr tun
+stdout '^Transparent proxy: +off$'
 stdout '^Gateway mode: +off$'
+exec tunlr tun --json
+stdout '"gateway": \{'
 
-exec tunlr --help
+# 顶层没有 gateway，在 tun 下面
+exec tunlr tun --help
 stdout 'gateway +Show gateway mode'
+exitcode 2 tunlr gateway
+stderr 'unknown command "gateway"'

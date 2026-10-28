@@ -1,48 +1,48 @@
 # 内核未安装：plan 可以预览但无法校验；apply 必须校验，因此拒绝
-exec tunlr plan
+exec tunlr config plan
 stdout 'No active subscription'
 stdout 'Nothing has been published yet'
 stdout 'Check \(mihomo -t\): not run, mihomo is not installed'
-exitcode 1 tunlr apply --yes
+exitcode 1 tunlr config apply --yes
 stdout 'Not applied'
 ! exists root/var/lib/tunlr/core/config.yaml
 
 # 非交互模式下没有 --yes 时，在开始工作前报告用法错误
-exitcode 2 tunlr apply
+exitcode 2 tunlr config apply
 stderr 'apply needs confirmation; pass --yes'
 ! stdout .
 
 # 安装（模拟的）内核后发布第一版
 install-mihomo
-exec tunlr plan
+exec tunlr config plan
 stdout 'Check \(mihomo -t\): passed'
-exec tunlr apply --dry-run
+exec tunlr config apply --dry-run
 stdout 'Dry run: nothing applied'
 ! exists root/var/lib/tunlr/core/config.yaml
-exec tunlr apply --yes
+exec tunlr config apply --yes
 stdout 'Published revision 1 to '
 stdout 'mihomo is not running; it will use this configuration when it starts'
 grep '^external-controller-unix: api\.sock$' root/var/lib/tunlr/core/config.yaml
 grep '^secret: [0-9a-f]{32}$' root/var/lib/tunlr/core/config.yaml
 grep '"api_secret": "[0-9a-f]{32}"' root/var/lib/tunlr/state.json
-exec tunlr plan
+exec tunlr config plan
 stdout 'No changes'
-exec tunlr apply --yes
+exec tunlr config apply --yes
 stdout 'No changes'
 ! stdout 'Published'
 
 # 添加订阅后，diff 显示新增的节点，订阅中的系统键被忽略
 cp airport.yaml provider/airport.yaml
 exec tunlr sub add main $PROVIDER/airport.yaml
-exec tunlr plan
+exec tunlr config plan
 stdout 'Subscription: main'
 stdout 'Ignored from the subscription: port, external-controller'
 stdout '^Proxies: 1 added \(a\)$'
 stdout '^\+  - MATCH,g$'
 ! stdout '^\+external-controller: 0'
-exec tunlr plan --full
+exec tunlr config plan --full
 stdout '^mixed-port: 7890$'
-exec tunlr apply --yes --json
+exec tunlr config apply --yes --json
 stdout '"applied": true'
 stdout '"reloaded": false'
 stdout '"revision": 2'
@@ -51,113 +51,119 @@ stdout '"subscription": "main"'
 # mixin 让配置无法通过 mihomo -t：退出码 3，不发布
 mkdir root/etc/tunlr/mixin.d
 cp bad-mixin.yaml root/etc/tunlr/mixin.d/50-rules.yaml
-exitcode 3 tunlr plan
+exitcode 3 tunlr config plan
 stdout 'Mixins \(in order\): 50-rules.yaml'
 stdout 'Check \(mihomo -t\): FAILED'
 stdout 'proxy \[NOPE\] not found'
-exitcode 3 tunlr apply --yes
+exitcode 3 tunlr config apply --yes
 stdout 'Not applied'
-exitcode 3 tunlr apply --yes --json
+exitcode 3 tunlr config apply --yes --json
 stdout '"status": "failed"'
 stdout '"applied": false'
 ! stdout '"error"'
 
 # mixin 本身有错：指出文件和行，退出码 3
 cp broken-mixin.yaml root/etc/tunlr/mixin.d/50-rules.yaml
-exitcode 3 tunlr plan
+exitcode 3 tunlr config plan
 stderr 'mixin 50-rules.yaml:2: append-rules: value must be a list'
-exitcode 3 tunlr apply --yes --json
+exitcode 3 tunlr config apply --yes --json
 stdout '"code": 3'
 
 # 多个 mixin 按文件名顺序应用：plan 列出覆盖和警告；其他扩展名的文件被忽略
 cp patch-mixin.yaml root/etc/tunlr/mixin.d/50-rules.yaml
 cp level-mixin.yaml root/etc/tunlr/mixin.d/10-level.yaml
 cp level-mixin.yaml root/etc/tunlr/mixin.d/90-ignored.yml
-exec tunlr plan
+exec tunlr config plan
 stdout 'Mixins \(in order\): 10-level.yaml, 50-rules.yaml$'
 stdout '  log-level: 50-rules.yaml overrides 10-level.yaml'
 stdout '  50-rules.yaml:4: patch-proxy-groups: no item named missing; nothing changed'
 stdout '^\+log-level: error$'
 stdout '^\+  - \{name: g, type: select, proxies: \[DIRECT, a\]\}$'
-exec tunlr plan --json
+exec tunlr config plan --json
 stdout '"mixins": \['
 stdout '"path": "log-level"'
 stdout '"line": 4'
 # 数字前缀位数不同时，文件名逐字符排序的结果与数值顺序不同，plan 给出警告
 cp level-mixin.yaml root/etc/tunlr/mixin.d/9-late.yaml
-exec tunlr plan
+exec tunlr config plan
 stdout 'Mixins \(in order\): 10-level.yaml, 50-rules.yaml, 9-late.yaml$'
 stdout '  9-late.yaml: applied after 10-level.yaml because names sort character by character; to apply it before, rename it to 09-late.yaml'
 rm root/etc/tunlr/mixin.d/50-rules.yaml root/etc/tunlr/mixin.d/10-level.yaml root/etc/tunlr/mixin.d/90-ignored.yml root/etc/tunlr/mixin.d/9-late.yaml
 
 # plan 列出 tunlr 管理的 mixin，不显示 secret 的值
-exec tunlr plan
-stdout '^Managed by tunlr: tunlr:core, tunlr:tun, tunlr:geo, tunlr:panel, tunlr:proxy \(mixins cannot change their keys; see: tunlr mixin list\)$'
+exec tunlr config plan
+stdout '^Managed by tunlr: tunlr:core, tunlr:tun, tunlr:geo, tunlr:panel, tunlr:proxy \(mixins cannot change their keys; see: tunlr config\)$'
 ! stdout 'geox-url'
 ! stdout 'Defaults from'
-exec tunlr mixin list
+exec tunlr config
 stdout '^No mixin files in '
 stdout '^  tunlr:tun \(tunlr tun on/off\): tun.enable, tun.auto-route, '
-stdout '^  tunlr:panel \(tunlr panel lan on/off, tunlr panel --reset-secret\): external-controller, secret$'
+stdout '^  tunlr:panel \(tunlr panel lan on/off, tunlr panel reset-secret\): external-controller, secret$'
 stdout '^  tunlr:geo \(tunlr update set geo\): geo-auto-update, geo-update-interval$'
-exec tunlr mixin list --json
+exec tunlr config --json
 stdout '"name": "tunlr:core"'
 ! stdout '"content": "secret'
 
 # mixin 动了 tunlr 管理的键：拒绝，指出行和改用的命令，退出码 3
 cp managed-mixin.yaml root/etc/tunlr/mixin.d/20-mine.yaml
-exitcode 3 tunlr plan
+exitcode 3 tunlr config plan
 stderr '^tunlr: mixin 20-mine.yaml:3: tun.enable is managed by tunlr:tun \(change it with: tunlr tun on/off\); remove it from the mixin$'
-exitcode 3 tunlr apply --yes
+exitcode 3 tunlr config apply --yes
 rm root/etc/tunlr/mixin.d/20-mine.yaml
 
 # 配置了 GitHub 镜像：面板和 geo 数据经镜像下载，镜像主机直连的规则插在订阅规则前面，plan 中列出
 cp mirror-settings.yaml root/etc/tunlr/settings.yaml
-exec tunlr plan
-stdout '^Defaults from tunlr:mirror \(tunlr config edit; a mixin can override these, remove rules with delete-rules\):$'
+exec tunlr config plan
+stdout '^Defaults from tunlr:mirror \(tunlr settings edit; a mixin can override these, remove rules with delete-rules\):$'
 stdout '^  external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip$'
 stdout '^    mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb$'
 stdout '^    - DOMAIN,gh-proxy.com,DIRECT$'
 stdout '^  prepend-rules:$'
 stdout '^\+  - DOMAIN,gh-proxy.com,DIRECT$'
-exec tunlr plan --json
+exec tunlr config plan --json
 stdout '"name": "tunlr:mirror"'
 rm root/etc/tunlr/settings.yaml
 
 # edit 需要终端
-exitcode 2 tunlr mixin edit 20-home
-stderr 'mixin edit needs a terminal'
+exitcode 2 tunlr config edit 20-home
+stderr 'config edit needs a terminal'
+
+# tunlr config 列出历史，* 标出生效的修订
+exec tunlr config
+stdout '^History \(tunlr config rollback'
+stdout '^\s+\*\s+2\s+\S+ \S+\s+apply\s+main$'
+stdout '^\s+1\s+\S+ \S+\s+apply\s+-$'
+exec tunlr config --json
+stdout '"history": \['
+stdout '"current": true'
 
 # 回滚：不指定修订时回到上一个不同的版本，连续回滚在两个版本间切换
-exec tunlr rollback --list
-stdout '^\*\s+2\s+\S+ \S+\s+apply\s+main$'
-stdout '^\s+1\s+\S+ \S+\s+apply\s+-$'
-exec tunlr rollback --yes
+exec tunlr config rollback --yes
 stdout 'Rolling back to revision 1'
 stdout 'Published revision 3'
 ! grep 'MATCH,g' root/var/lib/tunlr/core/config.yaml
-exec tunlr rollback --yes
+exec tunlr config rollback --yes
 stdout 'Rolling back to revision 2'
 grep 'MATCH,g' root/var/lib/tunlr/core/config.yaml
-exec tunlr rollback 1 --yes
+exec tunlr config rollback 1 --yes
 stdout 'Published revision 5'
-exec tunlr rollback --list
-stdout '^\*\s+5\s+\S+ \S+\s+rollback to 1\s+-$'
-exitcode 2 tunlr rollback 99 --yes
-stderr 'revision not found: 99'
-exitcode 2 tunlr rollback abc
+exec tunlr config
+stdout '^\s+\*\s+5\s+\S+ \S+\s+rollback to 1\s+-$'
+exitcode 2 tunlr config rollback 99 --yes
+stderr 'revision not found: 99 \(the history: tunlr config\)'
+exitcode 2 tunlr config rollback abc
 stderr 'revision must be a positive number'
 
-# 手工改过的生效配置：列表中提示，下次发布前先存档
+# 手工改过的生效配置：历史中提示，下次发布前先存档
 cp edited.yaml root/var/lib/tunlr/core/config.yaml
-exec tunlr rollback --list
+exec tunlr config
 stdout 'matches no revision'
-exec tunlr apply --yes
+exec tunlr config apply --yes
 stdout '^-edited: true$'
 stdout 'Published revision 7'
-exec tunlr rollback --list
+exec tunlr config
 stdout '^\s+6\s+\S+ \S+\s+found on disk\s+-$'
-exec tunlr rollback 6 --yes --json
+exec tunlr config rollback 6 --yes --json
 stdout '"rollback_to": 6'
 # 回滚恢复修订的内容，受管 mixin 独占的键按当前状态重新写入
 grep '^edited: true$' root/var/lib/tunlr/core/config.yaml
@@ -166,13 +172,13 @@ grep '^  enable: false$' root/var/lib/tunlr/core/config.yaml
 
 # 差异很长时按顶层键汇总，--full-diff 完整显示；--json 中的差异总是完整的
 cp long-mixin.yaml root/etc/tunlr/mixin.d/50-long.yaml
-exec tunlr plan
+exec tunlr config plan
 stdout '^The diff has \d+ lines; changed lines by section \(show all with --full-diff\):$'
 stdout '^  rules\s+\+\d+\s+-0$'
 ! stdout 'DOMAIN,d1\.example'
-exec tunlr plan --full-diff
+exec tunlr config plan --full-diff
 stdout '^\+  - ''DOMAIN,d1\.example,DIRECT''$'
-exec tunlr plan --json
+exec tunlr config plan --json
 stdout '"key": "rules"'
 stdout 'DOMAIN,d1\.example'
 

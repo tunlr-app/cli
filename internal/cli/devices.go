@@ -65,7 +65,7 @@ func (a *app) listDevices(ctx context.Context, all bool) error {
 		switch {
 		case !list.Gateway && !list.ProxyLAN:
 			fmt.Fprintln(&b, "No LAN device can use this server: gateway mode and LAN access to the proxy port are both off\n"+
-				"(tunlr gateway on, tunlr proxy lan on).")
+				"(tunlr tun gateway on, tunlr proxy lan on).")
 		case !list.Tracking:
 			fmt.Fprintf(&b, "%s the nftables table inet %s that records devices is missing (see tunlr doctor).\n", a.style.warn("Warning:"), netfilter.DevicesTable)
 		}

@@ -170,10 +170,10 @@ func (m *Manager) restartAndCheck(ctx context.Context, action func(context.Conte
 			break
 		}
 		if st, serr := m.Service.Status(ctx, service.CoreUnit); serr == nil && st.ActiveState == "failed" {
-			return nil, fmt.Errorf("%w: the service failed to start (see: tunlr logs)", ErrUnhealthy)
+			return nil, fmt.Errorf("%w: the service failed to start (see: tunlr core logs)", ErrUnhealthy)
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("%w: no API response within %s: %v (see: tunlr logs)", ErrUnhealthy, orDefault(m.StartTimeout, defaultStartTimeout), err)
+			return nil, fmt.Errorf("%w: no API response within %s: %v (see: tunlr core logs)", ErrUnhealthy, orDefault(m.StartTimeout, defaultStartTimeout), err)
 		}
 		if err := sleep(ctx, 300*time.Millisecond); err != nil {
 			return nil, err
@@ -194,7 +194,7 @@ func (m *Manager) restartAndCheck(ctx context.Context, action func(context.Conte
 		return nil, err
 	}
 	if !after.Active() || after.MainPID != up.MainPID || after.NRestarts != before.NRestarts {
-		return nil, fmt.Errorf("%w: mihomo exited shortly after starting (see: tunlr logs)", ErrUnhealthy)
+		return nil, fmt.Errorf("%w: mihomo exited shortly after starting (see: tunlr core logs)", ErrUnhealthy)
 	}
 	return &Health{Version: version, MainPID: after.MainPID}, nil
 }
@@ -375,7 +375,7 @@ func (m *Manager) Rescue(ctx context.Context) (*RescueResult, error) {
 		return nil, err
 	}
 	if kg := st.FindKernel(cur); kg != nil {
-		return nil, fmt.Errorf("mihomo %s is a known-good version but keeps failing; probably a configuration or environment problem, leaving it stopped (see: tunlr logs)", kg.Version)
+		return nil, fmt.Errorf("mihomo %s is a known-good version but keeps failing; probably a configuration or environment problem, leaving it stopped (see: tunlr core logs)", kg.Version)
 	}
 	if len(st.Kernels) == 0 {
 		return nil, ErrNoKnownGood
