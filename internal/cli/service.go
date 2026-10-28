@@ -218,8 +218,8 @@ func (a *app) askLANUsage(ctx context.Context, opts *setup.InitOptions, u *lanUs
 func (a *app) askUsage(ctx context.Context, cands []setup.LANInterface, u *lanUsage) error {
 	options := []string{
 		"Only this server (e.g. a VPS; LAN devices do not use it)",
-		"Proxy for LAN devices: they set this server as their HTTP/SOCKS5 proxy",
-		"Gateway for LAN devices: they set this server as their router and DNS",
+		"Proxy only for LAN devices: they set this server as their HTTP/SOCKS5 proxy",
+		"Gateway and proxy for LAN devices: as their router and DNS, or as their proxy",
 	}
 	for {
 		choice, err := a.prompt.Choose(ctx, "What is this server for?", options, 0)
