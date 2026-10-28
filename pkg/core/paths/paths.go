@@ -46,6 +46,9 @@ func (l Layout) SubscriptionFile(name string) string {
 // HistoryDir 存放已发布配置的历史，用于回滚。
 func (l Layout) HistoryDir() string { return l.join("var", "lib", "tunlr", "history") }
 
+// BackupsDir 存放还原备份前自动备份的当前内容。
+func (l Layout) BackupsDir() string { return l.join("var", "lib", "tunlr", "backups") }
+
 // KernelsDir 存放已知可用的内核版本，每个版本一个子目录。
 func (l Layout) KernelsDir() string { return l.join("var", "lib", "tunlr", "kernels") }
 

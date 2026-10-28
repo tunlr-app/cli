@@ -52,10 +52,11 @@ type scriptedPrompt struct {
 	choices []int
 	// picks 按选项开头的文字选择，比 choices 优先；"" 表示用户取消。
 	picks []string
-	// many 是多选的回答，nil 表示用户取消。
-	many   [][]int
-	inputs []string
-	asked  [][]string
+	// many 是多选的回答，nil 表示用户取消；selected 记录预先勾上的项。
+	many     [][]int
+	selected [][]int
+	inputs   []string
+	asked    [][]string
 	// initials 记录单选时光标的起始位置。
 	initials []int
 	// described 记录输入时的说明。
@@ -102,8 +103,9 @@ func (p *scriptedPrompt) Choose(_ context.Context, _ string, options []string, i
 	return c, nil
 }
 
-func (p *scriptedPrompt) ChooseMany(_ context.Context, _ string, options []string) ([]int, error) {
+func (p *scriptedPrompt) ChooseMany(_ context.Context, _ string, options []string, selected []int) ([]int, error) {
 	p.asked = append(p.asked, options)
+	p.selected = append(p.selected, selected)
 	if len(p.many) == 0 {
 		p.t.Fatalf("unexpected question: %v", options)
 	}

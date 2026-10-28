@@ -318,7 +318,7 @@ func (a *app) chooseToRemove(cmd *cobra.Command) ([]string, error) {
 		fmt.Fprintln(a.stdout, "Nothing to remove: the active subscription cannot be removed, and there is no other.")
 		return nil, nil
 	}
-	picked, err := a.prompt.ChooseMany(cmd.Context(), "Remove which subscriptions?", subscriptionOptions(candidates))
+	picked, err := a.prompt.ChooseMany(cmd.Context(), "Remove which subscriptions?", subscriptionOptions(candidates), nil)
 	if err != nil {
 		return nil, err
 	}

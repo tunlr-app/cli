@@ -1,0 +1,119 @@
+# 还没有状态：备份、还原都要求先 init
+exitcode 3 tunlr backup create
+stderr 'tunlr has not been set up here yet; run tunlr init first'
+exec tunlr backup
+stdout 'No automatic backups yet'
+
+# 准备：订阅、mixin、设置、过滤项
+cp airport.yaml provider/airport.yaml
+exec tunlr sub add main $PROVIDER/airport.yaml?token=secret-token
+exec tunlr sub add spare $PROVIDER/airport.yaml?token=secret-token
+install-mihomo
+mkdir root/etc/tunlr/mixin.d
+cp home.yaml root/etc/tunlr/mixin.d/20-home.yaml
+cp settings.yaml root/etc/tunlr/settings.yaml
+exec tunlr apply --yes
+exec tunlr filter quic on --yes
+
+# 备份：写到当前目录或 -o 指定的文件，输出概要，不含订阅地址
+exec tunlr backup create
+stdout '^Backed up to .*tunlr-backup-.*\.tar\.gz:$'
+stdout '^  Subscriptions:  main \(active\), spare$'
+stdout '^  Mixins:         20-home\.yaml$'
+stdout '^  Tool settings:  settings\.yaml$'
+stdout '^  Filters:        QUIC blocked$'
+stdout 'keep it private'
+! stdout 'secret-token'
+exec tunlr backup create -o b.tar.gz --json
+stdout '"subscriptions": \['
+stdout '"active": "main"'
+stdout '"mixins": \['
+! stdout 'secret-token'
+exitcode 1 tunlr backup create -o b.tar.gz
+stderr 'b.tar.gz already exists; write to another file with -o'
+exitcode 2 tunlr backup create -o - --json
+stdout 'cannot be combined with --json'
+
+# 还原同一份：配置不变
+exitcode 2 tunlr backup restore b.tar.gz
+stderr 'backup restore needs confirmation; pass --yes'
+exec tunlr backup restore b.tar.gz --dry-run
+stdout '^Backup of .*, made .* by tunlr v0\.0\.0-test:$'
+stdout 'Dry run: nothing restored'
+
+# 改动之后还原：mixin、设置、过滤项、订阅都回来，先自动备份当前内容
+rm root/etc/tunlr/mixin.d/20-home.yaml
+cp other.yaml root/etc/tunlr/mixin.d/30-other.yaml
+rm root/etc/tunlr/settings.yaml
+exec tunlr filter quic off --yes
+exec tunlr sub remove spare --yes
+exec tunlr apply --yes
+exec tunlr backup restore b.tar.gz --yes
+stdout '^\+  - DOMAIN,home\.example,DIRECT$'
+stdout '^-  - DOMAIN,other\.example,DIRECT$'
+stdout '^\+  - AND,\(\(NETWORK,UDP\),\(DST-PORT,443\)\),REJECT$'
+stdout 'The backup is restored'
+stdout 'The previous contents are saved in .*before-restore-.*\.tar\.gz'
+exists root/etc/tunlr/mixin.d/20-home.yaml
+! exists root/etc/tunlr/mixin.d/30-other.yaml
+exists root/etc/tunlr/settings.yaml
+exists root/var/lib/tunlr/subscriptions/spare.yaml
+grep '"quic": true' root/var/lib/tunlr/state.json
+grep '^  - DOMAIN,home.example,DIRECT$' root/var/lib/tunlr/core/config.yaml
+exec tunlr sub list
+stdout 'spare'
+
+# 自动备份可以还原回去；只保留最近 3 份
+exec tunlr backup restore b.tar.gz --yes
+exec tunlr backup restore b.tar.gz --yes
+exec tunlr backup restore b.tar.gz --yes --json
+stdout '"applied": true'
+stdout '"saved": ".*before-restore-'
+! stdout 'secret-token'
+exec tunlr backup
+stdout '^Automatic backups, saved before each restore \(newest first\):$'
+stdout '^  .* · main \(active\), spare · 1 mixin$'
+exec tunlr backup --json
+stdout '"file": ".*before-restore-'
+! stdout 'secret-token'
+
+# 从标准输入读取
+stdin b.tar.gz
+exec tunlr backup restore - --yes
+stdout 'The backup is restored'
+
+# 发布失败：配置回滚，文件和状态写回还原前的内容，退出码 4
+exec tunlr backup create -o c.tar.gz
+exec tunlr filter quic off --yes
+cp other.yaml root/etc/tunlr/mixin.d/30-other.yaml
+exec tunlr apply --yes
+kernel start
+exitcode 4 tunlr backup restore c.tar.gz --yes
+stderr 'the previous configuration and files are back in place'
+! grep '"quic": true' root/var/lib/tunlr/state.json
+exists root/etc/tunlr/mixin.d/30-other.yaml
+! grep 'REJECT' root/var/lib/tunlr/core/config.yaml
+kernel stop
+
+# 不是备份
+exitcode 2 tunlr backup restore home.yaml --yes
+stderr 'not a valid tunlr backup'
+exitcode 1 tunlr backup restore missing.tar.gz --yes
+exitcode 2 tunlr backup restore
+stderr 'backup restore needs the backup file'
+
+-- airport.yaml --
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: g, type: select, proxies: [a]}
+rules:
+  - MATCH,g
+-- home.yaml --
+prepend-rules:
+  - DOMAIN,home.example,DIRECT
+-- other.yaml --
+prepend-rules:
+  - DOMAIN,other.example,DIRECT
+-- settings.yaml --
+geo-update: 1d

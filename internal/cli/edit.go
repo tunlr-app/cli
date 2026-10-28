@@ -28,8 +28,8 @@ import (
 type prompter interface {
 	// Choose 让用户用上下箭头从 options 中选一项，光标起始于下标 initial，返回所选的下标。
 	Choose(ctx context.Context, title string, options []string, initial int) (int, error)
-	// ChooseMany 让用户勾选 options 中的若干项，返回所选的下标（按列表顺序）。
-	ChooseMany(ctx context.Context, title string, options []string) ([]int, error)
+	// ChooseMany 让用户勾选 options 中的若干项，selected 中的下标预先勾上，返回所选的下标（按列表顺序）。
+	ChooseMany(ctx context.Context, title string, options []string, selected []int) ([]int, error)
 	// Input 让用户输入一行文字，description 是标题下的说明，validate 不通过时要求重新输入。
 	Input(ctx context.Context, title, description string, validate func(string) error) (string, error)
 	// Confirm 问一个是非题，description 是问题下的说明，可以为空。
@@ -72,10 +72,14 @@ func (p huhPrompter) Choose(ctx context.Context, title string, options []string,
 	return v, err
 }
 
-func (p huhPrompter) ChooseMany(ctx context.Context, title string, options []string) ([]int, error) {
+func (p huhPrompter) ChooseMany(ctx context.Context, title string, options []string, selected []int) ([]int, error) {
 	var v []int
+	opts := intOptions(options)
+	for _, i := range selected {
+		opts[i] = opts[i].Selected(true)
+	}
 	// 按键（x 或空格勾选、ctrl+a 全选）显示在底部的帮助行中。
-	s := huh.NewMultiSelect[int]().Title(title).Options(intOptions(options)...).Value(&v).
+	s := huh.NewMultiSelect[int]().Title(title).Options(opts...).Value(&v).
 		Height(listHeight(options, 1))
 	err := p.runList(ctx, s)
 	slices.Sort(v)

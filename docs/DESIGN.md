@@ -151,6 +151,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 | `/etc/tunlr/` | mixin（`mixin.d/*.yaml`，目录 0700、文件 0600）、工具设置（`settings.yaml`） | 用户可编辑，备份时最需要保留 |
 | `/var/lib/tunlr/state.json` | 状态文件：结构版本号、安装实例 ID、订阅、已知可用内核、TUN 开关、网关开关、各定时更新最近一次的执行情况 | 工具维护，权限 0600。只存最新状态，不存会增长的历史（配置历史在 `history/`，历次更新在 journal） |
 | `/var/lib/tunlr/subscriptions/` | 每个订阅最近一次成功抓取的内容 | 含机场凭据 |
+| `/var/lib/tunlr/backups/` | `backup restore` 前自动备份的当前内容（`before-restore-<时间>.tar.gz`） | 保留最近 3 份，目录 0700、文件 0600 |
 | `/var/lib/tunlr/history/` | 已发布配置的历史：每个修订一份配置（`<号>.yaml`）和一份记录（`<号>.json`） | 用于回滚，保留最近 10 个，权限 0600 |
 | `/var/lib/tunlr/kernels/<版本>/mihomo` | 已知可用的内核 | root 所有，保留最近 3 个，见第 7 节 |
 | `/var/lib/tunlr/bin/mihomo` | 运行中的内核，也用于校验配置 | 归内核用户 `tunlr` 所有，面板升级时原地替换 |
@@ -675,7 +676,7 @@ tunlr filter ports set <端口>|default     更改只代理的端口
 6. 失败通知：暂不做（见 3.4）。
 7. 版本回退：已实现（`tunlr upgrade core --rollback`、配置的 `tunlr rollback`）。
 8. 诊断与查看当前防火墙规则：已实现（`doctor`、`plan --full`）。
-9. 备份与还原
+9. 备份与还原：已实现（`tunlr backup`，见第 10 节）。
 
 由内核能力替代：保存面板节点、规则集定时更新、NTP、订阅热更新（见第 6 节）。
 
@@ -717,7 +718,9 @@ tunlr proxy               局域网设备要填的代理地址
 tunlr proxy lan on | off  允许局域网设备使用代理端口（默认关闭，只放行私有地址）
 tunlr proxy env [--unset] 当前 shell 的代理变量：输出 export 语句，eval "$(tunlr proxy env)"
 tunlr config [edit]       查看工具设置；edit 用 $EDITOR 编辑 settings.yaml，校验通过才保存，然后发布
-tunlr backup | restore    备份与还原
+tunlr backup              列出 backup restore 前留下的自动备份
+tunlr backup create [-o 文件|-]   备份设置、mixin、订阅与状态中可迁移的部分（含凭据，0600）
+tunlr backup restore [文件|-]     还原备份：diff 确认后发布，先自动备份当前内容；开关由用户选择是否打开；不给文件时从自动备份中选
 tunlr completion          shell 自动补全
 tunlr uninstall           完整卸载并清理规则
 tunlr version
@@ -741,11 +744,21 @@ tunlr version
 - `proxy env`：输出让当前 shell 使用代理端口的变量（子进程改不了父 shell 的环境变量，由用户 `eval`；同类做法如 `eval "$(ssh-agent)"`）。不做 `env on/off` 和 `shell-init`：要先在 shell 配置中装函数，且与 `tun on` 等持久开关同名而行为不同（只影响当前 shell）。
   - `http_proxy`、`https_proxy` 为 `http://127.0.0.1:<mixed-port>`，`all_proxy` 为 `socks5h://…`（域名交给代理解析），大小写各一份（curl 不认大写的 `HTTP_PROXY`，有的工具只认大写）；`no_proxy` 为本机与私有地址段（不认 CIDR 的工具忽略网段）。只输出 POSIX 写法，第一行是说明用法的注释。`--unset` 输出 `unset`，不需要配置。
   - 端口取自生效的配置；没有发布过、没有 `mixed-port`、代理端口需要认证时退出码 3。生效的配置含节点密码和 API secret，普通用户读不到，此时提示 `eval "$(sudo tunlr proxy env)"`：`sudo` 只生成语句，变量仍设在用户自己的 shell 中，工具因此不必为它放开 root 的约束。
+  - 不做 `--lan`（局域网地址见 `tunlr proxy`）；透明代理开启时不提示（变量用不上但无害）。
 - `config`：工具自己的设置（`/etc/tunlr/settings.yaml`：`github-mirror`、`user-agent`、`geo-update`、`geo-updater`），与 mihomo 配置（mixin）分开。
   - `tunlr config` 列出每项生效的值、是否为默认值和一句说明（何时生效），`--json` 中为 `file` 与 `settings`（`key`、`value`、`default`、`help`）。文件有错时报告错误。
   - `config edit` 同 `mixin edit` 的流程：在临时副本上编辑（文件不存在时从带说明、默认值全部注释掉的模板开始）→ 解析校验（未知的键、取值不合法），不通过时可以回到编辑器或放弃 → 保存（编辑期间文件被改过时不覆盖，保留副本并给出位置）→ 按新的 geo 设置启用或停用 timer → 合成配置，有变化（镜像、geo 数据改由内核更新）时 diff、确认、发布；还没有发布过时提示由 `apply` 生效。不发布时设置仍保存，与 mixin 一致，`status` 的漂移会提示。`--dry-run` 只预览，不保存。需要终端，非交互时提示直接改文件再 `apply`。
   - 不做 `config set/unset <key>`：只有四项，编辑器配合模板中的说明足够；geo 两项另有 `update set geo`。四项不常改，命令越多越难记。
-  - 不做 `--lan`（局域网地址见 `tunlr proxy`）；透明代理开启时不提示（变量用不上但无害）。
+- `backup`：与 `config`、`mixin` 一致，不带子命令时只列出（自动备份），`create`、`restore` 才有动作。主要用于换服务器（VPS 重装、迁移），其次是同一台机器重装后恢复；只改配置时用 `rollback`。
+  - 不直接打包 `/etc/tunlr` 与 `/var/lib/tunlr`：状态文件中混有只对本机有意义的内容（实例 ID、已知可用的内核、TUN 的检测期限、网关开启前的转发设置），原样搬过去会出错。
+  - 备份是一个 tar.gz（`pkg/core/backup`）：`backup.json`（格式版本、tunlr 版本、主机名、时间，以及状态中的订阅、启用的订阅、API secret、设备、过滤项和备份时开着的开关）、`settings.yaml`、`mixin.d/*.yaml`、`subscriptions/<名称>.yaml`（最近一次抓取的内容，新机器暂时抓不到订阅也能立即发布）。不含内核、geo 数据、面板和配置历史（还原后要回滚的是还原前的配置，在本机历史中）。文件 0600，输出提示它含订阅地址与 API secret；不加密：要么引入依赖，要么自己实现，用户把文件放在哪里工具也管不了。
+  - `backup create` 默认写到当前目录的 `tunlr-backup-<主机名>-<时间>.tar.gz`，已存在时不覆盖；`-o -` 写到标准输出，迁移可以一条命令完成：`ssh old tunlr backup create -o - | ssh new tunlr backup restore - --yes`（标准输入被占用，只能 `--yes`）。
+  - `backup restore` 要求这台机器已经 `init`（有状态文件）。读取时检查格式版本（比当前新则拒绝）、文件名（只认上面几类，mixin 与订阅名称照常校验）、设置文件、订阅地址，以及启用的订阅有内容；错误信息不含订阅地址。
+  - 设置文件、`mixin.d` 中的 `.yaml` 与订阅内容整体替换（不合并，结果可以预料；原来的内容在自动备份中），状态只替换订阅、启用的订阅、API secret、设备和过滤项；实例 ID、内核、开关、定时任务的记录保持本机的。设备按地址记录，换了局域网就匹配不到，照样还原，diff 中可见。
+  - 先按还原后的样子合成并校验（`pipeline.PlanRestore`，不写入任何东西），显示 diff，确认后在锁内：把当前内容自动备份到 `/var/lib/tunlr/backups`（保留 3 份）→ 写入 → 发布 → 按新的订阅周期与 geo 设置同步 timer。全有或全无：发布失败时写回自动备份的内容，配置由流水线回滚，退出码 4；拒绝或预览时什么都不写。这一点与 `mixin edit`、`config edit` 不同：还原只做一半，状态难以看明白。
+  - 开关不自动打开：网卡、局域网、是否有公网地址都跟着机器，TUN 还有失联的风险。还原后比较备份与本机，备份时开着、这里关着的（网关的网卡在这里不存在时改用默认路由所在的网卡）在交互模式下列成多选、默认全选，选中的依次走 `gateway on`（或 `tun on`）、`proxy lan on`、`panel lan on` 的流程，同 `init`；非交互或 `--yes` 时只列出命令，`--json` 中为 `commands`。
+  - 自动备份就是“撤销还原”的入口：`tunlr backup` 按时间列出（订阅、mixin 数和路径，`--json` 中为列表），`backup restore` 不给文件时在交互模式下从中选择；非交互时必须给出文件。
+  - 主菜单有“Backup”分类：列出自动备份、备份到文件、还原自动备份（有自动备份时）、从文件还原（输入路径）。
 - `sub use [名称]`：交互模式下询问是否立即发布，`--apply` 直接发布（同 `apply`，非交互时需配合 `--yes`）。
 
 **执行前确认**：会中断代理、替换内核、删除数据或丢掉用户刚做的修改的操作，执行前先确认，问题下方说明影响：
@@ -886,7 +899,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 其余功能在此之后按需求排期。
 
-进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）、面板（`tunlr panel`，含局域网访问）、受管 mixin（第 6 节），以及家庭网络的用法：代理端口的局域网访问（`tunlr proxy lan`）和 `init` 的用途问题（第 10 节），`status` 的漂移（第 10 节），局域网设备的列表与分流（`tunlr devices`，8.12），流量过滤（`tunlr filter`，8.13），代理变量（`tunlr proxy env`，第 10 节），工具设置（`tunlr config`，第 10 节）。
+进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）、面板（`tunlr panel`，含局域网访问）、受管 mixin（第 6 节），以及家庭网络的用法：代理端口的局域网访问（`tunlr proxy lan`）和 `init` 的用途问题（第 10 节），`status` 的漂移（第 10 节），局域网设备的列表与分流（`tunlr devices`，8.12），流量过滤（`tunlr filter`，8.13），代理变量（`tunlr proxy env`，第 10 节），工具设置（`tunlr config`，第 10 节），备份与还原（`tunlr backup`，第 10 节）。
 
 ### 13.1 待实现（按顺序）
 
@@ -899,7 +912,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 | 3 | ~~流量过滤~~ | 8.13 | 已完成 | 设备直连（从 `devices set` 移来）、来源地址段直连（含容器网段）、拒绝 QUIC、只代理常用端口；目标地址不进 TUN 用 mixin |
 | 4 | ~~代理变量~~ | 第 10 节 | 已完成 | `tunlr proxy env [--unset]` 输出 `export`/`unset` 语句，用法 `eval "$(tunlr proxy env)"`；不做 `shell-init`、`env on/off` |
 | 5 | ~~工具设置~~ | 第 10 节 | 已完成 | `tunlr config` 列出设置，`config edit` 在编辑器中修改；不做 `set/unset` |
-| 6 | `backup`、`restore` | 第 9 节 9、第 10 节 | 草案，待确认 | 打包设置、mixin、订阅（含最近一次抓取的内容）、API secret 和开关记录（`--history` 附历史），不含内核与 geo 数据，0600。还原要求已 `init`，先自动备份当前内容，合并状态（保留实例 ID、内核、开关），再 diff 确认发布；TUN、网关、代理端口和面板的局域网访问不自动开启（待定：逐项询问还是只列命令） |
+| 6 | ~~备份与还原~~ | 第 10 节 | 已完成 | 见第 10 节 `backup` |
 | 7 | `tunlr upgrade`（自身升级） | 第 10 节 | 待补全 | 正式发布前必须有：查询最新版本、下载（可经镜像，只认官方 sha256）、用新文件跑 `version` 确认、原子替换 `/usr/local/bin/tunlr`、必要时重写 unit 和 timer。待定：是否保留旧版本以便回退、开发版如何处理。不做定时任务 |
 | 8 | 发布 | 第 12 节 | 待补全 | `.goreleaser.yaml`（amd64、arm64，带 checksum）还没跑过真正的发布，没有 CI；`install.sh` 与官网未做 |
 

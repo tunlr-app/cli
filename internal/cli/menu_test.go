@@ -153,7 +153,7 @@ var (
 )
 
 func menuWith(s *setup.Status, subs, revs int) menuData {
-	return menuData{s, make([]subscription.Entry, subs), revs}
+	return menuData{status: s, subs: make([]subscription.Entry, subs), revisions: revs, backups: revs}
 }
 
 func TestMenuNavigation(t *testing.T) {
@@ -349,7 +349,7 @@ func TestMenuItems(t *testing.T) {
 	}
 
 	for group, want := range map[string]string{
-		"":                 "tunlr: Show status|Panel|Proxy port|Subscriptions|Configuration|Transparent proxy|LAN devices|Filters|mihomo service|Scheduled updates|Run diagnostics|Quit",
+		"":                 "tunlr: Show status|Panel|Proxy port|Subscriptions|Configuration|Transparent proxy|LAN devices|Filters|mihomo service|Scheduled updates|Backup|Run diagnostics|Quit",
 		groupDevices:       "tunlr › LAN devices: List devices|List all devices on the LAN|Name a device|Forget a device|← Back",
 		groupFilter:        "tunlr › Filters: Show filters|Set a device to go through proxies or directly|Send a network direct|Block QUIC (browsers use TCP)|Proxy only common ports (others go direct)|Change the proxied ports|← Back",
 		groupPanel:         "tunlr › Panel: Show how to open it|Let LAN devices open it|Replace the API secret|← Back",
@@ -359,6 +359,7 @@ func TestMenuItems(t *testing.T) {
 		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|Roll back|List revisions|Show tool settings|Edit tool settings|← Back",
 		groupTun:           "tunlr › Transparent proxy: Turn TUN off|Turn gateway mode on (LAN devices route through mihomo)|Show details|Show gateway details|← Back",
 		groupService:       "tunlr › mihomo service: Restart mihomo|Stop mihomo|Show recent logs|Upgrade mihomo to the latest release|← Back",
+		groupBackup:        "tunlr › Backup: List automatic backups|Back up to a file|Restore an automatic backup (undo a restore)|Restore from a file|← Back",
 	} {
 		if got := labels(group, runningStatus, 2, 3); got != want {
 			t.Errorf("running %q:\n got %s\nwant %s", group, got, want)
@@ -374,6 +375,7 @@ func TestMenuItems(t *testing.T) {
 		groupConfiguration: "tunlr › Configuration: Preview changes|Preview and apply|Edit a mixin|Show tool settings|Edit tool settings|← Back",
 		groupTun:           "tunlr › Transparent proxy: Turn TUN on|Turn gateway mode on (LAN devices route through mihomo)|Show details|Show gateway details|← Back",
 		groupService:       "tunlr › mihomo service: Start mihomo|Show recent logs|Upgrade mihomo to the latest release|← Back",
+		groupBackup:        "tunlr › Backup: List automatic backups|Back up to a file|Restore from a file|← Back",
 	} {
 		if got := labels(group, stoppedStatus, 1, 0); got != want {
 			t.Errorf("stopped %q:\n got %s\nwant %s", group, got, want)

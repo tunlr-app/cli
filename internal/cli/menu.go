@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ const (
 	groupFilter        = "Filters"
 	groupService       = "mihomo service"
 	groupUpdates       = "Scheduled updates"
+	groupBackup        = "Backup"
 )
 
 const (
@@ -69,6 +71,8 @@ type menuData struct {
 	status    *setup.Status
 	subs      []subscription.Entry
 	revisions int
+	// backups 是自动备份的份数。
+	backups int
 }
 
 // runMenu 是在终端里只输入 tunlr 时的主菜单。整个菜单期间只运行一个内联的 Bubble Tea 程序（不进入
@@ -105,7 +109,11 @@ func (a *app) loadMenu(ctx context.Context) (menuData, error) {
 	if err != nil {
 		return menuData{}, err
 	}
-	return menuData{s, subs, len(revs)}, nil
+	saved, err := a.installer().SavedBackups()
+	if err != nil {
+		return menuData{}, err
+	}
+	return menuData{status: s, subs: subs, revisions: len(revs), backups: len(saved)}, nil
 }
 
 // menuModel 是主菜单的 Bubble Tea 模型。列表和添加订阅的表单都是嵌在里面的 huh 表单；
@@ -451,6 +459,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 			{label: groupFilter, group: groupFilter, note: a.describeFilterNote(s.Filter)},
 			{label: groupService, group: groupService, note: a.describeService(s)},
 			{label: groupUpdates, group: groupUpdates, note: a.describeUpdates(s.Updates)},
+			{label: groupBackup, group: groupBackup, note: a.describeBackups(d.backups)},
 			diagnose,
 			{label: menuQuit, quit: true},
 		}
@@ -482,6 +491,23 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		items = append(items,
 			menuItem{label: "Show tool settings", args: []string{"config"}},
 			menuItem{label: "Edit tool settings", args: []string{"config", "edit"}})
+	case groupBackup:
+		items = append(items,
+			menuItem{label: "List automatic backups", args: []string{"backup"}},
+			menuItem{label: "Back up to a file", args: []string{"backup", "create"}})
+		if d.backups > 0 {
+			items = append(items, menuItem{label: "Restore an automatic backup (undo a restore)", args: []string{"backup", "restore"}})
+		}
+		items = append(items, menuItem{label: "Restore from a file", ask: []inputField{{
+			title:       "Backup file",
+			description: "A file made by tunlr backup create; the diff is shown before anything changes.",
+			validate: func(s string) error {
+				if fi, err := os.Stat(s); err != nil || fi.IsDir() {
+					return errors.New("no such file")
+				}
+				return nil
+			},
+		}}, build: func(v []string) []string { return []string{"backup", "restore", v[0]} }})
 	case groupTun:
 		if s.Tun != nil && s.Tun.Switch != "off" {
 			items = append(items, menuItem{label: "Turn TUN off", args: []string{"tun", "off"}})

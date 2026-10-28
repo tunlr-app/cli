@@ -194,6 +194,25 @@ func (p *Pipeline) PlanWithSettings(ctx context.Context, set *settings.Settings)
 	return p.plan(ctx, planOptions{settings: set})
 }
 
+// Restored 是还原备份后的输入，代替设置文件、mixin.d、状态文件中的订阅、API secret、设备与过滤项。
+// 开关仍按状态文件。
+type Restored struct {
+	// Settings 是还原后的工具设置。
+	Settings *settings.Settings
+	Mixins   []config.Mixin
+	// Active 是启用的订阅，Content 是它的内容；没有启用的订阅时都为空。
+	Active    string
+	Content   []byte
+	APISecret string
+	Devices   []state.Device
+	Filter    state.Filter
+}
+
+// PlanRestore 同 Plan，但按还原备份后的样子合成，不读被代替的文件和状态。调用方在发布前写入它们。
+func (p *Pipeline) PlanRestore(ctx context.Context, r Restored) (*Plan, error) {
+	return p.plan(ctx, planOptions{restored: &r})
+}
+
 // PlanFilter 同 Plan，但按全局过滤项为 f 时的样子合成，不看状态文件中的过滤项。调用方在发布前保存它。
 func (p *Pipeline) PlanFilter(ctx context.Context, f state.Filter) (*Plan, error) {
 	return p.plan(ctx, planOptions{filter: &f})
@@ -254,6 +273,8 @@ type planOptions struct {
 	filter *state.Filter
 	// settings 不为 nil 时代替设置文件。
 	settings *settings.Settings
+	// restored 不为 nil 时代替设置文件、mixin、订阅与状态中的对应部分（见 Restored）。
+	restored *Restored
 	// composeOnly 只合成，不检查端口安全，不比较也不校验。
 	composeOnly bool
 	// noValidate 合成、检查端口安全并与生效的配置比较，但不校验（不运行 mihomo -t）。
@@ -263,6 +284,9 @@ type planOptions struct {
 func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	edited := opts.edited
 	set := opts.settings
+	if opts.restored != nil {
+		set = opts.restored.Settings
+	}
 	if set == nil {
 		var err error
 		if set, err = settings.Load(p.Layout.SettingsFile()); err != nil {
@@ -272,6 +296,9 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	st, _, err := state.LoadOrNew(p.Layout.StateFile(), p.now())
 	if err != nil {
 		return nil, err
+	}
+	if r := opts.restored; r != nil {
+		st.Active, st.APISecret, st.Devices, st.Filter = r.Active, r.APISecret, r.Devices, r.Filter
 	}
 	plan := &Plan{Kind: KindApply, Subscription: st.Active}
 
@@ -299,7 +326,9 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		sw.filter = *opts.filter
 	}
 	var sub []byte
-	if st.Active != "" {
+	if opts.restored != nil {
+		sub = opts.restored.Content
+	} else if st.Active != "" {
 		sub, err = os.ReadFile(p.Layout.SubscriptionFile(st.Active))
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("the active subscription %q has no content yet; run: tunlr sub update %s", st.Active, st.Active)
@@ -311,6 +340,9 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	mixins, err := config.LoadMixins(p.Layout.MixinDir())
 	if err != nil {
 		return nil, err
+	}
+	if opts.restored != nil {
+		mixins = opts.restored.Mixins
 	}
 	if edited != nil {
 		i, found := slices.BinarySearchFunc(mixins, edited.Name, func(m config.Mixin, name string) int {
