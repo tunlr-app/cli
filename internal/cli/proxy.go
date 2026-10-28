@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -46,7 +47,59 @@ func (a *app) newProxyCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error { return a.showProxyLAN(cmd.Context()) },
 	}
 	lan.AddCommand(a.withFullDiff(a.newProxyLANSwitchCommand(true)), a.withFullDiff(a.newProxyLANSwitchCommand(false)))
-	cmd.AddCommand(lan)
+	cmd.AddCommand(lan, a.newProxyEnvCommand())
+	return cmd
+}
+
+// proxyEnvView 是 proxy env 在 --json 输出中的形式。
+type proxyEnvView struct {
+	Variables []setup.EnvVar `json:"variables,omitempty"`
+	Unset     []string       `json:"unset,omitempty"`
+}
+
+func (a *app) newProxyEnvCommand() *cobra.Command {
+	var unset bool
+	cmd := &cobra.Command{
+		Use:   "env",
+		Short: "Print the shell commands that make programs in the current shell use the proxy port",
+		Long: "A program cannot change the environment of the shell that runs it, so this prints export\n" +
+			"statements for the shell to run:\n\n" +
+			"  eval \"$(tunlr proxy env)\"           # as root\n" +
+			"  eval \"$(sudo tunlr proxy env)\"      # as another user\n" +
+			"  eval \"$(tunlr proxy env --unset)\"   # stop using the proxy\n\n" +
+			"http_proxy and https_proxy point to the proxy port (mixed-port) as an HTTP proxy, all_proxy as\n" +
+			"SOCKS5 (socks5h: names are resolved by the proxy), each also in upper case; no_proxy keeps this\n" +
+			"server and private addresses direct. Only the current shell and the programs it starts are\n" +
+			"affected. With the transparent proxy on (tunlr tun on), this server's traffic goes through\n" +
+			"mihomo anyway.",
+		Args: usageArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if unset {
+				return a.render(proxyEnvView{Unset: setup.ProxyEnvNames}, func() error {
+					_, err := fmt.Fprintf(a.stdout, "# eval \"$(tunlr proxy env --unset)\" removes these from the current shell\nunset %s\n",
+						strings.Join(setup.ProxyEnvNames, " "))
+					return err
+				})
+			}
+			vars, err := a.installer().ProxyEnv()
+			if errors.Is(err, setup.ErrConfigUnreadable) {
+				return fmt.Errorf("%w (it holds node passwords); run: eval \"$(sudo tunlr proxy env)\"", err)
+			}
+			if err != nil {
+				return err
+			}
+			return a.render(proxyEnvView{Variables: vars}, func() error {
+				var b strings.Builder
+				b.WriteString("# eval \"$(tunlr proxy env)\" sets these in the current shell; --unset removes them\n")
+				for _, v := range vars {
+					fmt.Fprintf(&b, "export %s='%s'\n", v.Name, v.Value)
+				}
+				_, err := io.WriteString(a.stdout, b.String())
+				return err
+			})
+		},
+	}
+	cmd.Flags().BoolVar(&unset, "unset", false, "print the command that removes the variables instead")
 	return cmd
 }
 
