@@ -121,7 +121,50 @@ func TestNetworkUnreachable(t *testing.T) {
 			t.Errorf("%s = %s, want %s: %s", id, got[id].Status, want, got[id].Message)
 		}
 	}
-	if !strings.Contains(got["network.proxy"].Message, "HTTP 502") {
-		t.Errorf("proxy: %q", got["network.proxy"].Message)
+	if c := got["network.proxy"]; !strings.Contains(c.Message, "mihomo answered HTTP 502: the selected proxy could not reach the site") ||
+		c.Hint != selectedProxyHint {
+		t.Errorf("proxy: %+v", c)
+	}
+}
+
+// 内核连不上节点时直接断开 CONNECT，Go 报告 EOF（tunlr-dev 上实际遇到的情况）。
+func TestNetworkProxyClosed(t *testing.T) {
+	gh := githubAt(t, netNow)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			conn.Close()
+		}
+	}))
+	defer proxy.Close()
+	addr := strings.TrimPrefix(proxy.URL, "http://")
+	c := networkStatuses(t, NetworkOptions{APIBase: gh.URL, Proxy: addr, ProbeURL: "https://probe.test/generate_204"})["network.proxy"]
+	want := "mihomo closed the connection: the selected proxy did not respond (https://probe.test/generate_204 via " + addr + ")"
+	if c.Status != Warn || c.Message != want || c.Hint != selectedProxyHint {
+		t.Errorf("proxy = %+v", c)
+	}
+
+	// mixed-port 上没有程序在监听。
+	proxy.Close()
+	c = networkStatuses(t, NetworkOptions{APIBase: gh.URL, Proxy: addr, ProbeURL: "http://probe.test/"})["network.proxy"]
+	if !strings.HasPrefix(c.Message, "cannot connect to mihomo's mixed-port "+addr) || !strings.Contains(c.Hint, "tunlr restart") {
+		t.Errorf("refused: %+v", c)
+	}
+}
+
+func TestDescribeProxyFailure(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		status int
+		want   string
+	}{
+		{context.DeadlineExceeded, 0, "no answer within 8s: the selected proxy is down or very slow"},
+		{errors.New("proxyconnect tcp: tls handshake failure"), 0, "the request through mihomo failed: proxyconnect tcp: tls handshake failure"},
+		{nil, http.StatusGatewayTimeout, "mihomo answered HTTP 504: the selected proxy could not reach the site"},
+		{nil, http.StatusForbidden, "the site answered HTTP 403 through mihomo"},
+	} {
+		if msg, hint := describeProxyFailure("127.0.0.1:7890", tc.err, tc.status); msg != tc.want || hint == "" {
+			t.Errorf("%v/%d: %q, hint %q", tc.err, tc.status, msg, hint)
+		}
 	}
 }

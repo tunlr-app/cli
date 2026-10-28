@@ -3,11 +3,14 @@ package doctor
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -148,19 +151,42 @@ func Network(ctx context.Context, opts NetworkOptions) []Check {
 		c.Add("clock", OK, "Clock", fmt.Sprintf("off by %s", skew.Round(time.Second)), "")
 	}
 
+	probe := cmp.Or(opts.ProbeURL, ProbeURL)
 	switch {
 	case opts.Proxy == "":
 		c.Add("proxy", Skip, "Through mihomo", cmp.Or(opts.ProxySkip, "mihomo is not running"), "")
-	case proxyErr != nil:
-		c.Add("proxy", Warn, "Through mihomo", fmt.Sprintf("%s via %s: %v", cmp.Or(opts.ProbeURL, ProbeURL), opts.Proxy, proxyErr),
-			"check the selected proxy in the panel")
-	case proxyStatus >= 400:
-		c.Add("proxy", Warn, "Through mihomo", fmt.Sprintf("%s via %s: HTTP %d", cmp.Or(opts.ProbeURL, ProbeURL), opts.Proxy, proxyStatus),
-			"check the selected proxy in the panel")
+	case proxyErr != nil || proxyStatus >= 400:
+		msg, hint := describeProxyFailure(opts.Proxy, proxyErr, proxyStatus)
+		c.Add("proxy", Warn, "Through mihomo", fmt.Sprintf("%s (%s via %s)", msg, probe, opts.Proxy), hint)
 	default:
-		c.Add("proxy", OK, "Through mihomo", fmt.Sprintf("%s via %s: HTTP %d", cmp.Or(opts.ProbeURL, ProbeURL), opts.Proxy, proxyStatus), "")
+		c.Add("proxy", OK, "Through mihomo", fmt.Sprintf("%s via %s: HTTP %d", probe, opts.Proxy, proxyStatus), "")
 	}
 	return c.List
+}
+
+// selectedProxyHint 是经内核访问失败、而原因在节点一侧时的修复建议。
+const selectedProxyHint = "test the latency in the panel and select a working proxy; an auto-select (url-test) group " +
+	"keeps a dead proxy until its next test"
+
+// describeProxyFailure 把经内核代理访问失败的原因说成人话：Go 报告的 EOF、超时、502 等，
+// 实际都是内核连不上所选的节点（或节点连不上目标）。
+func describeProxyFailure(proxy string, err error, status int) (msg, hint string) {
+	var ne net.Error
+	var op *net.OpError
+	switch {
+	case err == nil && (status == http.StatusBadGateway || status == http.StatusGatewayTimeout || status == http.StatusServiceUnavailable):
+		return fmt.Sprintf("mihomo answered HTTP %d: the selected proxy could not reach the site", status), selectedProxyHint
+	case err == nil:
+		return fmt.Sprintf("the site answered HTTP %d through mihomo", status), "a rule may send it to a proxy that the site blocks; check the connection in the panel"
+	case errors.As(err, &op) && op.Op == "proxyconnect":
+		// 连不上 mixed-port 本身（Go 把连接代理的错误标为 proxyconnect）。
+		return "cannot connect to mihomo's mixed-port " + proxy, "check tunlr status and tunlr logs; tunlr restart"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, syscall.ECONNRESET):
+		return "mihomo closed the connection: the selected proxy did not respond", selectedProxyHint
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &ne) && ne.Timeout():
+		return fmt.Sprintf("no answer within %s: the selected proxy is down or very slow", probeTimeout), selectedProxyHint
+	}
+	return "the request through mihomo failed: " + err.Error(), selectedProxyHint
 }
 
 // get 在 probeTimeout 内发出 GET 请求，只读响应头。
