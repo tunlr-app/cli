@@ -351,7 +351,7 @@ func TestMenuItems(t *testing.T) {
 	for group, want := range map[string]string{
 		"":                 "tunlr: Show status|Panel|Proxy port|Subscriptions|Configuration|Transparent proxy|LAN devices|Filters|mihomo service|Scheduled updates|Run diagnostics|Quit",
 		groupDevices:       "tunlr › LAN devices: List devices|List all devices on the LAN|Name a device|Forget a device|← Back",
-		groupFilter:        "tunlr › Filters: Show filters|Set a device to go through proxies or directly|Block QUIC (browsers use TCP)|Proxy only common ports (others go direct)|Change the proxied ports|← Back",
+		groupFilter:        "tunlr › Filters: Show filters|Set a device to go through proxies or directly|Send a network direct|Block QUIC (browsers use TCP)|Proxy only common ports (others go direct)|Change the proxied ports|← Back",
 		groupPanel:         "tunlr › Panel: Show how to open it|Let LAN devices open it|Replace the API secret|← Back",
 		groupProxy:         "tunlr › Proxy port: Show the proxy address|Let LAN devices use it (HTTP/SOCKS5 proxy)|← Back",
 		groupUpdates:       "tunlr › Scheduled updates: Show the schedule|Change the geo data update|Update everything now|← Back",

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -30,6 +29,7 @@ func (a *app) newFilterCommand() *cobra.Command {
 		Short: "Show and set which traffic skips the subscription's rules (devices, QUIC, ports)",
 		Long: "Filters are rules placed before all others (the managed mixin tunlr:filter), in this order:\n" +
 			"  device   a LAN device set to direct goes direct for everything, unaffected by the rest\n" +
+			"  source   so does traffic from an address range (e.g. a Docker network, a VPN subnet)\n" +
 			"  quic     UDP port 443 is rejected, so browsers use TCP instead of QUIC (which many proxies\n" +
 			"           carry poorly); sites that go direct fall back to TCP too\n" +
 			"  ports    only connections to common ports are proxied; others (BT, P2P, games) go direct\n" +
@@ -52,7 +52,7 @@ func (a *app) newFilterCommand() *cobra.Command {
 	}
 	ports.AddCommand(a.withFullDiff(a.newFilterPortsCommand(true)), a.withFullDiff(a.newFilterPortsCommand(false)),
 		a.withFullDiff(a.newFilterPortsSetCommand()))
-	cmd.AddCommand(a.withFullDiff(a.newFilterDeviceCommand()), quic, ports)
+	cmd.AddCommand(a.withFullDiff(a.newFilterDeviceCommand()), a.newFilterSourceCommand(), quic, ports)
 	return cmd
 }
 
@@ -74,6 +74,11 @@ func (a *app) showFilter() error {
 				}
 			}
 			fmt.Fprintf(w, "Direct devices:  %s (tunlr filter device <device> proxy)\n", a.style.warn(strings.Join(names, ", ")))
+		}
+		if len(s.Sources) == 0 {
+			fmt.Fprintf(w, "Direct sources:  %s (tunlr filter source add <network>)\n", a.style.dim("none"))
+		} else {
+			fmt.Fprintf(w, "Direct sources:  %s (tunlr filter source remove <network>)\n", a.style.warn(strings.Join(s.Sources, ", ")))
 		}
 		if s.QUIC {
 			fmt.Fprintf(w, "QUIC:            %s (tunlr filter quic off)\n", a.style.good("blocked, browsers use TCP"))
@@ -106,6 +111,13 @@ func (a *app) describeFilter(s *setup.FilterStatus) string {
 		parts = append(parts, "1 device direct")
 	default:
 		parts = append(parts, fmt.Sprintf("%d devices direct", n))
+	}
+	switch n := len(s.Sources); n {
+	case 0:
+	case 1:
+		parts = append(parts, "1 source direct")
+	default:
+		parts = append(parts, fmt.Sprintf("%d sources direct", n))
 	}
 	if s.QUIC {
 		parts = append(parts, "QUIC blocked")
@@ -172,6 +184,103 @@ func (a *app) newFilterDeviceCommand() *cobra.Command {
 	}
 }
 
+func (a *app) newFilterSourceCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "source",
+		Short: "List the address ranges whose traffic goes direct; add or remove them",
+		Long: "Traffic whose source is in a listed range goes direct for everything, e.g. a Docker network\n" +
+			"(docker network inspect shows its subnet; containers with network_mode: host count as this\n" +
+			"server) or a VPN subnet. A range is a network address with its prefix length, such as\n" +
+			"172.17.0.0/16, or a single address.",
+		Args: usageArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := a.installer().Filter()
+			if err != nil {
+				return err
+			}
+			return a.render(s.Sources, func() error {
+				if len(s.Sources) == 0 {
+					_, err := fmt.Fprintln(a.stdout, "No address range goes direct (tunlr filter source add <network>).")
+					return err
+				}
+				for _, p := range s.Sources {
+					fmt.Fprintln(a.stdout, p)
+				}
+				_, err := fmt.Fprintln(a.stdout, "\n(tunlr filter source remove <network> lets one follow the rules again)")
+				return err
+			})
+		},
+	}
+	add := &cobra.Command{
+		Use:   "add [network]",
+		Short: "Send all traffic from an address range direct",
+		Long:  "The configuration is published after the diff is confirmed.",
+		Args:  usageArgs(cobra.MaximumNArgs(1)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			var network string
+			if len(args) == 1 {
+				network = args[0]
+			} else {
+				if !a.interactive() {
+					return usageErrorf("filter source add needs the network (e.g. 172.17.0.0/16)")
+				}
+				var err error
+				network, err = a.prompt.Input(ctx, "Network", "A network address with its prefix length, such as 172.17.0.0/16, or a single address.",
+					func(s string) error {
+						_, err := pipeline.ParseSource(s)
+						return err
+					})
+				if stop, err := a.cancelled(err); stop {
+					return err
+				}
+			}
+			p, err := pipeline.ParseSource(network)
+			if err != nil {
+				return usageErrorf("%v", err)
+			}
+			return a.editFilter(ctx, "filter source add", setup.FilterEdit{AddSource: p}, "Publish the configuration with this rule?",
+				fmt.Sprintf("Traffic from %s now goes direct for everything.", p))
+		},
+	}
+	remove := &cobra.Command{
+		Use:   "remove [network]",
+		Short: "Let traffic from an address range follow the rules again",
+		Long:  "The configuration is published after the diff is confirmed.",
+		Args:  usageArgs(cobra.MaximumNArgs(1)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			var network string
+			if len(args) == 1 {
+				network = args[0]
+			} else {
+				if !a.interactive() {
+					return usageErrorf("filter source remove needs the network")
+				}
+				s, err := a.installer().Filter()
+				if err != nil {
+					return err
+				}
+				if len(s.Sources) == 0 {
+					return usageErrorf("no address range goes direct")
+				}
+				k, err := a.prompt.Choose(ctx, "Which range?", s.Sources, 0)
+				if stop, err := a.cancelled(err); stop {
+					return err
+				}
+				network = s.Sources[k]
+			}
+			p, err := pipeline.ParseSource(network)
+			if err != nil {
+				return usageErrorf("%v", err)
+			}
+			return a.editFilter(ctx, "filter source remove", setup.FilterEdit{RemoveSource: p}, "Publish the configuration without this rule?",
+				fmt.Sprintf("Traffic from %s follows the rules again.", p))
+		},
+	}
+	cmd.AddCommand(a.withFullDiff(add), a.withFullDiff(remove))
+	return cmd
+}
 func (a *app) newFilterQUICCommand(on bool) *cobra.Command {
 	use, short := "off", "Allow QUIC again"
 	if on {
@@ -268,7 +377,7 @@ func (a *app) editFilter(ctx context.Context, command string, edit setup.FilterE
 		return err
 	}
 	v := filterEditView{Filter: after}
-	if sameFilter(before, after) && !plan.Changed() {
+	if setup.SameFilter(before, after) && !plan.Changed() {
 		return a.render(v, func() error {
 			_, err := fmt.Fprintln(a.stdout, "Already so; nothing to change.")
 			return err
@@ -334,8 +443,4 @@ func (a *app) editFilter(ctx context.Context, command string, edit setup.FilterE
 		}
 		return nil
 	})
-}
-
-func sameFilter(a, b state.Filter) bool {
-	return a.QUIC == b.QUIC && a.Ports == b.Ports && slices.Equal(a.PortList, b.PortList)
 }

@@ -5,6 +5,7 @@ install-mihomo
 exec tunlr apply --yes
 exec tunlr filter
 stdout 'Direct devices:\s+none'
+stdout 'Direct sources:\s+none'
 stdout 'QUIC:\s+allowed'
 stdout 'Ports:\s+all proxied'
 stdout 'when on: 22,80,143,194,443,465,587,853,993,995,5222,8080,8443 \(default; tunlr filter ports set\)'
@@ -20,6 +21,32 @@ exitcode 2 tunlr filter ports set 80,70000
 stderr '"70000" is not a port'
 exitcode 2 tunlr filter ports set 9000-8000
 stderr 'the port range 9000-8000 is reversed'
+exitcode 2 tunlr filter source add
+stderr 'filter source add needs the network'
+exitcode 2 tunlr filter source add 0.0.0.0/0 --yes
+stderr 'covers every address'
+exitcode 2 tunlr filter source add 172.17.0.9/16 --yes
+stderr '172.17.0.9/16 is not a network address: use 172.17.0.0/16 for the whole network, or 172.17.0.9 for this address only'
+exitcode 2 tunlr filter source remove 172.17.0.0/16 --yes
+stderr '172.17.0.0/16 is not in the list of direct sources'
+exitcode 2 tunlr filter source add docker0 --yes
+stderr '"docker0" is not an address or a network'
+
+# 来源地址段直连
+exec tunlr filter source
+stdout 'No address range goes direct'
+exec tunlr filter source add 172.17.0.0/16 --yes
+stdout '^\+  - SRC-IP-CIDR,172\.17\.0\.0/16,DIRECT$'
+stdout 'Traffic from 172.17.0.0/16 now goes direct for everything'
+grep '^  - SRC-IP-CIDR,172.17.0.0/16,DIRECT$' root/var/lib/tunlr/core/config.yaml
+exec tunlr filter source add 172.17.0.0/16 --yes
+stdout 'Already so'
+exec tunlr filter source
+stdout '^172\.17\.0\.0/16$'
+exec tunlr filter
+stdout 'Direct sources:\s+172\.17\.0\.0/16'
+exec tunlr status
+stdout 'Filters:\s+1 source direct'
 
 # 拒绝 QUIC：受管 mixin tunlr:filter 在规则最前插入，经 diff 发布
 exec tunlr filter quic on --dry-run
@@ -43,7 +70,7 @@ exec tunlr filter ports on --yes
 stdout '^\+  - NOT,\(\(DST-PORT,443/80/8000-9000\)\),DIRECT$'
 grep '^  - NOT,\(\(DST-PORT,443/80/8000-9000\)\),DIRECT$' root/var/lib/tunlr/core/config.yaml
 exec tunlr status
-stdout 'Filters:\s+QUIC blocked · common ports only'
+stdout 'Filters:\s+1 source direct · QUIC blocked · common ports only'
 exec tunlr filter ports set default --yes
 stdout '^\+  - NOT,\(\(DST-PORT,22/80/143/194/443/465/587/853/993/995/5222/8080/8443\)\),DIRECT$'
 exec tunlr filter --json
@@ -51,6 +78,9 @@ stdout '"default_ports": true'
 ! grep '"port_list"' root/var/lib/tunlr/state.json
 
 # 都关闭后受管 mixin 不再出现
+exec tunlr filter source remove 172.17.0.0/16 --yes
+stdout '^-  - SRC-IP-CIDR,172\.17\.0\.0/16,DIRECT$'
+stdout 'Traffic from 172.17.0.0/16 follows the rules again'
 exec tunlr filter quic off --yes
 stdout 'QUIC is allowed again'
 exec tunlr filter ports off --yes

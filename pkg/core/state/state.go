@@ -141,6 +141,8 @@ func (s *State) DirectIPs() []string {
 
 // Filter 是全局过滤项（DESIGN.md 9 第 3 条）。
 type Filter struct {
+	// Sources 是全部直连的来源地址段（如 "172.17.0.0/16"），按添加的顺序。
+	Sources []string `json:"sources,omitempty"`
 	// QUIC 拒绝 UDP 443 的连接，让浏览器改用 TCP。
 	QUIC bool `json:"quic,omitempty"`
 	// Ports 开启时目标端口不在 PortList 中的连接直连。

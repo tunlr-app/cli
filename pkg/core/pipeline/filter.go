@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,6 +53,27 @@ func parsePort(s string) (int, error) {
 	return n, nil
 }
 
+// ParseSource 解析来源地址段：CIDR（如 172.17.0.0/16），或单个地址（记为 /32、/128）。主机位不为零的
+// CIDR（如 172.17.0.9/16）有歧义（整个网段，还是只有这个地址），不接受，错误中给出两种写法。也不接受
+// 整个地址空间（/0）。
+func ParseSource(s string) (string, error) {
+	p, err := netip.ParsePrefix(s)
+	if err != nil {
+		a, aerr := netip.ParseAddr(s)
+		if aerr != nil || a.Zone() != "" {
+			return "", fmt.Errorf("%q is not an address or a network like 172.17.0.0/16", s)
+		}
+		p = netip.PrefixFrom(a, a.BitLen())
+	}
+	if m := p.Masked(); m != p {
+		return "", fmt.Errorf("%s is not a network address: use %s for the whole network, or %s for this address only", s, m, p.Addr())
+	}
+	if p.Bits() == 0 {
+		return "", fmt.Errorf("%s covers every address; turn the transparent proxy off instead", p)
+	}
+	return p.String(), nil
+}
+
 // PortsOf 返回只代理的端口：f 中保存的列表，没有时为默认的列表。
 func PortsOf(f state.Filter) []string {
 	if len(f.PortList) > 0 {
@@ -60,12 +82,15 @@ func PortsOf(f state.Filter) []string {
 	return DefaultPorts
 }
 
-// filterRules 生成受管 mixin tunlr:filter 插在规则最前的规则：设为直连的设备在前，不受其他过滤项影响；
-// 再拒绝 QUIC（排在端口之前，端口列表不含 443 时 QUIC 仍被拒绝）；最后让其他端口直连。
+// filterRules 生成受管 mixin tunlr:filter 插在规则最前的规则：设为直连的设备和来源地址段在前，不受其他
+// 过滤项影响；再拒绝 QUIC（排在端口之前，端口列表不含 443 时 QUIC 仍被拒绝）；最后让其他端口直连。
 func filterRules(sw switches) []string {
 	var rules []string
 	for _, ip := range sw.direct {
 		rules = append(rules, "SRC-IP-CIDR,"+ip+"/32,DIRECT")
+	}
+	for _, p := range sw.filter.Sources {
+		rules = append(rules, "SRC-IP-CIDR,"+p+",DIRECT")
 	}
 	if sw.filter.QUIC {
 		rules = append(rules, "AND,((NETWORK,UDP),(DST-PORT,443)),REJECT")

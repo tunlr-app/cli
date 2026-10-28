@@ -517,7 +517,8 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 	case groupFilter:
 		items = append(items,
 			menuItem{label: "Show filters", args: []string{"filter"}},
-			menuItem{label: "Set a device to go through proxies or directly", args: []string{"filter", "device"}})
+			menuItem{label: "Set a device to go through proxies or directly", args: []string{"filter", "device"}},
+			menuItem{label: "Send a network direct", args: []string{"filter", "source", "add"}})
 		if s.Filter != nil && s.Filter.QUIC {
 			items = append(items, menuItem{label: "Allow QUIC again", args: []string{"filter", "quic", "off"}})
 		} else {
@@ -529,6 +530,9 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 			items = append(items, menuItem{label: "Proxy only common ports (others go direct)", args: []string{"filter", "ports", "on"}})
 		}
 		items = append(items, menuItem{label: "Change the proxied ports", args: []string{"filter", "ports", "set"}})
+		if s.Filter != nil && len(s.Filter.Sources) > 0 {
+			items = append(items, menuItem{label: "Stop sending a network direct", args: []string{"filter", "source", "remove"}})
+		}
 	case groupService:
 		if s.Service != nil && s.Service.Active() {
 			items = append(items,

@@ -24,13 +24,34 @@ func TestParsePorts(t *testing.T) {
 	}
 }
 
+func TestParseSource(t *testing.T) {
+	for in, want := range map[string]string{
+		"172.17.0.0/16": "172.17.0.0/16", "192.168.1.5": "192.168.1.5/32", "fd00::/64": "fd00::/64", "fd00::1": "fd00::1/128",
+	} {
+		if got, err := ParseSource(in); err != nil || got != want {
+			t.Errorf("%q: %q %v", in, got, err)
+		}
+	}
+	for _, in := range []string{"", "0.0.0.0/0", "::/0", "10.0.0.0/33", "nope", "fe80::1%eth0", "fd00::1/64"} {
+		if got, err := ParseSource(in); err == nil {
+			t.Errorf("%q accepted: %q", in, got)
+		}
+	}
+	// 主机位不为零：给出两种写法。
+	_, err := ParseSource("172.17.0.9/16")
+	if want := "172.17.0.9/16 is not a network address: use 172.17.0.0/16 for the whole network, or 172.17.0.9 for this address only"; err == nil || err.Error() != want {
+		t.Errorf("host bits: %v", err)
+	}
+}
+
 func TestFilterRules(t *testing.T) {
 	if rules := filterRules(switches{}); rules != nil {
 		t.Fatalf("no filters: %v", rules)
 	}
 	// 直连的设备在前，不受其他过滤项影响；QUIC 在端口之前。
-	sw := switches{direct: []string{"192.168.1.9"}, filter: state.Filter{QUIC: true, Ports: true, PortList: []string{"80", "8000-9000"}}}
-	want := []string{"SRC-IP-CIDR,192.168.1.9/32,DIRECT", "AND,((NETWORK,UDP),(DST-PORT,443)),REJECT", "NOT,((DST-PORT,80/8000-9000)),DIRECT"}
+	sw := switches{direct: []string{"192.168.1.9"}, filter: state.Filter{Sources: []string{"172.17.0.0/16"}, QUIC: true, Ports: true, PortList: []string{"80", "8000-9000"}}}
+	want := []string{"SRC-IP-CIDR,192.168.1.9/32,DIRECT", "SRC-IP-CIDR,172.17.0.0/16,DIRECT",
+		"AND,((NETWORK,UDP),(DST-PORT,443)),REJECT", "NOT,((DST-PORT,80/8000-9000)),DIRECT"}
 	if got := filterRules(sw); !slices.Equal(got, want) {
 		t.Fatalf("rules = %q", got)
 	}
