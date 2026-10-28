@@ -69,6 +69,19 @@ exec tunlr update show
 stdout '^geo \(by mihomo\)\s+every 2 days \(2d\)\s+never\s+mihomo$'
 exec tunlr status
 stdout '^\s+geo every 2 days by mihomo, not run yet$'
+! stdout 'not published|outside tunlr|cannot compose'
+
+# status 报告漂移：mixin 改了还没发布
+mkdir root/etc/tunlr/mixin.d
+cp log.yaml root/etc/tunlr/mixin.d/10-log.yaml
+exec tunlr status
+stdout '^\s+changes not published in log-level \(tunlr plan shows them\)$'
+exec tunlr status --json
+stdout '"state": "pending"'
+stdout '"log-level"'
+rm root/etc/tunlr/mixin.d/10-log.yaml
+exec tunlr status
+! stdout 'not published'
 
 # 换回 tunlr 同样要发布
 exec tunlr update set geo --by default --yes
@@ -96,6 +109,8 @@ stderr 'does not support --dry-run'
 exec tunlr _update
 ! stdout .
 
+-- log.yaml --
+log-level: warning
 -- airport.yaml --
 proxies:
   - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}

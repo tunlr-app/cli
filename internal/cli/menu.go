@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
 
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/setup"
 	"github.com/tunlr-app/cli/pkg/core/state"
@@ -554,10 +555,21 @@ func (a *app) describeSubscriptions(s *setup.Status, subs []subscription.Entry) 
 }
 
 func (a *app) describeRevision(s *setup.Status) string {
+	var note string
+	if d := s.Drift; d != nil {
+		switch d.State {
+		case pipeline.DriftPending:
+			note = " " + a.style.warn("(unpublished changes)")
+		case pipeline.DriftError:
+			note = " " + a.style.bad("(cannot compose)")
+		case pipeline.DriftEdited:
+			return a.style.warn("edited outside tunlr")
+		}
+	}
 	if s.Revision == nil {
 		return a.style.warn("not published")
 	}
-	return fmt.Sprintf("revision %d", s.Revision.Number)
+	return fmt.Sprintf("revision %d", s.Revision.Number) + note
 }
 
 // describeUpdates 是定时更新分类右侧的状态，如 "2 subscriptions · geo weekly by tunlr"；最近一次

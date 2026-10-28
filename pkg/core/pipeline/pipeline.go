@@ -228,6 +228,8 @@ type planOptions struct {
 	proxyLAN *bool
 	// composeOnly 只合成，不检查端口安全，不比较也不校验。
 	composeOnly bool
+	// noValidate 合成、检查端口安全并与生效的配置比较，但不校验（不运行 mihomo -t）。
+	noValidate bool
 }
 
 func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
@@ -302,6 +304,15 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	}
 	plan.Config, plan.Dropped, plan.facts = res.Config, res.Dropped, res.Facts
 	plan.Warnings, plan.Overrides = res.Warnings, res.Overrides
+	if opts.noValidate {
+		if plan.Current, err = p.readCurrent(); err != nil {
+			return nil, err
+		}
+		if plan.Current != nil && plan.Changed() {
+			plan.Diff, plan.DiffSections = config.Diff("current", "new", plan.Current, plan.Config)
+		}
+		return plan, nil
+	}
 	if err := p.finish(ctx, plan); err != nil {
 		return nil, err
 	}

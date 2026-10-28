@@ -694,6 +694,8 @@ tunlr version
   - 选“只给本机用”时，结果的最后提示 `tunlr tun on`、`tunlr proxy lan on`、`tunlr gateway on`。
 - `start`、`stop`、`restart`：执行 `systemctl`，`start`、`restart` 之后做健康检查。`logs` 执行 `journalctl -u tunlr-core.service`，透传 `-f`、`-n`。
 - `status`：服务状态、运行中的内核版本、已知可用版本、启用的订阅、最近一次发布、下次定时更新的时间。
+  - 漂移（`pipeline.Drift`）：现场合成一次配置（不跑 `mihomo -t`）与生效的配置比较，报告四种情况：一致（不显示）；有尚未发布的改动（订阅更新、mixin 或设置改了、升级 tunlr 后模板变了、回滚到了旧修订），列出有变化的顶层键，提示 `tunlr plan`；生效的配置与所有历史修订都不同，即在 tunlr 之外被改过，提示 `tunlr apply` 会覆盖；无法合成（mixin 有错、端口安全检查不通过等），给出原因的第一行。还没有发布过时不报告。`--json` 中为 `drift`（`state`、`sections`、`error`），主菜单的状态行在修订号后提示。
+  - 合成要解析整份订阅，主菜单每 10 秒刷新一次状态，所以按输入（状态、设置、订阅、mixin、生效的配置和历史）的大小和修改时间算出指纹（`DriftKey`），不变时沿用上次的结果。在 tunlr-dev 上 `status` 总耗时约 0.25 秒。
 - `uninstall`：停止并禁用、删除 unit，删除 `bin/`、`core/`、`kernels/` 和用户 `tunlr`；保留 `/etc/tunlr`、订阅、历史、状态文件和 `/usr/local/bin/tunlr`（之后可以直接 `tunlr init` 恢复），`--purge` 才一并删除。需要确认（`--yes`）。
 - `sub use [名称]`：交互模式下询问是否立即发布，`--apply` 直接发布（同 `apply`，非交互时需配合 `--yes`）。
 
@@ -835,7 +837,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 其余功能在此之后按需求排期。
 
-进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）、面板（`tunlr panel`，含局域网访问）、受管 mixin（第 6 节），以及家庭网络的用法：代理端口的局域网访问（`tunlr proxy lan`）和 `init` 的用途问题（第 10 节）。
+进度（2026-10-28）：1～5 已完成；此外完成了主菜单、执行前确认、定时任务治理（第 7 节）、面板（`tunlr panel`，含局域网访问）、受管 mixin（第 6 节），以及家庭网络的用法：代理端口的局域网访问（`tunlr proxy lan`）和 `init` 的用途问题（第 10 节），`status` 的漂移（第 10 节）。
 
 ### 13.1 待实现（按顺序）
 
@@ -843,7 +845,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 | 顺序 | 项目 | 出处 | 设计 | 要点 |
 |---|---|---|---|---|
-| 1 | `status` 的漂移 | 5.3、第 10 节 | 草案 | 现场合成一次（不跑 `mihomo -t`）与生效配置比较：最新 / 有待发布的改动（订阅更新、mixin 改了、模板变了）/ 生效配置被手改（与最新修订不同）/ 合成出错。`--json` 加 `drift`，主菜单状态行提示 |
+| 1 | ~~`status` 的漂移~~ | 第 10 节 | 已完成 | 见第 10 节 `status` |
 | 2 | 局域网设备的列表与分流 | 8.12 | 已定 | `tunlr devices`：nft 动态集合记录经网关、用代理端口的设备；逐台设置 `proxy` 或 `direct`（受管 mixin）。实现前确认 mihomo 是否有按来源 MAC 的规则 |
 | 3 | 全局过滤项 | 第 9 节 3 | 待补全 | `tunlr filter`：屏蔽 QUIC、只代理常用端口、目标地址不进 TUN（`route-exclude-address`）、容器流量；由命令生成受管 mixin，用户只填参数。容器一项先在 tunlr-dev 上实测 |
 | 4 | 代理变量 | 第 10 节 | 草案，待确认 | 不做 `shell-init`、`env on/off`（要先在 shell 配置中装函数，服务器上有 `tun on` 已覆盖本机流量），改为 `tunlr proxy env [--unset]` 输出 `export` 语句，用法 `eval "$(tunlr proxy env)"`；端口取自生效配置 |

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"sync"
 
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
@@ -33,6 +35,36 @@ type Status struct {
 	PanelLAN bool `json:"panel_lan"`
 	// ProxyLAN 是代理端口的局域网访问开关。
 	ProxyLAN bool `json:"proxy_lan"`
+	// Drift 是生效的配置与现在发布会得到的配置是否一致，没有发布过时为 nil。
+	Drift *pipeline.Drift `json:"drift,omitempty"`
+}
+
+// driftCache 缓存最近一次计算的漂移：合成一次配置要解析整份订阅，主菜单每 10 秒刷新一次状态，
+// 输入没有变化（见 pipeline.DriftKey）时不重新合成。
+var driftCache struct {
+	sync.Mutex
+	key   string
+	drift *pipeline.Drift
+}
+
+// drift 返回漂移，输入没有变化时用缓存的结果。
+func (i *Installer) drift(ctx context.Context) (*pipeline.Drift, error) {
+	p := i.pipeline(nil)
+	key, err := p.DriftKey()
+	if err != nil {
+		return nil, err
+	}
+	driftCache.Lock()
+	defer driftCache.Unlock()
+	if key == driftCache.key {
+		return driftCache.drift, nil
+	}
+	d, err := p.Drift(ctx)
+	if err != nil {
+		return nil, err
+	}
+	driftCache.key, driftCache.drift = key, d
+	return d, nil
 }
 
 // Status 返回当前状态。
@@ -74,6 +106,9 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	if s.Tun, err = i.TunStatus(ctx); err != nil {
+		return nil, err
+	}
+	if s.Drift, err = i.drift(ctx); err != nil {
 		return nil, err
 	}
 	return s, nil

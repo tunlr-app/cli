@@ -10,6 +10,7 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/setup"
@@ -384,6 +385,15 @@ func (a *app) newStartCommand() *cobra.Command {
 	}
 }
 
+// sectionList 列出有变化的顶层键，太多时只列前几个。
+func sectionList(keys []string) string {
+	const max = 4
+	if len(keys) > max {
+		return strings.Join(keys[:max], ", ") + fmt.Sprintf(" and %d more", len(keys)-max)
+	}
+	return strings.Join(keys, ", ")
+}
+
 // bullets 把每项写成一行，用作确认问题下的说明。
 func bullets(items []string) string {
 	return "• " + strings.Join(items, "\n• ")
@@ -556,6 +566,17 @@ func (a *app) printStatus(s *setup.Status) {
 	}
 	if s.Revision != nil {
 		fmt.Fprintf(w, "Configuration: revision %d, published %s\n", s.Revision.Number, s.Revision.CreatedAt.Local().Format(time.DateTime))
+	}
+	if d := s.Drift; d != nil {
+		switch d.State {
+		case pipeline.DriftPending:
+			fmt.Fprintf(w, "               %s in %s (tunlr plan shows them)\n", a.style.warn("changes not published"), sectionList(d.Sections))
+		case pipeline.DriftEdited:
+			fmt.Fprintf(w, "Configuration: %s in %s (tunlr apply overwrites it)\n", a.style.warn("edited outside tunlr"), sectionList(d.Sections))
+		case pipeline.DriftError:
+			msg, _, _ := strings.Cut(d.Error, "\n")
+			fmt.Fprintf(w, "               %s: %s (details: tunlr plan)\n", a.style.bad("cannot compose a new one"), msg)
+		}
 	}
 	for i, u := range s.Updates {
 		label := "Updates:"
