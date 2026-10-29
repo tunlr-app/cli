@@ -754,13 +754,16 @@ tunlr filter device <设备> proxy|direct   设置设备的走法（经 diff 确
 tunlr filter source                       列出直连的来源地址段
 tunlr filter source add|remove <网段>     加入、去掉直连的来源地址段（经 diff 确认后发布）
 tunlr filter quic on|off                  拒绝 QUIC
-tunlr filter ports on|off                 只代理常用端口
+tunlr filter ports on [<端口>|default]    只代理部分端口（默认是常用端口），其余直连
+tunlr filter ports off                    恢复代理全部端口（列表保留）
 tunlr filter ports set <端口>|default     更改只代理的端口
 ```
 
 - 地址段写成网络地址加前缀长度（`172.17.0.0/16`）或单个地址（记为 `/32`、`/128`）。主机位不为零的（`172.17.0.9/16`）有歧义：可能想要整个网段，也可能只想要这个地址而多写了前缀，悄悄清零会让整个网段直连，所以拒绝，并给出两种写法。不接受 `/0`。
 - 地址段只有“在名单中”一个状态，所以用 `add`、`remove` 增删（同 `sub add/remove`）；设备有自己的记录（名称、MAC），走法是它的属性，所以用 `device <设备> proxy|direct` 设置。
 - 交互模式下省略设备、网段、走法、端口时询问（`source remove` 从名单中选）；非交互时缺少参数以退出码 2 报错。配置不变时（关闭时改端口列表）直接保存，不需要确认。
+- `ports on` 带端口时开启和改列表一次发布，只确认一次 diff；不带端口时交互模式下询问，输入框预先填好保存的列表（直接回车即沿用），非交互时用保存的列表。`ports set` 询问时同样预先填好。
+- 菜单中端口只占一项（2026-10-29 讨论后改定）：关闭时是“只代理部分端口”（即 `ports on`，先问列表）；开启时是“改端口或恢复全部”，再选 `set` 或 `off`。原先“开启/关闭”与“改端口”并列两项，而关闭时改端口不生效，容易误解。
 - 主菜单新增分类“Filters”（在“LAN devices”之后），右侧是摘要；`status` 多一行 `Filters:`，如 `1 device direct · QUIC blocked`，都关闭时为 `none`。
 
 ## 9. 从 ShellCrash 借鉴的功能

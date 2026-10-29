@@ -608,11 +608,15 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 			items = append(items, menuItem{label: "Block QUIC (browsers use TCP)", args: []string{"filter", "quic", "on"}})
 		}
 		if s.Filter != nil && s.Filter.Ports {
-			items = append(items, menuItem{label: "Proxy all ports again", args: []string{"filter", "ports", "off"}})
+			// 已开启时改列表和关闭都在这一项里选，不再并列两项。
+			items = append(items, menuItem{label: "Change the proxied ports or proxy all again", usage: "filter ports set|off",
+				ask: []inputField{{title: "Proxied ports", description: "Now: " + strings.Join(s.Filter.PortList, ","),
+					options: []huh.Option[string]{huh.NewOption("Change the ports", "set"), huh.NewOption("Proxy all ports again", "off")},
+					initial: "set"}},
+				build: func(v []string) []string { return []string{"filter", "ports", v[0]} }})
 		} else {
-			items = append(items, menuItem{label: "Proxy only common ports (others go direct)", args: []string{"filter", "ports", "on"}})
+			items = append(items, menuItem{label: "Proxy only some ports (others go direct)", args: []string{"filter", "ports", "on"}})
 		}
-		items = append(items, menuItem{label: "Change the proxied ports", args: []string{"filter", "ports", "set"}})
 		if s.Filter != nil && len(s.Filter.Sources) > 0 {
 			items = append(items, menuItem{label: "Stop sending a network direct", args: []string{"filter", "source", "remove"}})
 		}

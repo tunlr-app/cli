@@ -359,7 +359,7 @@ func (a *app) choosePeriod(cmd *cobra.Command, object, current string) (string, 
 	if i < len(periodChoices) {
 		return periodChoices[i], nil
 	}
-	p, err := a.prompt.Input(cmd.Context(), "Period", "A number of hours or days, such as 3h or 2d, or off.", func(s string) error {
+	p, err := a.prompt.Input(cmd.Context(), "Period", "A number of hours or days, such as 3h or 2d, or off.", "", func(s string) error {
 		_, err := settings.ParsePeriod(strings.TrimSpace(s))
 		return err
 	})

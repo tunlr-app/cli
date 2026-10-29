@@ -19,6 +19,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/paths"
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/templates"
 )
 
@@ -59,8 +60,9 @@ type scriptedPrompt struct {
 	asked    [][]string
 	// initials 记录单选时光标的起始位置。
 	initials []int
-	// described 记录输入时的说明。
+	// described、prefilled 记录输入时的说明和预先填好的内容。
 	described []string
+	prefilled []string
 	// confirms 是是非题的回答；confirmed 记录问过的问题和说明。
 	confirms  []bool
 	confirmed []string
@@ -117,8 +119,9 @@ func (p *scriptedPrompt) ChooseMany(_ context.Context, _ string, options []strin
 	return c, nil
 }
 
-func (p *scriptedPrompt) Input(_ context.Context, _, description string, validate func(string) error) (string, error) {
+func (p *scriptedPrompt) Input(_ context.Context, _, description, value string, validate func(string) error) (string, error) {
 	p.described = append(p.described, description)
+	p.prefilled = append(p.prefilled, value)
 	if len(p.inputs) == 0 {
 		p.t.Fatal("unexpected input request")
 	}
@@ -375,6 +378,40 @@ func TestSubAddAsksFilter(t *testing.T) {
 	if len(et.prompt.inputs) != 0 || !strings.Contains(et.mixin("third/10-filter.yaml"), "exclude-filter: 日本") {
 		t.Errorf("third: %q", et.mixin("third/10-filter.yaml"))
 	}
+}
+
+// TestFilterPortsAsks 验证 filter ports on、set 不带端口时询问，输入框预先填好保存的列表。
+func TestFilterPortsAsks(t *testing.T) {
+	et := newEditTest(t)
+	et.prompt.inputs = []string{"80,8000-9000"}
+	et.run(0, "filter", "ports", "on", "--yes")
+	if want := strings.Join(pipeline.DefaultPorts, ","); len(et.prompt.prefilled) != 1 || et.prompt.prefilled[0] != want {
+		t.Errorf("prefilled = %q, want %q", et.prompt.prefilled, want)
+	}
+	cfg, _ := os.ReadFile(et.a.layout.CoreConfig())
+	if !bytes.Contains(cfg, []byte("NOT,((DST-PORT,80/8000-9000)),DIRECT")) {
+		t.Errorf("published config:\n%s", cfg)
+	}
+	et.prompt.inputs = []string{"443"}
+	et.run(0, "filter", "ports", "set", "--yes")
+	if et.prompt.prefilled[1] != "80,8000-9000" {
+		t.Errorf("prefilled = %q", et.prompt.prefilled)
+	}
+	// 取消时什么都不改。
+	et.prompt.inputs = nil
+	et.a.prompt = cancelInput{et.prompt}
+	et.run(0, "filter", "ports", "set", "--yes")
+	cfg, _ = os.ReadFile(et.a.layout.CoreConfig())
+	if !bytes.Contains(cfg, []byte("NOT,((DST-PORT,443)),DIRECT")) {
+		t.Errorf("published config:\n%s", cfg)
+	}
+}
+
+// cancelInput 是输入时用户按 Esc 的提问者。
+type cancelInput struct{ *scriptedPrompt }
+
+func (cancelInput) Input(context.Context, string, string, string, func(string) error) (string, error) {
+	return "", huh.ErrUserAborted
 }
 
 // TestEditConcurrentChange 验证文件在编辑期间被改动时不覆盖，编辑结果保留在临时文件中。

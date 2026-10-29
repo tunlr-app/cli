@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -379,12 +380,23 @@ func TestMenuItems(t *testing.T) {
 		groupProxy:         "tunlr › Proxy port · this server only: Show the proxy address|Let LAN devices use it (HTTP/SOCKS5 proxy)|← Back",
 		groupPanel:         "tunlr › Panel · this server only: Show how to open it|Let LAN devices open it|Replace the API secret|← Back",
 		groupDevices:       "tunlr › LAN devices · gateway and proxy LAN access off: List devices|List all devices on the LAN|Name a device|Forget a device|← Back",
-		groupFilter:        "tunlr › Filters · none: Show filters|Set a device to go through proxies or directly|Send a network direct|Block QUIC (browsers use TCP)|Proxy only common ports (others go direct)|Change the proxied ports|← Back",
+		groupFilter:        "tunlr › Filters · none: Show filters|Set a device to go through proxies or directly|Send a network direct|Block QUIC (browsers use TCP)|Proxy only some ports (others go direct)|← Back",
 		groupKernel:        "tunlr › Kernel (mihomo) · running · v1.19.33: Show the kernel and its service|Restart mihomo|Stop mihomo|Show recent logs|Upgrade mihomo to the latest release|Repair the installation (init)|← Back",
 	} {
 		if got := labels(group, runningStatus, 2, 3); got != want {
 			t.Errorf("running %q:\n got %s\nwant %s", group, got, want)
 		}
+	}
+	// 只代理部分端口开启时，改列表和关闭合在一项里选。
+	ports := *runningStatus
+	ports.Filter = &setup.FilterStatus{Ports: true, PortList: []string{"80", "443"}}
+	_, items := a.menuItems(groupFilter, menuWith(&ports, 2, 3))
+	k := slices.IndexFunc(items, func(it menuItem) bool { return it.label == "Change the proxied ports or proxy all again" })
+	if k < 0 || slices.ContainsFunc(items, func(it menuItem) bool { return strings.HasPrefix(it.label, "Proxy only") }) {
+		t.Fatalf("ports on: %v", items)
+	}
+	if it := items[k]; it.ask[0].description != "Now: 80,443" || strings.Join(it.build([]string{"off"}), " ") != "filter ports off" {
+		t.Errorf("ports item = %+v", it)
 	}
 	_, top := a.menuItems("", menuWith(runningStatus, 2, 3))
 	if got := strings.Join(a.menuLabels(top[1:3]), "|"); got != "Subscriptions   home · 2 saved|Configuration   revision 7" {

@@ -329,7 +329,7 @@ func (a *app) askInit(cmd *cobra.Command, opts *setup.InitOptions) error {
 		} else {
 			desc += "Leave empty to download directly."
 		}
-		m, err := a.prompt.Input(ctx, "GitHub mirror (optional)", desc, func(s string) error {
+		m, err := a.prompt.Input(ctx, "GitHub mirror (optional)", desc, "", func(s string) error {
 			if s == "" {
 				return nil
 			}
@@ -348,7 +348,7 @@ func (a *app) askInit(cmd *cobra.Command, opts *setup.InitOptions) error {
 			return err
 		}
 		url, err := a.prompt.Input(ctx, "Subscription URL (optional)",
-			"The URL your provider gives for Clash/mihomo. Leave empty to add one later with: tunlr sub add", nil)
+			"The URL your provider gives for Clash/mihomo. Leave empty to add one later with: tunlr sub add", "", nil)
 		if err != nil || url == "" {
 			return err
 		}

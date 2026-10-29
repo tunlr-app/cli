@@ -218,7 +218,7 @@ func (a *app) newDevicesNameCommand() *cobra.Command {
 			if len(args) == 2 {
 				name = args[1]
 			} else {
-				name, err = a.prompt.Input(ctx, "Name for "+deviceLabel(*d), "Up to 32 characters; leave empty to remove the name.",
+				name, err = a.prompt.Input(ctx, "Name for "+deviceLabel(*d), "Up to 32 characters; leave empty to remove the name.", "",
 					func(s string) error {
 						if s == "" {
 							return nil

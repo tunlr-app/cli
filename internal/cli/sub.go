@@ -195,7 +195,7 @@ func (a *app) askFilter(cmd *cobra.Command, name string) (filter, exclude string
 		if i == 0 {
 			title = fmt.Sprintf("Proxy filter for %q: %s", name, strings.ToLower(title[:1])+title[1:])
 		}
-		if values[i], err = a.prompt.Input(cmd.Context(), title, f.description, f.validate); err != nil {
+		if values[i], err = a.prompt.Input(cmd.Context(), title, f.description, "", f.validate); err != nil {
 			return "", "", err
 		}
 	}

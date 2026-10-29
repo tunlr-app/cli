@@ -32,7 +32,8 @@ func (a *app) newFilterCommand() *cobra.Command {
 			"  source   so does traffic from an address range (e.g. a Docker network, a VPN subnet)\n" +
 			"  quic     UDP port 443 is rejected, so browsers use TCP instead of QUIC (which many proxies\n" +
 			"           carry poorly); sites that go direct fall back to TCP too\n" +
-			"  ports    only connections to common ports are proxied; others (BT, P2P, games) go direct\n" +
+			"  ports    only connections to some ports (common ones by default) are proxied; others (BT, P2P,\n" +
+			"           games) go direct\n" +
 			"All are off by default. A mixin can override the rules or remove them with tunlr.rules.delete.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.showFilter() },
@@ -46,7 +47,7 @@ func (a *app) newFilterCommand() *cobra.Command {
 	quic.AddCommand(a.withFullDiff(a.newFilterQUICCommand(true)), a.withFullDiff(a.newFilterQUICCommand(false)))
 	ports := &cobra.Command{
 		Use:   "ports",
-		Short: "Show whether only common ports are proxied; turn it on or off, or change the ports",
+		Short: "Show whether only some ports are proxied; turn it on or off, or change the ports",
 		Args:  usageArgs(cobra.NoArgs),
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.showFilter() },
 	}
@@ -91,7 +92,7 @@ func (a *app) showFilter() error {
 			note = "default; " + note
 		}
 		if s.Ports {
-			fmt.Fprintf(w, "Ports:           %s (tunlr filter ports off)\n", a.style.good("only common ports proxied, others go direct"))
+			fmt.Fprintf(w, "Ports:           %s (tunlr filter ports off)\n", a.style.good("only these ports proxied, others go direct"))
 			fmt.Fprintf(w, "                 %s (%s)\n", list, note)
 		} else {
 			fmt.Fprintf(w, "Ports:           %s (tunlr filter ports on)\n", a.style.dim("all proxied"))
@@ -123,7 +124,7 @@ func (a *app) describeFilter(s *setup.FilterStatus) string {
 		parts = append(parts, "QUIC blocked")
 	}
 	if s.Ports {
-		parts = append(parts, "common ports only")
+		parts = append(parts, "some ports only")
 	}
 	if len(parts) == 0 {
 		return a.style.dim("none")
@@ -226,7 +227,7 @@ func (a *app) newFilterSourceCommand() *cobra.Command {
 					return usageErrorf("filter source add needs the network (e.g. 172.17.0.0/16)")
 				}
 				var err error
-				network, err = a.prompt.Input(ctx, "Network", "A network address with its prefix length, such as 172.17.0.0/16, or a single address.",
+				network, err = a.prompt.Input(ctx, "Network", "A network address with its prefix length, such as 172.17.0.0/16, or a single address.", "",
 					func(s string) error {
 						_, err := pipeline.ParseSource(s)
 						return err
@@ -300,21 +301,37 @@ func (a *app) newFilterQUICCommand(on bool) *cobra.Command {
 	}
 }
 
+// portsHelp 是端口列表的写法，用于 filter ports on、set 的说明。
+var portsHelp = "Ports and ranges separated by commas, e.g. 22,80,443,8000-9000; default restores the list\n" +
+	"(" + strings.Join(pipeline.DefaultPorts, ",") + ")."
+
 func (a *app) newFilterPortsCommand(on bool) *cobra.Command {
-	use, short := "off", "Proxy all ports again"
-	if on {
-		use, short = "on", "Proxy only common ports; others go direct"
+	if !on {
+		return &cobra.Command{
+			Use:   "off",
+			Short: "Proxy all ports again",
+			Long:  "The list of ports is kept for the next tunlr filter ports on.",
+			Args:  usageArgs(cobra.NoArgs),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return a.editFilter(cmd.Context(), "filter ports off", setup.FilterEdit{Ports: &on},
+					"Proxy all ports again?", "All ports follow the rules again.")
+			},
+		}
 	}
 	return &cobra.Command{
-		Use:   use,
-		Short: short,
-		Args:  usageArgs(cobra.NoArgs),
+		Use:   "on [ports|default]",
+		Short: "Proxy only some ports (common ones by default); others go direct",
+		Long: portsHelp + " Without ports, the saved list is used\n" +
+			"(asked in a terminal, filled in with it).",
+		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			question, done := "Proxy all ports again?", "All ports follow the rules again."
-			if on {
-				question, done = "Proxy only these ports?", "Only common ports are proxied now; others go direct."
+			ctx := cmd.Context()
+			list, ok, err := a.portList(ctx, args, a.interactive())
+			if !ok {
+				return err
 			}
-			return a.editFilter(cmd.Context(), "filter ports "+use, setup.FilterEdit{Ports: &on}, question, done)
+			return a.editFilter(ctx, "filter ports on", setup.FilterEdit{Ports: &on, PortList: list}, "Proxy only these ports?",
+				"Only these ports are proxied now: "+strings.Join(list, ",")+"; others go direct.")
 		},
 	}
 }
@@ -322,46 +339,57 @@ func (a *app) newFilterPortsCommand(on bool) *cobra.Command {
 func (a *app) newFilterPortsSetCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "set [ports|default]",
-		Short: "Change the ports that are proxied when only common ports are",
-		Long: "Ports and ranges separated by commas, e.g. 22,80,443,8000-9000; default restores the list\n" +
-			"(" + strings.Join(pipeline.DefaultPorts, ",") + "). The list is kept while the filter is off.",
-		Args: usageArgs(cobra.MaximumNArgs(1)),
+		Short: "Change the ports that are proxied when only some are",
+		Long:  portsHelp + " The list is kept while the filter is off.",
+		Args:  usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && !a.interactive() {
+				return usageErrorf("filter ports set needs the ports (e.g. 22,80,443,8000-9000) or default")
+			}
 			ctx := cmd.Context()
-			var spec string
-			if len(args) == 1 {
-				spec = args[0]
-			} else {
-				if !a.interactive() {
-					return usageErrorf("filter ports set needs the ports (e.g. 22,80,443,8000-9000) or default")
-				}
-				s, err := a.installer().Filter()
-				if err != nil {
-					return err
-				}
-				spec, err = a.prompt.Input(ctx, "Ports to proxy", "Now: "+strings.Join(s.PortList, ",")+
-					". Separate with commas; ranges like 8000-9000; default restores the default list.", func(s string) error {
-					if s == "default" {
-						return nil
-					}
-					_, err := pipeline.ParsePorts(s)
-					return err
-				})
-				if stop, err := a.cancelled(err); stop {
-					return err
-				}
+			list, ok, err := a.portList(ctx, args, true)
+			if !ok {
+				return err
 			}
-			list := pipeline.DefaultPorts
-			if spec != "default" {
-				var err error
-				if list, err = pipeline.ParsePorts(spec); err != nil {
-					return usageErrorf("%v", err)
-				}
-			}
-			done := "Proxied ports: " + strings.Join(list, ",") + "."
-			return a.editFilter(ctx, "filter ports set", setup.FilterEdit{PortList: list}, "Publish the configuration with these ports?", done)
+			return a.editFilter(ctx, "filter ports set", setup.FilterEdit{PortList: list}, "Publish the configuration with these ports?",
+				"Proxied ports: "+strings.Join(list, ",")+".")
 		},
 	}
+}
+
+// portList 返回参数给出的端口列表。没有参数时 ask 为真则询问（预先填好保存的列表），否则用保存的列表。
+// ok 为假时不再继续：err 为 nil 表示用户取消了。
+func (a *app) portList(ctx context.Context, args []string, ask bool) (list []string, ok bool, err error) {
+	var spec string
+	if len(args) == 1 {
+		spec = args[0]
+	} else {
+		s, err := a.installer().Filter()
+		if err != nil {
+			return nil, false, err
+		}
+		if !ask {
+			return s.PortList, true, nil
+		}
+		spec, err = a.prompt.Input(ctx, "Ports to proxy", "Others go direct. Separate with commas; ranges like 8000-9000;\n"+
+			"default restores the default list.", strings.Join(s.PortList, ","), func(s string) error {
+			if s == "default" {
+				return nil
+			}
+			_, err := pipeline.ParsePorts(s)
+			return err
+		})
+		if stop, err := a.cancelled(err); stop {
+			return nil, false, err
+		}
+	}
+	if spec == "default" {
+		return pipeline.DefaultPorts, true, nil
+	}
+	if list, err = pipeline.ParsePorts(spec); err != nil {
+		return nil, false, usageErrorf("%v", err)
+	}
+	return list, true, nil
 }
 
 // editFilter 是修改全局过滤项的流程：已经是目标状态时只报告；配置没有变化时直接保存，否则预览、确认后与

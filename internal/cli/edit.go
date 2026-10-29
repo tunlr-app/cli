@@ -29,8 +29,9 @@ type prompter interface {
 	Choose(ctx context.Context, title string, options []string, initial int) (int, error)
 	// ChooseMany 让用户勾选 options 中的若干项，selected 中的下标预先勾上，返回所选的下标（按列表顺序）。
 	ChooseMany(ctx context.Context, title string, options []string, selected []int) ([]int, error)
-	// Input 让用户输入一行文字，description 是标题下的说明，validate 不通过时要求重新输入。
-	Input(ctx context.Context, title, description string, validate func(string) error) (string, error)
+	// Input 让用户输入一行文字，description 是标题下的说明，value 是预先填好的内容，validate 不通过时
+	// 要求重新输入。
+	Input(ctx context.Context, title, description, value string, validate func(string) error) (string, error)
 	// Confirm 问一个是非题，description 是问题下的说明，可以为空。
 	Confirm(ctx context.Context, title, description string) (bool, error)
 }
@@ -85,8 +86,8 @@ func (p huhPrompter) ChooseMany(ctx context.Context, title string, options []str
 	return v, err
 }
 
-func (p huhPrompter) Input(ctx context.Context, title, description string, validate func(string) error) (string, error) {
-	var v string
+func (p huhPrompter) Input(ctx context.Context, title, description, value string, validate func(string) error) (string, error) {
+	v := value
 	err := p.run(ctx, huh.NewInput().Title(title).Description(description).Validate(validate).Value(&v))
 	return v, err
 }
@@ -245,7 +246,7 @@ func (a *app) chooseMixin(ctx context.Context) (string, error) {
 		}
 		return s
 	}
-	name, err := a.prompt.Input(ctx, title, desc, func(s string) error {
+	name, err := a.prompt.Input(ctx, title, desc, "", func(s string) error {
 		if strings.Contains(s, "/") {
 			return errors.New("give a file name only")
 		}

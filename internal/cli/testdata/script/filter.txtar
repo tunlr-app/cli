@@ -70,12 +70,24 @@ exec tunlr filter ports on --yes
 stdout '^\+  - NOT,\(\(DST-PORT,443/80/8000-9000\)\),DIRECT$'
 grep '^  - NOT,\(\(DST-PORT,443/80/8000-9000\)\),DIRECT$' root/var/lib/tunlr/core/config.yaml
 exec tunlr status
-stdout 'Filters:\s+1 source direct · QUIC blocked · common ports only'
+stdout 'Filters:\s+1 source direct · QUIC blocked · some ports only'
 exec tunlr filter ports set default --yes
 stdout '^\+  - NOT,\(\(DST-PORT,22/80/143/194/443/465/587/853/993/995/5222/8080/8443\)\),DIRECT$'
 exec tunlr filter --json
 stdout '"default_ports": true'
 ! grep '"port_list"' root/var/lib/tunlr/state.json
+
+# on 带上端口时开启和改列表一次发布；已是这样时不变
+exec tunlr filter ports off --yes
+exitcode 2 tunlr filter ports on 0 --yes
+stderr 'is not a port'
+exec tunlr filter ports on 22,443 --yes
+stdout '^\+  - NOT,\(\(DST-PORT,22/443\)\),DIRECT$'
+stdout 'Only these ports are proxied now: 22,443; others go direct\.'
+exec tunlr filter ports on 22,443 --yes
+stdout 'Already so'
+exec tunlr filter ports on default --yes
+stdout '^\+  - NOT,\(\(DST-PORT,22/80/143/194/443/465/587/853/993/995/5222/8080/8443\)\),DIRECT$'
 
 # 都关闭后受管 mixin 不再出现
 exec tunlr filter source remove 172.17.0.0/16 --yes
