@@ -34,7 +34,7 @@ type planView struct {
 	Rewrites []config.Rewrite `json:"rewrites,omitempty"`
 	// ProxyFilter 是节点筛选（tunlr.proxy-filter）的结果，没有设置时省略。
 	ProxyFilter *config.ProxyFilterResult `json:"proxy_filter,omitempty"`
-	// GeoSources 是 geo 数据的自动更新和来源的各键来自哪一层（template、subscription 或 mixin 文件）。
+	// GeoSources 是 geo 数据的自动更新和来源的各键来自哪里（tunlr:defaults、subscription、mixin 文件，或哪里都没写时为 template）。
 	GeoSources []config.KeySource `json:"geo_sources,omitempty"`
 	// Managed 是 tunlr 的交互功能生成的受管 mixin。
 	Managed    []managedView    `json:"managed,omitempty"`

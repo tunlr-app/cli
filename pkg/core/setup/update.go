@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/tunlr-app/cli/pkg/core"
@@ -287,10 +288,8 @@ func (i *Installer) Update(ctx context.Context, opts UpdateOptions) (*UpdateResu
 	if geo {
 		add("geo", "Having mihomo update the geo data", func() (string, string) { return i.updateGeo(ctx) })
 	}
-	if len(res.Tasks) > 0 {
-		progress("Checking the kernel")
-	}
-	if status, msg, acted := i.aftercare(ctx, owner); acted || len(res.Tasks) > 0 {
+	// 善后每次都做，只在发现面板换过内核或出错时记入结果：内核正常时与用户要执行的任务无关。
+	if status, msg, acted := i.aftercare(ctx, owner); acted {
 		push("kernel", status, msg)
 	}
 
@@ -371,8 +370,10 @@ func (i *Installer) aftercare(ctx context.Context, owner *fsutil.Owner) (status,
 }
 
 // updateGeo 让内核按生效的配置中的 geox-url 立即更新 geo 数据，内核自己加载，无需重启。tunlr 不校验内核
-// 下载的文件。
+// 下载的文件。内核不报告哪些文件换了（内容与上游相同时它不写文件），由更新前后文件的修改时间和大小得出。
 func (i *Installer) updateGeo(ctx context.Context) (string, string) {
+	home := i.Layout.CoreDir()
+	before, _ := mihomo.GeoStamps(home, mihomo.AllGeoFiles)
 	err := mihomo.NewClient(i.Layout.CoreSocket()).UpdateGeo(ctx)
 	switch {
 	case errors.Is(err, mihomo.ErrNotRunning):
@@ -380,5 +381,38 @@ func (i *Installer) updateGeo(ctx context.Context) (string, string) {
 	case err != nil:
 		return StepFailed, "mihomo could not update the geo data: " + err.Error()
 	}
-	return StepOK, "mihomo updated the geo data from geox-url"
+	after, err := mihomo.GeoStamps(home, mihomo.AllGeoFiles)
+	if err != nil || before == nil {
+		return StepOK, "mihomo updated the geo data from geox-url"
+	}
+	return StepOK, describeGeoUpdate(before, after)
+}
+
+// describeGeoUpdate 按文件说明内核更新 geo 数据的结果，如
+// "mihomo updated GeoSite.dat; geoip.metadb was already up to date"。
+func describeGeoUpdate(before, after map[string]string) string {
+	var updated, same []string
+	for _, f := range mihomo.AllGeoFiles {
+		s, ok := after[f.Name]
+		switch {
+		case !ok:
+		case s != before[f.Name]:
+			updated = append(updated, f.Name)
+		default:
+			same = append(same, f.Name)
+		}
+	}
+	switch {
+	case len(updated) == 0 && len(same) == 0:
+		return "mihomo has no geo data files yet; it downloads them when the configuration uses them"
+	case len(updated) == 0:
+		return "the geo data was already up to date (" + strings.Join(same, ", ") + ")"
+	case len(same) == 0:
+		return "mihomo updated " + strings.Join(updated, ", ")
+	}
+	verb := "was"
+	if len(same) > 1 {
+		verb = "were"
+	}
+	return "mihomo updated " + strings.Join(updated, ", ") + "; " + strings.Join(same, ", ") + " " + verb + " already up to date"
 }

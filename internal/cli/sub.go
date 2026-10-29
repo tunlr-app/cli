@@ -556,18 +556,19 @@ const (
 	setUserAgent = "User-Agent"
 	setPeriod    = "Fetch period"
 	setFilter    = "Proxy filter"
+	setGeo       = "Geo data"
 )
 
 func (a *app) newSubSetCommand() *cobra.Command {
 	var source, userAgent, update string
 	cmd := &cobra.Command{
 		Use:   "set [name]",
-		Short: "Change a subscription: its source, User-Agent, fetch period or proxy filter",
+		Short: "Change a subscription: its source, User-Agent, fetch period, proxy filter or geo data",
 		Long: "Change a saved subscription. --source and --user-agent fetch it again and are saved only\n" +
 			"if that succeeds (the same as tunlr sub update <name> --source/--user-agent); --update sets\n" +
 			"how often it is fetched (the same as tunlr update set sub). Without flags, choose the\n" +
 			"subscription and what to change (needs a terminal); the proxy filter opens\n" +
-			"tunlr config edit <name>/10-filter.",
+			"tunlr config edit <name>/10-filter, and the geo data goes on as tunlr update set geo <name>.",
 		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			flags := cmd.Flags().Changed("source") || cmd.Flags().Changed("user-agent") || cmd.Flags().Changed("update")
@@ -638,6 +639,7 @@ func (a *app) changeSubscription(cmd *cobra.Command, name string) error {
 		setUserAgent + " (now " + ua + ")",
 		setPeriod + " (now " + settings.DescribePeriod(e.UpdatePeriod()) + ")",
 		setFilter + " (" + name + "/" + strings.TrimSuffix(config.FilterMixinFile, ".yaml") + ")",
+		setGeo + " (how often mihomo updates it and where from)",
 	}
 	if e.Path != "" {
 		// 文件不经 HTTP 抓取，User-Agent 没有意义。
@@ -653,6 +655,8 @@ func (a *app) changeSubscription(cmd *cobra.Command, name string) error {
 		return a.setSubUpdate(cmd, []string{name})
 	case setFilter:
 		return a.editMixin(cmd, name+"/"+config.FilterMixinFile)
+	case setGeo:
+		return a.setGeoUpdate(cmd, []string{name}, nil)
 	case setSource:
 		s, err := a.prompt.Input(ctx, "New URL or file for "+strconv.Quote(name),
 			"It is fetched now and saved only if that works.", "", checkSource)

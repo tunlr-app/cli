@@ -6,6 +6,7 @@ package mihomo
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -233,6 +234,27 @@ func GeoModTime(home string, files []GeoFile) (time.Time, error) {
 		}
 	}
 	return newest, nil
+}
+
+// GeoStamps 返回 home 中 files 里已有的每个 geo 文件的修改时间和大小（键为 GeoFile.Name），用于比较内核
+// 更新前后哪些文件换了：内容与上游相同时内核不写文件。
+func GeoStamps(home string, files []GeoFile) (map[string]string, error) {
+	stamps := map[string]string{}
+	for _, f := range files {
+		path, err := findGeo(home, f)
+		if err != nil {
+			return nil, err
+		}
+		if path == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		stamps[f.Name] = fmt.Sprintf("%d/%d", info.ModTime().UnixNano(), info.Size())
+	}
+	return stamps, nil
 }
 
 // findGeo 按内核的规则（文件名不区分大小写，含别名）在 dir 中查找 f，返回其路径；不存在时返回空串。

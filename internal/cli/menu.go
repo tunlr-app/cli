@@ -467,13 +467,13 @@ func (a *app) menuItems(group string, d menuData) (title, note string, items []m
 	}
 	groups := []menuItem{
 		{label: groupConfig, group: groupConfig, note: a.configNote(s, d.subs),
-			desc: "Add, switch and change subs; geo data; mixins; publish or roll back the config"},
+			desc: "Add, switch and change subs; mixins; publish or roll back the config"},
 		{label: groupTraffic, group: groupTraffic, note: a.trafficNote(s),
 			desc: "What goes through mihomo: TUN, gateway mode, the proxy port and filters"},
 		{label: groupDevices, group: groupDevices, note: a.describeDevicesNote(s.Devices),
 			desc: "Devices on the LAN that use this server: names and how each one goes"},
 		{label: groupCore, group: groupCore, note: a.coreNote(s),
-			desc: "Start, stop, logs and upgrades; how to open the panel"},
+			desc: "Start, stop, logs, upgrades and geo data; how to open the panel"},
 		{label: groupMaintain, group: groupMaintain, note: a.describeBackups(d.backups),
 			desc: "Backups, tool settings, diagnostics and repair"},
 	}
@@ -522,16 +522,12 @@ func (a *app) configItems(d menuData) []menuItem {
 	}
 	if len(d.subs) > 0 {
 		items = append(items,
-			op("Change a sub", "Its URL or file, User-Agent, fetch period or proxy filter", "sub", "set"),
+			op("Change a sub", "Its URL or file, User-Agent, fetch period, proxy filter or geo data", "sub", "set"),
 			op("Fetch subs now", "Fetch every sub again; the config is published if the active one changed", "sub", "update"))
 	}
 	if len(d.subs) > 1 {
 		items = append(items, op("Remove a sub", "Any but the active one", "sub", "remove"))
 	}
-	if len(d.subs) > 0 {
-		items = append(items, op("Geo data settings", "Per sub: how often mihomo updates the geo data and where from; the rest comes from tunlr's fallbacks", "update", "set", "geo"))
-	}
-	items = append(items, op("Update geo data now", "Have mihomo download the geo data from geox-url now (it does so by itself on its period)", "update", "run", "geo"))
 	items = append(items,
 		op("Edit a mixin", "Your own changes on top of the sub; checked with mihomo -t, then published", "config", "edit"),
 		op("Publish config", "Compose and check the config, show the diff, publish after you confirm", "config", "apply"))
@@ -594,6 +590,9 @@ func (a *app) coreItems(s *setup.Status) []menuItem {
 		op("Upgrade mihomo", "To the latest release; checked against the config first, put back if unhealthy", "core", "upgrade"))
 	if canRollBackKernel(s.Kernel) {
 		items = append(items, op("Roll back mihomo", "To the previous known-good version kept on disk", "core", "rollback"))
+	}
+	if s.Service != nil && s.Service.Active() {
+		items = append(items, op("Update geo data now", "mihomo downloads it from geox-url now; it also does so by itself on its period", "update", "run", "geo"))
 	}
 	return append(items,
 		op("Open the panel", "How to reach it: the SSH tunnel and the link", "panel"),

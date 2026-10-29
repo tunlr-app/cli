@@ -132,7 +132,8 @@ func (a *app) newConfigCommand() *cobra.Command {
 			"published, the history rollback can go back to, your mixin files in the order they apply,\n" +
 			"and the mixins tunlr generates for its own settings (TUN, the panel, the LAN proxy).\n" +
 			"Your mixins may not set, change or delete the keys tunlr manages; plan, apply and edit\n" +
-			"refuse such a mixin and name the command that changes the key instead. tunlr:dns,\n" +
+			"refuse such a mixin and name the command that changes the key instead. tunlr:defaults\n" +
+			"(the DNS and geo data settings used where the subscription does not set them), tunlr:dns,\n" +
 			"tunlr:mirror and tunlr:filter only give defaults you can override.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.showConfig(cmd.Context()) },

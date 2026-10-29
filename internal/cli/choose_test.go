@@ -223,8 +223,9 @@ func TestSubSetChooses(t *testing.T) {
 		t.Fatalf("backup update = %q\n%s", got, et.stdout)
 	}
 	opts := et.prompt.asked[1]
-	if len(opts) != 4 || opts[0] != "URL or file (now https://example.net/...)" || opts[1] != "User-Agent (now default)" ||
-		opts[2] != "Fetch period (now daily)" || opts[3] != "Proxy filter (backup/10-filter)" {
+	if len(opts) != 5 || opts[0] != "URL or file (now https://example.net/...)" || opts[1] != "User-Agent (now default)" ||
+		opts[2] != "Fetch period (now daily)" || opts[3] != "Proxy filter (backup/10-filter)" ||
+		opts[4] != "Geo data (how often mihomo updates it and where from)" {
 		t.Errorf("options = %q", opts)
 	}
 
@@ -238,7 +239,7 @@ func TestSubSetChooses(t *testing.T) {
 	}
 	et.prompt.picks = []string{""}
 	et.run(0, "sub", "set", "backup")
-	if opts := et.prompt.asked[len(et.prompt.asked)-1]; len(opts) != 3 || strings.HasPrefix(opts[1], "User-Agent") {
+	if opts := et.prompt.asked[len(et.prompt.asked)-1]; len(opts) != 4 || strings.HasPrefix(opts[1], "User-Agent") {
 		t.Errorf("options for a file = %q", opts)
 	}
 

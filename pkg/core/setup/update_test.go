@@ -150,7 +150,7 @@ func TestUpdateRunsDueTasks(t *testing.T) {
 	if len(res.Tasks) != 1 || res.Tasks[0] != TaskSubscription {
 		t.Fatalf("tasks = %v", res.Tasks)
 	}
-	if got := stepNames(res); got != "sub home,kernel" || res.Steps[0].Status != StepFailed {
+	if got := stepNames(res); got != "sub home" || res.Steps[0].Status != StepFailed {
 		t.Errorf("steps = %+v", res.Steps)
 	}
 	if s := tunSwitch(t, i).Fetches["home"]; s.LastError == "" || !s.LastErrorAt.Equal(testNow) {
@@ -170,7 +170,7 @@ func TestUpdateRunsDueTasks(t *testing.T) {
 
 	// 手动执行不看周期：订阅任务抓取全部订阅（包括不自动更新的）。
 	res, _ = i.Update(ctx, UpdateOptions{Tasks: []string{TaskSubscription, TaskGeo}})
-	if got := stepNames(res); got != "sub home,sub spare,geo,kernel" {
+	if got := stepNames(res); got != "sub home,sub spare,geo" {
 		t.Errorf("manual: %+v", res.Steps)
 	}
 	if s := res.Steps[2]; s.Status != StepSkipped {
@@ -227,5 +227,23 @@ func TestSyncTimers(t *testing.T) {
 	h.calls = nil
 	if err := i.SyncTimers(ctx); err != nil || !h.called("systemctl enable --now "+service.CheckTimer) {
 		t.Errorf("TUN on: %v, %q", err, h.calls)
+	}
+}
+
+func TestDescribeGeoUpdate(t *testing.T) {
+	for _, tt := range []struct {
+		before, after map[string]string
+		want          string
+	}{
+		{map[string]string{"GeoSite.dat": "1", "geoip.metadb": "1"}, map[string]string{"GeoSite.dat": "2", "geoip.metadb": "1"},
+			"mihomo updated GeoSite.dat; geoip.metadb was already up to date"},
+		{map[string]string{"GeoSite.dat": "1", "geoip.metadb": "1"}, map[string]string{"GeoSite.dat": "1", "geoip.metadb": "1"},
+			"the geo data was already up to date (geoip.metadb, GeoSite.dat)"},
+		{map[string]string{}, map[string]string{"ASN.mmdb": "1"}, "mihomo updated ASN.mmdb"},
+		{map[string]string{}, map[string]string{}, "mihomo has no geo data files yet; it downloads them when the configuration uses them"},
+	} {
+		if got := describeGeoUpdate(tt.before, tt.after); got != tt.want {
+			t.Errorf("got %q, want %q", got, tt.want)
+		}
 	}
 }
