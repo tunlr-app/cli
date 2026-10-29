@@ -1,5 +1,5 @@
-// Package backup 定义备份文件的格式：一个 tar.gz，含说明与状态的 backup.json、工具设置、mixin 和
-// 订阅最近一次抓取的内容。不含内核、geo 数据、配置历史，以及实例 ID 等只对本机有意义的状态。
+// Package backup 定义备份文件的格式：一个 tar.gz，含说明与状态的 backup.json、工具设置、订阅列表、mixin
+// 和订阅最近一次抓取的内容。不含内核、geo 数据、配置历史，以及实例 ID、抓取记录等只对本机有意义的状态。
 package backup
 
 import (
@@ -22,13 +22,15 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
-// Version 是备份格式当前的版本。结构变化时递增，读取旧版本时转换。
-const Version = 1
+// Version 是备份格式当前的版本。结构变化时递增。版本 2 改为打包订阅列表（subscriptions.yaml），
+// 不再读取版本 1。
+const Version = 2
 
 // 归档中的文件。
 const (
 	manifestName    = "backup.json"
 	settingsName    = "settings.yaml"
+	listName        = "subscriptions.yaml"
 	mixinDir        = "mixin.d/"
 	subscriptionDir = "subscriptions/"
 	contentExt      = ".yaml"
@@ -48,17 +50,19 @@ type Backup struct {
 	Host      string    `json:"host"`
 	CreatedAt time.Time `json:"created_at"`
 
-	// 以下取自状态文件，含义同 state.State 的同名字段。订阅地址带有机场的访问令牌。
-	Subscriptions []state.Subscription `json:"subscriptions,omitempty"`
-	Active        string               `json:"active,omitempty"`
-	APISecret     string               `json:"api_secret,omitempty"`
-	Devices       []state.Device       `json:"devices,omitempty"`
-	Filter        state.Filter         `json:"filter,omitzero"`
+	// 以下取自状态文件，含义同 state.State 的同名字段。
+	APISecret string         `json:"api_secret,omitempty"`
+	Devices   []state.Device `json:"devices,omitempty"`
+	Filter    state.Filter   `json:"filter,omitzero"`
 	// Switches 记录备份时开着的开关。还原时不直接打开它们，由用户决定是否在新机器上走各自的流程。
 	Switches Switches `json:"switches"`
 
 	// Settings 是设置文件的内容，没有设置文件时为 nil。
 	Settings []byte `json:"-"`
+	// List 是订阅列表文件的内容（订阅地址带有机场的访问令牌），没有时为 nil；Subscriptions 是解析的结果，
+	// 读取备份时总不为 nil。
+	List          []byte             `json:"-"`
+	Subscriptions *subscription.List `json:"-"`
 	// Mixins 是 mixin.d 中的文件，订阅 mixin 的名称带订阅名（如 home/10-filter.yaml），顺序同 config.LoadAllMixins。
 	Mixins []config.Mixin `json:"-"`
 	// Contents 是订阅最近一次抓取的内容，键为订阅名称；从未抓取成功的订阅没有。
@@ -98,6 +102,11 @@ func Write(w io.Writer, b *Backup) error {
 	}
 	if b.Settings != nil {
 		if err := add(settingsName, b.Settings); err != nil {
+			return err
+		}
+	}
+	if b.List != nil {
+		if err := add(listName, b.List); err != nil {
 			return err
 		}
 	}
@@ -145,7 +154,7 @@ func WriteFile(path string, b *Backup) (err error) {
 // ErrInvalid 表示不是有效的 tunlr 备份，满足 errors.Is(err, core.ErrInvalidArgument)。
 var ErrInvalid = fmt.Errorf("%w: not a valid tunlr backup", core.ErrInvalidArgument)
 
-// Read 读取并检查备份：格式版本、各文件的名称、设置文件、订阅与内容的对应关系。mixin 的内容在还原前
+// Read 读取并检查备份：格式版本、各文件的名称、设置文件、订阅列表、订阅与内容的对应关系。mixin 的内容在还原前
 // 合成配置时检查。
 func Read(r io.Reader) (*Backup, error) {
 	gz, err := gzip.NewReader(r)
@@ -190,11 +199,18 @@ func Read(r io.Reader) (*Backup, error) {
 	if err != nil {
 		return nil, err
 	}
+	b.Subscriptions = &subscription.List{Version: subscription.ListVersion}
+	if data, ok := files[listName]; ok {
+		if b.Subscriptions, err = subscription.ParseList(data); err != nil {
+			return nil, fmt.Errorf("%w: %s: %v", ErrInvalid, listName, err)
+		}
+		b.List = data
+	}
 	b.Contents = map[string][]byte{}
 	for _, name := range order {
 		data := files[name]
 		switch {
-		case name == manifestName:
+		case name == manifestName, name == listName:
 		case name == settingsName:
 			if _, err := settings.Parse(data); err != nil {
 				return nil, fmt.Errorf("%w: settings: %v", ErrInvalid, err)
@@ -208,7 +224,7 @@ func Read(r io.Reader) (*Backup, error) {
 			b.Mixins = append(b.Mixins, config.Mixin{Name: base, Data: data})
 		case strings.HasPrefix(name, subscriptionDir) && path.Ext(name) == contentExt:
 			sub := strings.TrimSuffix(strings.TrimPrefix(name, subscriptionDir), contentExt)
-			if b.find(sub) == nil {
+			if b.Subscriptions.Find(sub) == nil {
 				return nil, fmt.Errorf("%w: content for unknown subscription %q", ErrInvalid, sub)
 			}
 			b.Contents[sub] = data
@@ -226,13 +242,13 @@ func Read(r io.Reader) (*Backup, error) {
 		}
 		return strings.Compare(x.Name, y.Name)
 	})
-	if b.Active != "" && b.Contents[b.Active] == nil {
-		return nil, fmt.Errorf("%w: the active subscription %q has no content", ErrInvalid, b.Active)
+	if a := b.Subscriptions.Active; a != "" && b.Contents[a] == nil {
+		return nil, fmt.Errorf("%w: the active subscription %q has no content", ErrInvalid, a)
 	}
 	return b, nil
 }
 
-// decode 解析 backup.json 并检查版本与订阅。
+// decode 解析 backup.json 并检查版本。
 func decode(data []byte) (*Backup, error) {
 	var b Backup
 	if err := json.Unmarshal(data, &b); err != nil {
@@ -243,39 +259,10 @@ func decode(data []byte) (*Backup, error) {
 		return nil, fmt.Errorf("%w: the backup has version %d, newer than this tunlr supports (%d); upgrade tunlr", core.ErrInvalidArgument, b.Version, Version)
 	case b.Version < 1:
 		return nil, fmt.Errorf("%w: invalid version %d", ErrInvalid, b.Version)
-	}
-	seen := map[string]bool{}
-	for _, s := range b.Subscriptions {
-		if err := subscription.ValidateName(s.Name); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
-		}
-		if seen[s.Name] {
-			return nil, fmt.Errorf("%w: subscription %q appears twice", ErrInvalid, s.Name)
-		}
-		seen[s.Name] = true
-		switch {
-		case s.Path == "":
-			if err := subscription.ValidateURL(s.URL); err != nil {
-				return nil, fmt.Errorf("%w: subscription %q: invalid URL", ErrInvalid, s.Name)
-			}
-		case s.URL != "" || (s.Path != state.PathStdin && !path.IsAbs(s.Path)):
-			// 本地文件在新机器上可能不存在，照样还原（内容在备份中），只检查写法。
-			return nil, fmt.Errorf("%w: subscription %q: invalid source", ErrInvalid, s.Name)
-		}
-	}
-	if b.Active != "" && !seen[b.Active] {
-		return nil, fmt.Errorf("%w: the active subscription %q is not in the backup", ErrInvalid, b.Active)
+	case b.Version < Version:
+		return nil, fmt.Errorf("%w: the backup has version %d, made by an older tunlr; it can no longer be restored", core.ErrInvalidArgument, b.Version)
 	}
 	return &b, nil
-}
-
-func (b *Backup) find(name string) *state.Subscription {
-	for i := range b.Subscriptions {
-		if b.Subscriptions[i].Name == name {
-			return &b.Subscriptions[i]
-		}
-	}
-	return nil
 }
 
 // ReadFile 读取备份文件 path；path 为 "-" 时从 stdin 读取。

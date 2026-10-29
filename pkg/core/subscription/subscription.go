@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,9 +51,15 @@ type Manager struct {
 	Now func() time.Time
 }
 
+// Subscription 是一个订阅的定义和它的抓取记录。
+type Subscription struct {
+	Def
+	state.Fetch
+}
+
 // Entry 是 List 返回的一个订阅。
 type Entry struct {
-	state.Subscription
+	Subscription
 	Active bool
 	// Summary 统计已保存的内容；内容缺失或无法解析时为零值。
 	Summary config.SubscriptionSummary
@@ -130,31 +138,33 @@ func (m *Manager) Add(ctx context.Context, name, source string, opts AddOptions)
 				core.ErrInvalidArgument, filterFile, name, strings.TrimSuffix(config.FilterMixinFile, ".yaml"))
 		}
 	}
-	l, err := m.lock(ctx)
+	lk, err := m.lock(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer l.Release()
+	defer lk.Release()
 
-	st, _, err := state.LoadOrNew(m.Layout.StateFile(), m.now())
+	l, st, err := m.load()
 	if err != nil {
 		return nil, err
 	}
-	if st.Find(name) != nil {
+	if l.Find(name) != nil {
 		return nil, fmt.Errorf("%w: %s", ErrExists, name)
 	}
-	sub := state.Subscription{Name: name, URL: src.URL, Path: src.Path, UserAgent: opts.UserAgent, Update: opts.Update, AddedAt: m.now().UTC()}
+	sub := Subscription{Def: Def{Name: name, URL: src.URL, Path: src.Path, UserAgent: opts.UserAgent, Update: opts.Update},
+		Fetch: state.Fetch{AddedAt: m.now().UTC()}}
 	sum, err := m.fetchAndStore(ctx, &sub, opts.Stdin)
 	if err != nil {
 		return nil, err
 	}
-	st.Subscriptions = append(st.Subscriptions, sub)
+	l.Subscriptions = append(l.Subscriptions, sub.Def)
+	st.Fetches[name] = sub.Fetch
 	res := &Fetched{Name: name, Summary: sum}
-	if st.Active == "" {
-		st.Active = name
+	if l.Active == "" {
+		l.Active = name
 		res.Activated = true
 	}
-	if err := state.Save(m.Layout.StateFile(), st); err != nil {
+	if err := m.save(l, st); err != nil {
 		return nil, err
 	}
 	if filterFile != "" {
@@ -166,18 +176,16 @@ func (m *Manager) Add(ctx context.Context, name, source string, opts AddOptions)
 	return res, nil
 }
 
-// List 返回已保存的订阅，按添加顺序排列。尚未安装时返回空列表。
+// List 返回订阅列表中的订阅和它们的抓取记录，按添加顺序排列。
 func (m *Manager) List() ([]Entry, error) {
-	st, err := state.Load(m.Layout.StateFile())
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
+	l, st, err := m.load()
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]Entry, 0, len(st.Subscriptions))
-	for _, s := range st.Subscriptions {
-		e := Entry{Subscription: s, Active: s.Name == st.Active}
+	var entries []Entry
+	for _, d := range l.Subscriptions {
+		s := Subscription{Def: d, Fetch: st.Fetches[d.Name]}
+		e := Entry{Subscription: s, Active: s.Name == l.Active}
 		if c := s.Counts; c != nil {
 			e.Summary = config.SubscriptionSummary(*c)
 		} else if data, err := os.ReadFile(m.Layout.SubscriptionFile(s.Name)); err == nil {
@@ -198,25 +206,25 @@ func (m *Manager) Set(ctx context.Context, name, period string) error {
 	if err := validatePeriod(period); err != nil {
 		return err
 	}
-	l, err := m.lock(ctx)
+	lk, err := m.lock(ctx)
 	if err != nil {
 		return err
 	}
-	defer l.Release()
+	defer lk.Release()
 
-	st, err := m.loadExisting()
+	l, err := LoadList(m.Layout.SubscriptionList())
 	if err != nil {
 		return err
 	}
-	s := st.Find(name)
-	if s == nil {
+	d := l.Find(name)
+	if d == nil {
 		return fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
-	if err := checkSource(Source{URL: s.URL, Path: s.Path}, "", period); err != nil {
+	if err := checkSource(Source{URL: d.URL, Path: d.Path}, "", period); err != nil {
 		return err
 	}
-	s.Update = period
-	return state.Save(m.Layout.StateFile(), st)
+	d.Update = period
+	return SaveList(m.Layout.SubscriptionList(), l)
 }
 
 // checkSource 检查来源与其他设置是否相容：User-Agent 只用于地址；从标准输入导入的不能自动更新。
@@ -224,7 +232,7 @@ func checkSource(src Source, userAgent, period string) error {
 	if src.URL == "" && userAgent != "" {
 		return fmt.Errorf("%w: --user-agent applies only to a subscription URL", core.ErrInvalidArgument)
 	}
-	if src.Path == state.PathStdin && period != "" && period != settings.PeriodOff {
+	if src.Path == PathStdin && period != "" && period != settings.PeriodOff {
 		return fmt.Errorf("%w: a subscription imported from standard input cannot be updated automatically", core.ErrInvalidArgument)
 	}
 	return nil
@@ -243,8 +251,9 @@ func validatePeriod(period string) error {
 const retryAfter = 6 * time.Hour
 
 // NextUpdate 返回订阅下次自动更新的时间：上次抓取（成功或失败，取较晚者；从未抓取过时为添加时间）
-// 之后再过一个周期，上次失败时最多再过 retryAfter。不自动更新时返回零值。
-func NextUpdate(s *state.Subscription) time.Time {
+// 之后再过一个周期，上次失败时最多再过 retryAfter。不自动更新时返回零值；没有记录（手写进订阅列表）的
+// 立即到期。
+func NextUpdate(s *Subscription) time.Time {
 	d, err := settings.ParsePeriod(s.UpdatePeriod())
 	if err != nil || d == 0 {
 		return time.Time{}
@@ -262,30 +271,24 @@ func NextUpdate(s *state.Subscription) time.Time {
 
 // Remove 删除一个订阅及其内容。不能删除正在启用的订阅。
 func (m *Manager) Remove(ctx context.Context, name string) error {
-	l, err := m.lock(ctx)
+	lk, err := m.lock(ctx)
 	if err != nil {
 		return err
 	}
-	defer l.Release()
+	defer lk.Release()
 
-	st, err := m.loadExisting()
+	l, st, err := m.load()
 	if err != nil {
 		return err
 	}
-	if st.Find(name) == nil {
+	if l.Find(name) == nil {
 		return fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
-	if st.Active == name {
+	if l.Active == name {
 		return fmt.Errorf("%w: %s; switch to another subscription first (tunlr sub use)", ErrActive, name)
 	}
-	subs := st.Subscriptions[:0]
-	for _, s := range st.Subscriptions {
-		if s.Name != name {
-			subs = append(subs, s)
-		}
-	}
-	st.Subscriptions = subs
-	if err := state.Save(m.Layout.StateFile(), st); err != nil {
+	l.Subscriptions = slices.DeleteFunc(l.Subscriptions, func(d Def) bool { return d.Name == name })
+	if err := m.save(l, st); err != nil {
 		return err
 	}
 	if err := os.Remove(m.Layout.SubscriptionFile(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -323,47 +326,50 @@ func (m *Manager) Update(ctx context.Context, names []string, opts UpdateOptions
 		}
 		src = &s
 	}
-	l, err := m.lock(ctx)
+	lk, err := m.lock(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer l.Release()
+	defer lk.Release()
 
-	st, err := m.loadExisting()
+	l, st, err := m.load()
 	if err != nil {
 		return nil, err
 	}
-	var targets []*state.Subscription
+	if len(l.Subscriptions) == 0 {
+		return nil, fmt.Errorf("%w: no subscriptions added yet (tunlr sub add)", ErrNotFound)
+	}
+	var targets []*Def
 	if len(names) == 0 {
 		// 从标准输入导入的没有可以重读的来源，全部更新时跳过。
-		for i := range st.Subscriptions {
-			if st.Subscriptions[i].Path != state.PathStdin {
-				targets = append(targets, &st.Subscriptions[i])
+		for i := range l.Subscriptions {
+			if l.Subscriptions[i].Path != PathStdin {
+				targets = append(targets, &l.Subscriptions[i])
 			}
 		}
 	}
 	for _, name := range names {
-		s := st.Find(name)
-		if s == nil {
+		d := l.Find(name)
+		if d == nil {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 		}
-		cur := Source{URL: s.URL, Path: s.Path}
+		cur := Source{URL: d.URL, Path: d.Path}
 		if src != nil {
 			cur = *src
 		}
 		if cur.URL == "" && opts.UserAgent != nil && *opts.UserAgent != "" {
 			return nil, fmt.Errorf("%w: --user-agent applies only to a subscription URL", core.ErrInvalidArgument)
 		}
-		if cur.Path == state.PathStdin && opts.Stdin == nil {
-			return nil, fmt.Errorf("%w: %s was %v; give it again with: tunlr sub update %s --source -", core.ErrInvalidArgument, s.Name, ErrNoSource, s.Name)
+		if cur.Path == PathStdin && opts.Stdin == nil {
+			return nil, fmt.Errorf("%w: %s was %v; give it again with: tunlr sub update %s --source -", core.ErrInvalidArgument, d.Name, ErrNoSource, d.Name)
 		}
-		targets = append(targets, s)
+		targets = append(targets, d)
 	}
 
 	results := make([]UpdateResult, 0, len(targets))
 	failed := 0
-	for _, s := range targets {
-		old := *s
+	for _, d := range targets {
+		s := Subscription{Def: *d, Fetch: st.Fetches[d.Name]}
 		if opts.UserAgent != nil {
 			s.UserAgent = *opts.UserAgent
 		}
@@ -373,21 +379,23 @@ func (m *Manager) Update(ctx context.Context, names []string, opts UpdateOptions
 			if src.URL == "" {
 				s.UserAgent = ""
 			}
-			if src.Path == state.PathStdin {
+			if src.Path == PathStdin {
 				s.Update = ""
 			}
 		}
-		sum, err := m.fetchAndStore(ctx, s, opts.Stdin)
+		sum, err := m.fetchAndStore(ctx, &s, opts.Stdin)
 		if err != nil {
-			// 只记下失败，来源、User-Agent 和周期都恢复原样。
-			s.URL, s.Path, s.UserAgent, s.Update = old.URL, old.Path, old.UserAgent, old.Update
+			// 只记下失败，来源、User-Agent 和周期都不变。
 			failed++
 			s.LastError = err.Error()
 			s.LastErrorAt = m.now().UTC()
+		} else {
+			*d = s.Def
 		}
-		results = append(results, UpdateResult{Name: s.Name, Summary: sum, Err: err})
+		st.Fetches[d.Name] = s.Fetch
+		results = append(results, UpdateResult{Name: d.Name, Summary: sum, Err: err})
 	}
-	if err := state.Save(m.Layout.StateFile(), st); err != nil {
+	if err := m.save(l, st); err != nil {
 		return results, err
 	}
 	if failed > 0 {
@@ -400,47 +408,49 @@ func (m *Manager) Update(ctx context.Context, names []string, opts UpdateOptions
 //
 // 切换只改变启用的订阅；生成并发布新配置由配置流水线完成。
 func (m *Manager) Use(ctx context.Context, name string) (*Fetched, error) {
-	l, err := m.lock(ctx)
+	lk, err := m.lock(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer l.Release()
+	defer lk.Release()
 
-	st, err := m.loadExisting()
+	l, st, err := m.load()
 	if err != nil {
 		return nil, err
 	}
-	s := st.Find(name)
-	if s == nil {
+	d := l.Find(name)
+	if d == nil {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
-	res := &Fetched{Name: name, Activated: st.Active != name}
+	res := &Fetched{Name: name, Activated: l.Active != name}
 	data, err := os.ReadFile(m.Layout.SubscriptionFile(name))
 	if err == nil {
 		res.Summary, err = config.InspectSubscription(data)
 	}
 	if err != nil {
-		if res.Summary, err = m.fetchAndStore(ctx, s, nil); err != nil {
+		s := Subscription{Def: *d, Fetch: st.Fetches[name]}
+		if res.Summary, err = m.fetchAndStore(ctx, &s, nil); err != nil {
 			return nil, fmt.Errorf("not switching to %s: %w", name, err)
 		}
+		st.Fetches[name] = s.Fetch
 	}
-	st.Active = name
-	if err := state.Save(m.Layout.StateFile(), st); err != nil {
+	l.Active = name
+	if err := m.save(l, st); err != nil {
 		return nil, err
 	}
 	return res, nil
 }
 
 // fetchAndStore 抓取（地址）或读取（本地文件、stdin）订阅并检查内容，通过后原子写入内容文件，
-// 并更新 s 中的抓取信息。失败时不改动已保存的内容。
-func (m *Manager) fetchAndStore(ctx context.Context, s *state.Subscription, stdin io.Reader) (config.SubscriptionSummary, error) {
+// 并更新 s 中的抓取记录。失败时不改动已保存的内容。
+func (m *Manager) fetchAndStore(ctx context.Context, s *Subscription, stdin io.Reader) (config.SubscriptionSummary, error) {
 	var data []byte
 	var info *state.UserInfo
 	var err error
 	if s.URL != "" {
-		data, info, err = m.fetch(ctx, s)
+		data, info, err = m.fetch(ctx, &s.Def)
 	} else {
-		data, err = read(s, stdin)
+		data, err = read(&s.Def, stdin)
 	}
 	if err != nil {
 		return config.SubscriptionSummary{}, err
@@ -475,13 +485,29 @@ func (m *Manager) fetchAndStore(ctx context.Context, s *state.Subscription, stdi
 	return sum, nil
 }
 
-// loadExisting 读取状态文件；尚未添加过订阅时报告 ErrNotFound。
-func (m *Manager) loadExisting() (*state.State, error) {
-	st, err := state.Load(m.Layout.StateFile())
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("%w: no subscriptions added yet (tunlr sub add)", ErrNotFound)
+// load 读取订阅列表和状态文件（不存在时为新建的状态）。
+func (m *Manager) load() (*List, *state.State, error) {
+	l, err := LoadList(m.Layout.SubscriptionList())
+	if err != nil {
+		return nil, nil, err
 	}
-	return st, err
+	st, _, err := state.LoadOrNew(m.Layout.StateFile(), m.now())
+	if err != nil {
+		return nil, nil, err
+	}
+	if st.Fetches == nil {
+		st.Fetches = map[string]state.Fetch{}
+	}
+	return l, st, nil
+}
+
+// save 先写订阅列表再写状态文件，状态中去掉已不在列表中的订阅的记录（包括手动删掉的）。
+func (m *Manager) save(l *List, st *state.State) error {
+	if err := SaveList(m.Layout.SubscriptionList(), l); err != nil {
+		return err
+	}
+	maps.DeleteFunc(st.Fetches, func(name string, _ state.Fetch) bool { return l.Find(name) == nil })
+	return state.Save(m.Layout.StateFile(), st)
 }
 
 func (m *Manager) lock(ctx context.Context) (*lock.Lock, error) {

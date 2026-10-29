@@ -19,7 +19,6 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/setup"
-	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
@@ -806,13 +805,13 @@ func subscriptionFields() []inputField {
 	return []inputField{
 		{title: "Name of the subscription", description: "e.g. home or work; letters, digits, '.', '_' and '-'", validate: subscription.ValidateName},
 		{title: "Subscription URL or file", description: "The URL your provider gives for Clash/mihomo, or the path of a file on this server.", validate: func(s string) error {
-			if s == state.PathStdin {
+			if s == subscription.PathStdin {
 				return errors.New("standard input works only on the command line: tunlr sub add <name> - < file")
 			}
 			_, err := subscription.ParseSource(s)
 			return err
 		}},
-		{title: "Update it how often?", description: "A file is read again on this schedule. Change later with tunlr update set sub.", options: periods, initial: state.DefaultUpdate},
+		{title: "Update it how often?", description: "A file is read again on this schedule. Change later with tunlr update set sub.", options: periods, initial: subscription.DefaultUpdate},
 		filterFields()[0], filterFields()[1],
 	}
 }

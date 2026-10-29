@@ -33,10 +33,13 @@ type backupView struct {
 }
 
 func newBackupView(file string, b *backup.Backup) backupView {
-	v := backupView{File: file, Host: b.Host, Tunlr: b.Tunlr, CreatedAt: b.CreatedAt, Active: b.Active,
+	v := backupView{File: file, Host: b.Host, Tunlr: b.Tunlr, CreatedAt: b.CreatedAt,
 		Subscriptions: []string{}, Mixins: []string{}, Settings: b.Settings != nil, Devices: len(b.Devices), Switches: b.Switches}
-	for _, s := range b.Subscriptions {
-		v.Subscriptions = append(v.Subscriptions, s.Name)
+	if l := b.Subscriptions; l != nil {
+		v.Active = l.Active
+		for _, s := range l.Subscriptions {
+			v.Subscriptions = append(v.Subscriptions, s.Name)
+		}
 	}
 	for _, m := range b.Mixins {
 		v.Mixins = append(v.Mixins, m.Name)
@@ -82,7 +85,7 @@ func (a *app) printBackup(v backupView, b *backup.Backup) {
 		filters = append(filters, "QUIC blocked")
 	}
 	if b.Filter.Ports {
-		filters = append(filters, "common ports only")
+		filters = append(filters, "some ports only")
 	}
 	if len(filters) == 0 {
 		filters = []string{a.style.dim("none")}
@@ -124,11 +127,11 @@ func describeSaved(s setup.SavedBackup) string {
 	}
 	b := s.Backup
 	subs := "no subscriptions"
-	if len(b.Subscriptions) > 0 {
-		names := make([]string, len(b.Subscriptions))
-		for i, sub := range b.Subscriptions {
+	if l := b.Subscriptions; l != nil && len(l.Subscriptions) > 0 {
+		names := make([]string, len(l.Subscriptions))
+		for i, sub := range l.Subscriptions {
 			names[i] = sub.Name
-			if sub.Name == b.Active {
+			if sub.Name == l.Active {
 				names[i] += " (active)"
 			}
 		}

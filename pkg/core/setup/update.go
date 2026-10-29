@@ -96,22 +96,23 @@ func (i *Installer) Schedules() ([]Schedule, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
+	subs, err := i.subscriptions().List()
+	if err != nil {
+		return nil, err
+	}
 	var out []Schedule
-	if st != nil {
-		for k := range st.Subscriptions {
-			s := &st.Subscriptions[k]
-			sched := Schedule{Task: TaskSubscription, Name: s.Name, Active: s.Name == st.Active, Period: s.UpdatePeriod(), Next: subscription.NextUpdate(s)}
-			switch {
-			case s.LastErrorAt.After(s.FetchedAt):
-				sched.Last = &state.UpdateRun{At: s.LastErrorAt, Status: StepFailed, Message: s.LastError}
-			case !s.FetchedAt.IsZero():
-				sched.Last = &state.UpdateRun{At: s.FetchedAt, Status: StepOK}
-				if s.Counts != nil {
-					sched.Last.Message = fmt.Sprintf("%d proxies", s.Counts.Proxies)
-				}
+	for _, s := range subs {
+		sched := Schedule{Task: TaskSubscription, Name: s.Name, Active: s.Active, Period: s.UpdatePeriod(), Next: subscription.NextUpdate(&s.Subscription)}
+		switch {
+		case s.LastErrorAt.After(s.FetchedAt):
+			sched.Last = &state.UpdateRun{At: s.LastErrorAt, Status: StepFailed, Message: s.LastError}
+		case !s.FetchedAt.IsZero():
+			sched.Last = &state.UpdateRun{At: s.FetchedAt, Status: StepOK}
+			if s.Counts != nil {
+				sched.Last.Message = fmt.Sprintf("%d proxies", s.Counts.Proxies)
 			}
-			out = append(out, sched)
 		}
+		out = append(out, sched)
 	}
 
 	geo, err := i.geoSchedule(st)
@@ -345,13 +346,12 @@ func (i *Installer) record(ctx context.Context, task string, steps []Step) error
 // updateSubscriptions 重新抓取 names 列出的订阅，每个订阅一步（名为 "sub <名称>"），返回启用的订阅
 // 是否抓取成功（成功才需要发布）。
 func (i *Installer) updateSubscriptions(ctx context.Context, names []string, push func(name, status, msg string) Step) bool {
-	st, err := state.Load(i.Layout.StateFile())
+	list, err := subscription.LoadList(i.Layout.SubscriptionList())
 	if err != nil {
 		push("subscription", StepFailed, err.Error())
 		return false
 	}
-	subs := &subscription.Manager{Layout: i.Layout, Version: i.Version, Now: i.Now}
-	results, err := subs.Update(ctx, names, subscription.UpdateOptions{})
+	results, err := i.subscriptions().Update(ctx, names, subscription.UpdateOptions{})
 	if results == nil {
 		push("subscription", StepFailed, err.Error())
 		return false
@@ -363,7 +363,7 @@ func (i *Installer) updateSubscriptions(ctx context.Context, names []string, pus
 			continue
 		}
 		push("sub "+r.Name, StepOK, fmt.Sprintf("%d proxies", r.Summary.Proxies))
-		if r.Name == st.Active {
+		if r.Name == list.Active {
 			activeOK = true
 		}
 	}

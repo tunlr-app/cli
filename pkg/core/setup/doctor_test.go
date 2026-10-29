@@ -15,6 +15,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/state"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
 // doctorHost 是一台满足支持条件的假机器（root、Debian 12、arm64），不运行任何真实命令。
@@ -215,15 +216,18 @@ func TestDoctorInstalled(t *testing.T) {
 func TestDoctorSubscriptions(t *testing.T) {
 	i, _ := newDoctorInstaller(t)
 	day := 24 * time.Hour
-	st := &state.State{Active: "main", Subscriptions: []state.Subscription{
-		{Name: "main", FetchedAt: testNow.Add(-day), UserInfo: &state.UserInfo{Total: 100, Download: 100, Expire: testNow.Add(30 * day)}},
-		{Name: "spare", FetchedAt: testNow.Add(-2 * day), LastError: "HTTP 403", LastErrorAt: testNow.Add(-day),
-			UserInfo: &state.UserInfo{Expire: testNow.Add(-day)}},
-		{Name: "soon", FetchedAt: testNow, UserInfo: &state.UserInfo{Total: 100, Upload: 50, Download: 45, Expire: testNow.Add(3 * day)}},
-		{Name: "fine", FetchedAt: testNow, UserInfo: &state.UserInfo{Total: 100, Download: 10}},
-	}}
+	entry := func(name string, f state.Fetch) subscription.Entry {
+		return subscription.Entry{Subscription: subscription.Subscription{Def: subscription.Def{Name: name}, Fetch: f}, Active: name == "main"}
+	}
+	subs := []subscription.Entry{
+		entry("main", state.Fetch{FetchedAt: testNow.Add(-day), UserInfo: &state.UserInfo{Total: 100, Download: 100, Expire: testNow.Add(30 * day)}}),
+		entry("spare", state.Fetch{FetchedAt: testNow.Add(-2 * day), LastError: "HTTP 403", LastErrorAt: testNow.Add(-day),
+			UserInfo: &state.UserInfo{Expire: testNow.Add(-day)}}),
+		entry("soon", state.Fetch{FetchedAt: testNow, UserInfo: &state.UserInfo{Total: 100, Upload: 50, Download: 45, Expire: testNow.Add(3 * day)}}),
+		entry("fine", state.Fetch{FetchedAt: testNow, UserInfo: &state.UserInfo{Total: 100, Download: 10}}),
+	}
 	c := &doctor.Checker{Group: doctor.GroupInstall}
-	i.checkSubscriptions(c, st)
+	i.checkSubscriptions(c, subs, nil)
 	got := map[string]doctor.Check{}
 	for _, ch := range c.List {
 		got[ch.ID] = ch
@@ -243,5 +247,12 @@ func TestDoctorSubscriptions(t *testing.T) {
 	}
 	if m := got["install.sub-soon"].Message; !strings.Contains(m, "95% of the traffic") || !strings.Contains(m, "expires on") {
 		t.Errorf("soon: %q", m)
+	}
+
+	// 订阅列表读不出来时判 fail，提示改文件。
+	c = &doctor.Checker{Group: doctor.GroupInstall}
+	i.checkSubscriptions(c, nil, errors.New("subscription list: bad"))
+	if len(c.List) != 1 || c.List[0].Status != doctor.Fail || !strings.Contains(c.List[0].Hint, "subscriptions.yaml") {
+		t.Errorf("broken list: %+v", c.List)
 	}
 }

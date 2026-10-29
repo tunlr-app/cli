@@ -13,6 +13,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/pkg/core/state"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
 func TestSaveBackupKeepsThree(t *testing.T) {
@@ -50,10 +51,12 @@ func TestWriteKeepsOtherFiles(t *testing.T) {
 	}
 	st := &state.State{Version: state.Version, InstanceID: "8f0f8b4e-3c1d-4d6a-9b2e-0c5f6a7b8c9d",
 		Kernels: []state.Kernel{{Version: "v1.19.33"}}, Tun: state.TunOn,
-		Subscriptions: []state.Subscription{{Name: "old", URL: "https://old.example/"}}, Active: "old"}
+		Fetches: map[string]state.Fetch{"old": {FetchedAt: time.Now()}}}
 	if err := state.Save(i.Layout.StateFile(), st); err != nil {
 		t.Fatal(err)
 	}
+	os.MkdirAll(i.Layout.ConfigDir(), 0o755)
+	os.WriteFile(i.Layout.SubscriptionList(), []byte("active: old\nsubscriptions:\n  - {name: old, url: https://old.example/}\n"), 0o600)
 	mixins := i.Layout.MixinDir()
 	os.MkdirAll(mixins, 0o700)
 	os.WriteFile(filepath.Join(mixins, "10-old.yaml"), []byte("a: 1\n"), 0o600)
@@ -66,7 +69,7 @@ func TestWriteKeepsOtherFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(mixins, "kept", "notes"), []byte("x"), 0o600)
 
 	b := &backup.Backup{
-		Subscriptions: []state.Subscription{{Name: "new", URL: "https://new.example/"}}, Active: "new",
+		List:      []byte("active: new\nsubscriptions:\n  - {name: new, url: https://new.example/}\n"),
 		APISecret: "s", Contents: map[string][]byte{"new": []byte("proxies: []\n")},
 		Mixins: []config.Mixin{{Name: "new/10-filter.yaml", Data: []byte("b: 2\n")}},
 	}
@@ -91,8 +94,12 @@ func TestWriteKeepsOtherFiles(t *testing.T) {
 	if got.InstanceID != st.InstanceID || len(got.Kernels) != 1 || got.Tun != state.TunOn {
 		t.Errorf("local state changed: %+v", got)
 	}
-	if got.Active != "new" || got.APISecret != "s" || len(got.Subscriptions) != 1 {
+	// 抓取记录清空，订阅列表整体替换。
+	if got.APISecret != "s" || got.Fetches != nil {
 		t.Errorf("restored state: %+v", got)
+	}
+	if l, err := subscription.LoadList(i.Layout.SubscriptionList()); err != nil || l.Active != "new" || len(l.Subscriptions) != 1 {
+		t.Errorf("restored list: %+v, %v", l, err)
 	}
 	if _, err := os.Stat(i.Layout.SubscriptionFile("new")); err != nil {
 		t.Error(err)

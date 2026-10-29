@@ -11,6 +11,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/state"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
 // Status 汇总 tunlr 的当前状态。版本等一律以内核实际情况为准，工具的记录只作为已知可用的历史。
@@ -137,9 +138,14 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	if st != nil {
-		s.Subscription, s.PanelLAN, s.ProxyLAN = st.Active, st.PanelLAN != nil, st.ProxyLAN != nil
+		s.PanelLAN, s.ProxyLAN = st.PanelLAN != nil, st.ProxyLAN != nil
 		s.Filter = filterStatus(st)
 	}
+	list, err := subscription.LoadList(i.Layout.SubscriptionList())
+	if err != nil {
+		return nil, err
+	}
+	s.Subscription = list.Active
 	if s.Updates, err = i.Schedules(); err != nil {
 		return nil, err
 	}

@@ -47,7 +47,7 @@ func TestLoadOrNew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"version": 1,`) {
+	if !strings.Contains(string(data), `"version": 2,`) {
 		t.Errorf("state file lacks version field:\n%s", data)
 	}
 }
@@ -73,8 +73,8 @@ func TestDecodeErrors(t *testing.T) {
 		{"not json", `{`, "unexpected end of JSON input"},
 		{"no version", `{"instance_id":"` + validID + `"}`, "missing or invalid version"},
 		{"fractional version", `{"version":1.5,"instance_id":"` + validID + `"}`, "missing or invalid version"},
-		{"newer", `{"version":9,"instance_id":"` + validID + `"}`, "version 9 is newer than this tunlr supports (1); upgrade tunlr"},
-		{"bad id", `{"version":1,"instance_id":"abc"}`, `invalid instance_id "abc"`},
+		{"newer", `{"version":9,"instance_id":"` + validID + `"}`, "version 9 is newer than this tunlr supports (2); upgrade tunlr"},
+		{"bad id", `{"version":2,"instance_id":"abc"}`, `invalid instance_id "abc"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

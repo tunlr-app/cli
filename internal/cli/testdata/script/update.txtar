@@ -26,12 +26,12 @@ stdout '^Updates:\s+sub main daily, last ok '
 stdout '^\s+sub spare never$'
 stdout '^\s+geo weekly by mihomo, not verified yet$'
 
-# update set sub 改订阅的周期，保存在状态文件中；default 恢复默认值
+# update set sub 改订阅的周期，保存在订阅列表中；default 恢复默认值
 exec tunlr update set sub main 6h
 stdout '^"main" is fetched again every 6 hours\.$'
-grep '"update": "6h"' root/var/lib/tunlr/state.json
+grep '^    update: 6h$' root/etc/tunlr/subscriptions.yaml
 exec tunlr update set sub main default
-! grep '"update": "6h"' root/var/lib/tunlr/state.json
+! grep '^    update: 6h$' root/etc/tunlr/subscriptions.yaml
 exec tunlr update set sub spare 1d
 exec tunlr update set sub spare off
 stdout 'no longer updated automatically'

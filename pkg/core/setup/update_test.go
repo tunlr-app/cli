@@ -13,6 +13,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/state"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
 // installedAt 把状态文件的安装时间改为 at，清掉更新记录，并加上订阅 home（启用，最近一次抓取在
@@ -24,12 +25,28 @@ func installedAt(t *testing.T, i *Installer, at, fetched time.Time) {
 	t.Cleanup(airport.Close)
 	st := tunSwitch(t, i)
 	st.CreatedAt, st.Updates = at, nil
-	st.Subscriptions = []state.Subscription{
-		{Name: "home", URL: airport.URL + "/home", AddedAt: at, FetchedAt: fetched},
-		{Name: "spare", URL: airport.URL + "/spare", Update: settings.PeriodOff, AddedAt: at, FetchedAt: fetched},
-	}
-	st.Active = "home"
+	st.Fetches = map[string]state.Fetch{"home": {AddedAt: at, FetchedAt: fetched}, "spare": {AddedAt: at, FetchedAt: fetched}}
 	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	l := &subscription.List{Active: "home", Subscriptions: []subscription.Def{
+		{Name: "home", URL: airport.URL + "/home"},
+		{Name: "spare", URL: airport.URL + "/spare", Update: settings.PeriodOff},
+	}}
+	if err := subscription.SaveList(i.Layout.SubscriptionList(), l); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// editList 修改订阅列表。
+func editList(t *testing.T, i *Installer, edit func(l *subscription.List)) {
+	t.Helper()
+	l, err := subscription.LoadList(i.Layout.SubscriptionList())
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit(l)
+	if err := subscription.SaveList(i.Layout.SubscriptionList(), l); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -58,7 +75,9 @@ func TestSchedules(t *testing.T) {
 	}
 	// 抓取失败后最多 6 小时再试。
 	st := tunSwitch(t, i)
-	st.Subscriptions[0].LastError, st.Subscriptions[0].LastErrorAt = "HTTP 500", testNow.Add(-time.Hour)
+	f := st.Fetches["home"]
+	f.LastError, f.LastErrorAt = "HTTP 500", testNow.Add(-time.Hour)
+	st.Fetches["home"] = f
 	if err := state.Save(i.Layout.StateFile(), st); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +173,7 @@ func TestUpdateRunsDueTasks(t *testing.T) {
 	if got := stepNames(res); got != "sub home,kernel" || res.Steps[0].Status != StepFailed {
 		t.Errorf("steps = %+v", res.Steps)
 	}
-	if s := tunSwitch(t, i).Find("home"); s.LastError == "" || !s.LastErrorAt.Equal(testNow) {
+	if s := tunSwitch(t, i).Fetches["home"]; s.LastError == "" || !s.LastErrorAt.Equal(testNow) {
 		t.Errorf("failure not recorded: %+v", s)
 	}
 
@@ -218,11 +237,7 @@ func TestSyncTimers(t *testing.T) {
 	}
 	// 全部订阅都不自动更新、配置中也关闭了 geo 数据的自动更新时，tunlr-update.timer 仍然启用：面板随时
 	// 可以让内核更新 geo 数据，之后要核对。
-	st := tunSwitch(t, i)
-	st.Subscriptions[0].Update = settings.PeriodOff
-	if err := state.Save(i.Layout.StateFile(), st); err != nil {
-		t.Fatal(err)
-	}
+	editList(t, i, func(l *subscription.List) { l.Subscriptions[0].Update = settings.PeriodOff })
 
 	writeCoreConfig(t, i, "geo-auto-update: false\n")
 	h.calls = nil
@@ -230,7 +245,7 @@ func TestSyncTimers(t *testing.T) {
 		t.Errorf("all off: %v, %q", err, h.calls)
 	}
 	// 透明代理开启时启用检查。
-	st = tunSwitch(t, i)
+	st := tunSwitch(t, i)
 	st.SetTun(state.TunOn, time.Time{})
 	if err := state.Save(i.Layout.StateFile(), st); err != nil {
 		t.Fatal(err)

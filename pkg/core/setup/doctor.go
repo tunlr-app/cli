@@ -23,6 +23,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/state"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
 // DoctorOptions 是诊断的参数。
@@ -197,7 +198,8 @@ func (i *Installer) installChecks(ctx context.Context, h *doctor.Host, quick boo
 	i.checkPanelLAN(ctx, c, st)
 	i.checkProxyLAN(c, st)
 	i.checkPorts(ctx, h, c, running != "")
-	i.checkSubscriptions(c, st)
+	subs, err := i.subscriptions().List()
+	i.checkSubscriptions(c, subs, err)
 	return c.List
 }
 
@@ -517,22 +519,25 @@ func (i *Installer) checkPorts(ctx context.Context, h *doctor.Host, c *doctor.Ch
 	}
 }
 
-// checkSubscriptions 检查订阅：最近一次抓取失败、已到期或快到期、流量用完或快用完。启用的订阅
-// 到期或流量用完判 fail，其余判 warn。
-func (i *Installer) checkSubscriptions(c *doctor.Checker, st *state.State) {
-	if st == nil || len(st.Subscriptions) == 0 {
+// checkSubscriptions 检查订阅列表（listErr 是读取它的错误）和各订阅：最近一次抓取失败、已到期或快到期、
+// 流量用完或快用完。启用的订阅到期或流量用完判 fail，其余判 warn。
+func (i *Installer) checkSubscriptions(c *doctor.Checker, subs []subscription.Entry, listErr error) {
+	if listErr != nil {
+		c.Add("subscriptions", doctor.Fail, "Subscriptions", listErr.Error(), "fix "+i.Layout.SubscriptionList())
+		return
+	}
+	if len(subs) == 0 {
 		c.Add("subscriptions", doctor.Warn, "Subscriptions", "no subscription", "tunlr sub add <name> <url>")
 		return
 	}
-	if st.Active == "" {
+	if !slices.ContainsFunc(subs, func(e subscription.Entry) bool { return e.Active }) {
 		c.Add("subscriptions", doctor.Warn, "Subscriptions", "no active subscription", "tunlr sub use")
 	}
 	now := i.now()
-	for _, s := range st.Subscriptions {
+	for _, s := range subs {
 		id, name := "sub-"+s.Name, "Subscription "+s.Name
-		active := s.Name == st.Active
 		bad := doctor.Warn
-		if active {
+		if s.Active {
 			bad = doctor.Fail
 		}
 		var problems []string

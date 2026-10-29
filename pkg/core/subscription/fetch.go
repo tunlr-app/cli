@@ -30,7 +30,7 @@ func DefaultUserAgent(version string) string {
 
 // fetch 下载订阅内容并解析 subscription-userinfo 响应头。
 // 返回的错误不含订阅 URL，因为 URL 中通常带有访问令牌。
-func (m *Manager) fetch(ctx context.Context, s *state.Subscription) ([]byte, *state.UserInfo, error) {
+func (m *Manager) fetch(ctx context.Context, s *Def) ([]byte, *state.UserInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
@@ -68,7 +68,7 @@ func (m *Manager) fetch(ctx context.Context, s *state.Subscription) ([]byte, *st
 
 // userAgent 决定抓取 s 时使用的 User-Agent：订阅自己的设置优先，其次是工具设置中的
 // user-agent，最后是内置默认值。
-func (m *Manager) userAgent(s *state.Subscription) (string, error) {
+func (m *Manager) userAgent(s *Def) (string, error) {
 	if s.UserAgent != "" {
 		return s.UserAgent, nil
 	}

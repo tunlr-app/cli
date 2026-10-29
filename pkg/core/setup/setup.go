@@ -164,18 +164,18 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 		return nil, err
 	}
 
-	subs := &subscription.Manager{Layout: i.Layout, Version: i.Version, Now: i.Now}
-	if opts.SubName != "" {
-		st, err := state.Load(i.Layout.StateFile())
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	list, err := subscription.LoadList(i.Layout.SubscriptionList())
+	if err != nil {
+		return nil, err
+	}
+	if opts.SubName != "" && list.Find(opts.SubName) == nil {
+		progress("Adding the subscription " + opts.SubName)
+		if _, err := i.subscriptions().Add(ctx, opts.SubName, opts.SubURL, subscription.AddOptions{Filter: opts.SubFilter, Exclude: opts.SubExclude}); err != nil {
 			return nil, err
 		}
-		if st == nil || st.Find(opts.SubName) == nil {
-			progress("Adding the subscription " + opts.SubName)
-			if _, err := subs.Add(ctx, opts.SubName, opts.SubURL, subscription.AddOptions{Filter: opts.SubFilter, Exclude: opts.SubExclude}); err != nil {
-				return nil, err
-			}
-			res.SubscriptionAdded = opts.SubName
+		res.SubscriptionAdded = opts.SubName
+		if list, err = subscription.LoadList(i.Layout.SubscriptionList()); err != nil {
+			return nil, err
 		}
 	}
 
@@ -184,7 +184,7 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 		return nil, err
 	}
 	res.PanelLAN = st != nil && st.PanelLAN != nil
-	if st != nil && st.Active != "" {
+	if list.Active != "" {
 		progress("Publishing the configuration")
 		p := i.pipeline(owner)
 		plan, err := p.Plan(ctx)
@@ -257,17 +257,14 @@ func (i *Installer) InitSteps(ctx context.Context, opts InitOptions) ([]string, 
 	}
 	sd := i.systemd()
 	steps = append(steps, fmt.Sprintf("Install and enable %s and %s (subscriptions %s unless set otherwise; geo data checked after mihomo updates it)",
-		service.CoreUnit, service.UpdateTimer, settings.DescribePeriod(state.DefaultUpdate)))
+		service.CoreUnit, service.UpdateTimer, settings.DescribePeriod(subscription.DefaultUpdate)))
 
-	st, err := state.Load(i.Layout.StateFile())
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	list, err := subscription.LoadList(i.Layout.SubscriptionList())
+	if err != nil {
 		return nil, err
 	}
-	active := ""
-	if st != nil {
-		active = st.Active
-	}
-	if opts.SubName != "" && (st == nil || st.Find(opts.SubName) == nil) {
+	active := list.Active
+	if opts.SubName != "" && list.Find(opts.SubName) == nil {
 		steps = append(steps, fmt.Sprintf("Add the subscription %q", opts.SubName))
 		active = cmp.Or(active, opts.SubName)
 	}
@@ -478,4 +475,9 @@ func (i *Installer) log() *slog.Logger {
 		return i.Log
 	}
 	return slog.New(slog.DiscardHandler)
+}
+
+// subscriptions 返回管理订阅的 subscription.Manager。
+func (i *Installer) subscriptions() *subscription.Manager {
+	return &subscription.Manager{Layout: i.Layout, Version: i.Version, Now: i.Now}
 }

@@ -8,17 +8,22 @@ import (
 	"time"
 
 	"github.com/tunlr-app/cli/pkg/core/state"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
-// addSubscriptions 直接写入状态文件和订阅内容（不经网络），active 为启用的订阅。
+// addSubscriptions 直接写入订阅列表、状态文件和订阅内容（不经网络），active 为启用的订阅。
 func addSubscriptions(t *testing.T, a *app, active string, names ...string) {
 	t.Helper()
 	st, _, err := state.LoadOrNew(a.layout.StateFile(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
+	l, err := subscription.LoadList(a.layout.SubscriptionList())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, n := range names {
-		st.Subscriptions = append(st.Subscriptions, state.Subscription{Name: n, URL: "https://example.net/" + n})
+		l.Subscriptions = append(l.Subscriptions, subscription.Def{Name: n, URL: "https://example.net/" + n})
 		path := a.layout.SubscriptionFile(n)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -28,19 +33,28 @@ func addSubscriptions(t *testing.T, a *app, active string, names ...string) {
 			t.Fatal(err)
 		}
 	}
-	st.Active = active
+	l.Active = active
+	if err := subscription.SaveList(a.layout.SubscriptionList(), l); err != nil {
+		t.Fatal(err)
+	}
 	if err := state.Save(a.layout.StateFile(), st); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func activeSubscription(t *testing.T, a *app) string {
+// subscriptionList 读取订阅列表。
+func subscriptionList(t *testing.T, a *app) *subscription.List {
 	t.Helper()
-	st, err := state.Load(a.layout.StateFile())
+	l, err := subscription.LoadList(a.layout.SubscriptionList())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return st.Active
+	return l
+}
+
+func activeSubscription(t *testing.T, a *app) string {
+	t.Helper()
+	return subscriptionList(t, a).Active
 }
 
 func TestSubUseChooses(t *testing.T) {
@@ -100,9 +114,8 @@ func TestSubRemoveChooses(t *testing.T) {
 	if len(et.prompt.asked) != 2 || len(et.prompt.asked[0]) != 3 || strings.Contains(strings.Join(et.prompt.asked[0], "\n"), "main") {
 		t.Fatalf("the active subscription must not be offered: %q", et.prompt.asked)
 	}
-	st, _ := state.Load(et.a.layout.StateFile())
 	var left []string
-	for _, s := range st.Subscriptions {
+	for _, s := range subscriptionList(t, et.a).Subscriptions {
 		left = append(left, s.Name)
 	}
 	if strings.Join(left, ",") != "main,b" {
@@ -153,8 +166,7 @@ func TestUpdateSetChooses(t *testing.T) {
 	// 先选订阅，再选周期。
 	et.prompt.picks = []string{"backup", "every 6 hours"}
 	et.run(0, "update", "set")
-	st, _ := state.Load(et.a.layout.StateFile())
-	if got := st.Subscriptions[1].Update; got != "6h" {
+	if got := subscriptionList(t, et.a).Subscriptions[1].Update; got != "6h" {
 		t.Errorf("backup update = %q\n%s", got, et.stdout)
 	}
 

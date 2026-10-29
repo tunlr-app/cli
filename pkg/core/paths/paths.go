@@ -6,8 +6,8 @@ import "path/filepath"
 
 // Layout 是 tunlr 的磁盘布局。
 //
-//	/etc/tunlr/              用户可编辑：mixin（mixin.d/）、工具设置
-//	/var/lib/tunlr/          工具状态：状态文件、订阅缓存、配置历史、已知可用内核
+//	/etc/tunlr/              用户可编辑：mixin（mixin.d/）、工具设置、订阅列表
+//	/var/lib/tunlr/          工具状态：状态文件（含订阅的抓取记录）、订阅内容、配置历史、已知可用内核
 //	/var/lib/tunlr/core/     mihomo 工作目录（-d），归运行内核的专用用户所有
 //	/run/lock/tunlr.lock     文件锁
 type Layout struct {
@@ -24,6 +24,9 @@ func (l Layout) ConfigDir() string { return l.join("etc", "tunlr") }
 
 // SettingsFile 是工具设置，例如 GitHub 下载镜像。
 func (l Layout) SettingsFile() string { return l.join("etc", "tunlr", "settings.yaml") }
+
+// SubscriptionList 是订阅列表：各订阅的来源、User-Agent、更新周期和启用的订阅。
+func (l Layout) SubscriptionList() string { return l.join("etc", "tunlr", "subscriptions.yaml") }
 
 // MixinDir 存放用户的 mixin 文件（*.yaml），按文件名顺序叠加在订阅之上。
 func (l Layout) MixinDir() string { return l.join("etc", "tunlr", "mixin.d") }

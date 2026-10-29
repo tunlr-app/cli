@@ -12,7 +12,6 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/setup"
-	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
@@ -263,7 +262,7 @@ func (a *app) newUpdateSetCommand() *cobra.Command {
 		Use:   "set sub [name] [period]",
 		Short: "Set how often a subscription updates",
 		Long: "Set how often a subscription is fetched: a number of hours or days such as 6h, 1d or 7d,\n" +
-			"off for never, or default (" + state.DefaultUpdate + "). Every saved subscription is fetched on its own\n" +
+			"off for never, or default (" + subscription.DefaultUpdate + "). Every saved subscription is fetched on its own\n" +
 			"period; only the active one's configuration is published. A new subscription's period is\n" +
 			"given with tunlr sub add --update. What is left out is chosen from a list (needs a\n" +
 			"terminal).\n\n" +

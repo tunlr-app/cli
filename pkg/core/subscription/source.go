@@ -10,13 +10,12 @@ import (
 	"strings"
 
 	"github.com/tunlr-app/cli/pkg/core"
-	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
 // Source 是订阅的来源：地址、本地文件或标准输入，见 ParseSource。
 type Source struct {
 	URL string
-	// Path 是本地文件的绝对路径，或 state.PathStdin。
+	// Path 是本地文件的绝对路径，或 PathStdin。
 	Path string
 }
 
@@ -24,8 +23,8 @@ type Source struct {
 // "-" 是标准输入，其余都是本地文件的路径（转为绝对路径，必须是存在的普通文件）。
 func ParseSource(s string) (Source, error) {
 	switch {
-	case s == state.PathStdin:
-		return Source{Path: state.PathStdin}, nil
+	case s == PathStdin:
+		return Source{Path: PathStdin}, nil
 	case strings.Contains(s, "://"):
 		if err := ValidateURL(s); err != nil {
 			return Source{}, err
@@ -51,11 +50,11 @@ func ParseSource(s string) (Source, error) {
 }
 
 // Describe 返回订阅来源的展示形式：地址只保留 scheme://host/...，文件为路径，标准输入为 "stdin"。
-func Describe(s *state.Subscription) string {
+func Describe(s *Def) string {
 	switch {
 	case s.URL != "":
 		return Redact(s.URL)
-	case s.Path == state.PathStdin:
+	case s.Path == PathStdin:
 		return "stdin"
 	}
 	return s.Path
@@ -65,10 +64,10 @@ func Describe(s *state.Subscription) string {
 var ErrNoSource = errors.New("imported from standard input; nothing to read again")
 
 // read 读取本地文件或标准输入（stdin 为 nil 时报告 ErrNoSource），大小限制同抓取。
-func read(s *state.Subscription, stdin io.Reader) ([]byte, error) {
+func read(s *Def, stdin io.Reader) ([]byte, error) {
 	r := stdin
 	name := "standard input"
-	if s.Path != state.PathStdin {
+	if s.Path != PathStdin {
 		f, err := os.Open(s.Path)
 		if err != nil {
 			var pe *fs.PathError

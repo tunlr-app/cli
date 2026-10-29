@@ -17,6 +17,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/state"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
 // keepBackups 是还原前自动备份保留的份数。
@@ -25,7 +26,7 @@ const keepBackups = 3
 // ErrNotInitialized 表示这台机器还没有 tunlr 的状态，满足 errors.Is(err, core.ErrCheckFailed)。
 var ErrNotInitialized = fmt.Errorf("%w: tunlr has not been set up here yet; run tunlr init first", core.ErrCheckFailed)
 
-// Backup 收集当前的设置、mixin、订阅与状态中可以迁移的部分（见 backup.Backup）。
+// Backup 收集当前的设置、订阅列表、mixin、订阅内容与状态中可以迁移的部分（见 backup.Backup）。
 func (i *Installer) Backup(ctx context.Context) (*backup.Backup, error) {
 	l, err := i.lock(ctx)
 	if err != nil {
@@ -47,8 +48,7 @@ func (i *Installer) collect() (*backup.Backup, error) {
 	host, _ := os.Hostname()
 	b := &backup.Backup{
 		Version: backup.Version, Tunlr: i.Version, Host: host, CreatedAt: i.now().UTC(),
-		Subscriptions: st.Subscriptions, Active: st.Active, APISecret: st.APISecret,
-		Devices: st.Devices, Filter: st.Filter,
+		APISecret: st.APISecret, Devices: st.Devices, Filter: st.Filter,
 		Switches: backup.Switches{Tun: st.TunEnabled(), ProxyLAN: st.ProxyLAN != nil, PanelLAN: st.PanelLAN != nil},
 		Contents: map[string][]byte{},
 	}
@@ -59,10 +59,17 @@ func (i *Installer) collect() (*backup.Backup, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
+	if b.Subscriptions, err = subscription.LoadList(i.Layout.SubscriptionList()); err != nil {
+		return nil, err
+	}
+	b.List, err = os.ReadFile(i.Layout.SubscriptionList())
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
 	if b.Mixins, err = config.LoadAllMixins(i.Layout.MixinDir()); err != nil {
 		return nil, err
 	}
-	for _, s := range st.Subscriptions {
+	for _, s := range b.Subscriptions.Subscriptions {
 		data, err := os.ReadFile(i.Layout.SubscriptionFile(s.Name))
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
@@ -88,7 +95,7 @@ func (i *Installer) PlanRestore(ctx context.Context, b *backup.Backup) (*pipelin
 		}
 	}
 	return i.pipeline(nil).PlanRestore(ctx, pipeline.Restored{
-		Settings: set, Mixins: b.Mixins, Active: b.Active, Content: b.Contents[b.Active],
+		Settings: set, Mixins: b.Mixins, Active: b.Subscriptions.Active, Content: b.Contents[b.Subscriptions.Active],
 		APISecret: b.APISecret, Devices: b.Devices, Filter: b.Filter,
 	})
 }
@@ -102,8 +109,8 @@ type RestoreResult struct {
 }
 
 // Restore 还原备份 b，plan 是 PlanRestore 的结果（已经用户确认）：先把当前内容自动备份到 BackupsDir，
-// 再写入设置、mixin、订阅和状态，然后发布。发布失败时写回自动备份的内容，配置由流水线回滚。
-// 实例 ID、内核、开关和定时任务的记录保持本机的。
+// 再写入设置、订阅列表、mixin、订阅内容和状态，然后发布。发布失败时写回自动备份的内容，配置由流水线回滚。
+// 实例 ID、内核、开关和定时任务的记录保持本机的；订阅的抓取记录清空，各订阅在下次定时更新时重新抓取。
 func (i *Installer) Restore(ctx context.Context, b *backup.Backup, plan *pipeline.Plan) (*RestoreResult, error) {
 	l, err := i.lock(ctx)
 	if err != nil {
@@ -177,19 +184,13 @@ func (i *Installer) saveBackup(b *backup.Backup) (string, error) {
 	return path, nil
 }
 
-// write 把 b 写到磁盘：设置文件、mixin.d、订阅内容整体替换，状态文件只替换 b 中的部分。
+// write 把 b 写到磁盘：设置文件、订阅列表、mixin.d、订阅内容整体替换，状态文件只替换 b 中的部分。
 func (i *Installer) write(b *backup.Backup) error {
-	if b.Settings == nil {
-		if err := os.Remove(i.Layout.SettingsFile()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-	} else {
-		if err := os.MkdirAll(i.Layout.ConfigDir(), 0o755); err != nil {
-			return err
-		}
-		if err := fsutil.WriteFile(i.Layout.SettingsFile(), b.Settings, 0o644); err != nil {
-			return err
-		}
+	if err := replaceFile(i.Layout.SettingsFile(), b.Settings, 0o644); err != nil {
+		return err
+	}
+	if err := replaceFile(i.Layout.SubscriptionList(), b.List, 0o600); err != nil {
+		return err
 	}
 
 	if err := i.writeMixins(b.Mixins); err != nil {
@@ -207,9 +208,22 @@ func (i *Installer) write(b *backup.Backup) error {
 	if err != nil {
 		return err
 	}
-	st.Subscriptions, st.Active, st.APISecret = b.Subscriptions, b.Active, b.APISecret
-	st.Devices, st.Filter = b.Devices, b.Filter
+	st.Fetches, st.APISecret, st.Devices, st.Filter = nil, b.APISecret, b.Devices, b.Filter
 	return state.Save(i.Layout.StateFile(), st)
+}
+
+// replaceFile 把 /etc/tunlr 中的文件 path 换成 data（权限 perm），data 为 nil 时删除它。
+func replaceFile(path string, data []byte, perm os.FileMode) error {
+	if data == nil {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return fsutil.WriteFile(path, data, perm)
 }
 
 // writeMixins 让 mixin.d 和其中订阅 mixin 的目录恰好是 mixins：备份中没有的订阅目录清空 .yaml 后删除

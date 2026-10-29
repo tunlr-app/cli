@@ -34,6 +34,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/state"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 	"github.com/tunlr-app/cli/templates"
 )
 
@@ -168,32 +169,32 @@ func (p *Pipeline) Plan(ctx context.Context) (*Plan, error) {
 func (p *Pipeline) PlanWithMixin(ctx context.Context, m config.Mixin) (*Plan, error) {
 	opts := planOptions{edited: &m}
 	if sub, _, ok := strings.Cut(m.Name, "/"); ok {
-		st, _, err := state.LoadOrNew(p.Layout.StateFile(), p.now())
+		l, err := subscription.LoadList(p.Layout.SubscriptionList())
 		if err != nil {
 			return nil, err
 		}
-		if st.Find(sub) == nil {
+		if l.Find(sub) == nil {
 			return nil, fmt.Errorf("%w: no subscription named %s (see tunlr sub)", core.ErrInvalidArgument, sub)
 		}
-		if sub != st.Active {
+		if sub != l.Active {
 			opts.subscription = sub
 		}
 	}
 	return p.plan(ctx, opts)
 }
 
-// PlanSubscription 同 Plan，但按订阅 name 被启用时的样子合成，不改动状态文件，用于 sub use --dry-run。
+// PlanSubscription 同 Plan，但按订阅 name 被启用时的样子合成，不改动订阅列表，用于 sub use --dry-run。
 // name 不是启用的订阅时 Plan.Inactive 为真，这样的计划不能发布。订阅不存在时报 core.ErrInvalidArgument。
 func (p *Pipeline) PlanSubscription(ctx context.Context, name string) (*Plan, error) {
-	st, _, err := state.LoadOrNew(p.Layout.StateFile(), p.now())
+	l, err := subscription.LoadList(p.Layout.SubscriptionList())
 	if err != nil {
 		return nil, err
 	}
-	if st.Find(name) == nil {
+	if l.Find(name) == nil {
 		return nil, fmt.Errorf("%w: no subscription named %s (see tunlr sub)", core.ErrInvalidArgument, name)
 	}
 	opts := planOptions{}
-	if name != st.Active {
+	if name != l.Active {
 		opts.subscription = name
 	}
 	return p.plan(ctx, opts)
@@ -238,7 +239,7 @@ func (p *Pipeline) PlanWithSettings(ctx context.Context, set *settings.Settings)
 	return p.plan(ctx, planOptions{settings: set})
 }
 
-// Restored 是还原备份后的输入，代替设置文件、mixin.d、状态文件中的订阅、API secret、设备与过滤项。
+// Restored 是还原备份后的输入，代替设置文件、订阅列表中启用的订阅、mixin.d、状态文件中的 API secret、设备与过滤项。
 // 开关仍按状态文件。
 type Restored struct {
 	// Settings 是还原后的工具设置。
@@ -303,7 +304,7 @@ func switchesOf(st *state.State) switches {
 type planOptions struct {
 	// edited 不为 nil 时代替磁盘上的同名 mixin 文件。
 	edited *config.Mixin
-	// subscription 非空时代替状态文件中启用的订阅（检查没有启用的订阅的 mixin）。
+	// subscription 非空时代替订阅列表中启用的订阅（检查没有启用的订阅的 mixin）。
 	subscription string
 	// tun 不为 nil 时代替状态文件中的透明代理开关。
 	tun *bool
@@ -343,13 +344,20 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	var active string
 	if r := opts.restored; r != nil {
-		st.Active, st.APISecret, st.Devices, st.Filter = r.Active, r.APISecret, r.Devices, r.Filter
+		active, st.APISecret, st.Devices, st.Filter = r.Active, r.APISecret, r.Devices, r.Filter
+	} else {
+		l, err := subscription.LoadList(p.Layout.SubscriptionList())
+		if err != nil {
+			return nil, err
+		}
+		active = l.Active
 	}
 	if opts.subscription != "" {
-		st.Active = opts.subscription
+		active = opts.subscription
 	}
-	plan := &Plan{Kind: KindApply, Subscription: st.Active, Inactive: opts.subscription != ""}
+	plan := &Plan{Kind: KindApply, Subscription: active, Inactive: opts.subscription != ""}
 
 	secret := st.APISecret
 	if secret == "" || opts.resetSecret {
@@ -377,21 +385,21 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	var sub []byte
 	if opts.restored != nil {
 		sub = opts.restored.Content
-	} else if st.Active != "" {
-		sub, err = os.ReadFile(p.Layout.SubscriptionFile(st.Active))
+	} else if active != "" {
+		sub, err = os.ReadFile(p.Layout.SubscriptionFile(active))
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("the active subscription %q has no content yet; run: tunlr sub update %s", st.Active, st.Active)
+			return nil, fmt.Errorf("the active subscription %q has no content yet; run: tunlr sub update %s", active, active)
 		}
 		if err != nil {
 			return nil, err
 		}
 	}
-	mixins, err := config.LoadMixinsFor(p.Layout.MixinDir(), st.Active)
+	mixins, err := config.LoadMixinsFor(p.Layout.MixinDir(), active)
 	if err != nil {
 		return nil, err
 	}
 	if opts.restored != nil {
-		mixins = mixinsFor(opts.restored.Mixins, st.Active)
+		mixins = mixinsFor(opts.restored.Mixins, active)
 	}
 	if edited != nil {
 		mixins = withEdited(mixins, *edited)
@@ -485,7 +493,11 @@ func (p *Pipeline) PlanEnforce(ctx context.Context) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan := &Plan{Kind: KindApply, Subscription: st.Active}
+	l, err := subscription.LoadList(p.Layout.SubscriptionList())
+	if err != nil {
+		return nil, err
+	}
+	plan := &Plan{Kind: KindApply, Subscription: l.Active}
 	if plan.Config, plan.facts, err = config.Enforce(current, managed(st.APISecret, switchesOf(st), set)); err != nil {
 		return nil, fmt.Errorf("the published configuration: %w", err)
 	}

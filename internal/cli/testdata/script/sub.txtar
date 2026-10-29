@@ -28,10 +28,14 @@ stdout '"active": true'
 stdout '"total": 107374182400'
 ! stdout 'secret-token'
 
-# 内容和状态文件落在布局中，状态文件带版本号
+# 订阅列表在 /etc/tunlr（用户可改，带版本号），内容和抓取记录在 /var/lib/tunlr
 exists root/var/lib/tunlr/subscriptions/main.yaml
-grep '"version": 1' root/var/lib/tunlr/state.json
-grep '"active": "main"' root/var/lib/tunlr/state.json
+grep '^version: 1$' root/etc/tunlr/subscriptions.yaml
+grep '^active: main$' root/etc/tunlr/subscriptions.yaml
+grep '^    user-agent: custom/1\.0$' root/etc/tunlr/subscriptions.yaml
+grep '"version": 2' root/var/lib/tunlr/state.json
+grep '"fetched_at"' root/var/lib/tunlr/state.json
+! grep 'secret-token' root/var/lib/tunlr/state.json
 
 # 错误：重名、非法名称（用法错误）、机场返回节点列表
 exitcode 1 tunlr sub add main $PROVIDER/airport.yaml
@@ -60,7 +64,7 @@ stderr 'sub remove needs the names'
 stdout '^Subscription: backup$'
 stdout 'Not applied'
 ! stdout 'Switched'
-grep '"active": "main"' root/var/lib/tunlr/state.json
+grep '^active: main$' root/etc/tunlr/subscriptions.yaml
 exitcode 2 tunlr sub use nosuch --dry-run
 stderr 'no subscription named nosuch'
 exec tunlr sub use backup

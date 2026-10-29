@@ -16,7 +16,9 @@ import (
 )
 
 // Version 是状态文件当前的结构版本。结构变化时递增，并在 migrations 中补上从上一版本升级的函数。
-const Version = 1
+// 版本 2 把订阅的定义和启用的订阅移到了订阅列表中；版本 1 的文件只在测试机上出现过，已手动迁移，
+// 不提供迁移。
+const Version = 2
 
 // migrations[v] 把版本 v 的状态就地升级到 v+1。
 var migrations = map[int]func(raw map[string]any) error{}
@@ -28,10 +30,9 @@ type State struct {
 	InstanceID string    `json:"instance_id"`
 	CreatedAt  time.Time `json:"created_at"`
 
-	// Subscriptions 是已保存的订阅，按添加顺序排列。
-	Subscriptions []Subscription `json:"subscriptions,omitempty"`
-	// Active 是启用的订阅名称；同一时间只启用一个，没有订阅时为空。
-	Active string `json:"active,omitempty"`
+	// Fetches 是各订阅的抓取记录，键为订阅名。订阅本身（地址、周期等）和启用的订阅在用户可编辑的订阅列表
+	// 中（subscription.List），这里只记工具观察到的情况。
+	Fetches map[string]Fetch `json:"fetches,omitempty"`
 
 	// APISecret 是内核 HTTP API（面板经它访问）的 secret，第一次发布配置时生成。
 	APISecret string `json:"api_secret,omitempty"`
@@ -173,20 +174,10 @@ func (s *State) FindKernel(sum string) *Kernel {
 	return nil
 }
 
-// Subscription 是一个已保存的订阅。抓取到的内容单独存放在 paths.Layout.SubscriptionFile 中。
-type Subscription struct {
-	Name string `json:"name"`
-	// URL 通常带有机场的访问令牌，不能出现在输出和日志中。与 Path 二选一。
-	URL string `json:"url,omitempty"`
-	// Path 是本地文件订阅的绝对路径，更新时重新读取；为 PathStdin 时是从标准输入导入的，没有可以重读的来源。
-	Path string `json:"path,omitempty"`
-	// UserAgent 为空时使用默认值。机场按 User-Agent 决定返回的格式。
-	UserAgent string `json:"user_agent,omitempty"`
-	// Update 是自动更新的周期（如 "6h"、"1d"，"off" 为不自动更新），为空时为 DefaultUpdate。
-	// 不论是否启用都按它更新；只有启用的订阅更新后才发布配置。
-	Update  string    `json:"update,omitempty"`
-	AddedAt time.Time `json:"added_at"`
-
+// Fetch 是一个订阅的抓取记录。抓取到的内容单独存放在 paths.Layout.SubscriptionFile 中。
+type Fetch struct {
+	// AddedAt 是用 tunlr sub add 添加的时间；手写进订阅列表的订阅没有记录，视为立即到期。
+	AddedAt time.Time `json:"added_at,omitzero"`
 	// FetchedAt 是最近一次成功抓取的时间。
 	FetchedAt time.Time `json:"fetched_at,omitzero"`
 	// UserInfo 来自最近一次成功抓取的 subscription-userinfo 响应头，机场没有提供时为空。
@@ -197,28 +188,6 @@ type Subscription struct {
 	// LastError 是最近一次抓取失败的原因，再次成功后清空。
 	LastError   string    `json:"last_error,omitempty"`
 	LastErrorAt time.Time `json:"last_error_at,omitzero"`
-}
-
-// DefaultUpdate 是地址订阅自动更新的默认周期。本地文件只会被用户自己改，默认不自动更新。
-const DefaultUpdate = "1d"
-
-// PathStdin 是从标准输入导入的订阅的 Path。
-const PathStdin = "-"
-
-// DefaultPeriod 返回订阅自动更新的默认周期：地址为 DefaultUpdate，本地文件和标准输入为 "off"。
-func (s *Subscription) DefaultPeriod() string {
-	if s.URL == "" {
-		return "off"
-	}
-	return DefaultUpdate
-}
-
-// UpdatePeriod 返回订阅的自动更新周期（没有设置时为默认值）。从标准输入导入的总是 "off"。
-func (s *Subscription) UpdatePeriod() string {
-	if s.Update == "" || s.Path == PathStdin {
-		return s.DefaultPeriod()
-	}
-	return s.Update
 }
 
 // Counts 是订阅内容中路由部分各项的数量，含义同 config.SubscriptionSummary。
@@ -235,16 +204,6 @@ type UserInfo struct {
 	Download int64     `json:"download"`
 	Total    int64     `json:"total"`
 	Expire   time.Time `json:"expire,omitzero"`
-}
-
-// Find 返回名为 name 的订阅，不存在时返回 nil。
-func (s *State) Find(name string) *Subscription {
-	for i := range s.Subscriptions {
-		if s.Subscriptions[i].Name == name {
-			return &s.Subscriptions[i]
-		}
-	}
-	return nil
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)

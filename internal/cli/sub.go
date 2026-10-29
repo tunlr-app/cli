@@ -106,12 +106,12 @@ func (a *app) newSubAddCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			stdin := args[1] == state.PathStdin
+			stdin := args[1] == subscription.PathStdin
 			if stdin && a.terminal() {
 				return usageErrorf("- reads the subscription from standard input; redirect a file into it: tunlr sub add %s - < file.yaml", args[0])
 			}
 			if !cmd.Flags().Changed("update") && a.interactive() {
-				initial := state.DefaultUpdate
+				initial := subscription.DefaultUpdate
 				if !strings.Contains(args[1], "://") {
 					initial = settings.PeriodOff
 				}
@@ -166,7 +166,7 @@ func (a *app) newSubAddCommand() *cobra.Command {
 	cmd.Flags().StringVar(&userAgent, "user-agent", "",
 		"User-Agent sent when fetching a URL (default: user-agent in "+a.layout.SettingsFile()+", or "+
 			fmt.Sprintf("%q", subscription.DefaultUserAgent(a.info.Version))+")")
-	cmd.Flags().StringVar(&update, "update", "", updateFlagHelp+" (default "+state.DefaultUpdate+" for a URL, off for a file)")
+	cmd.Flags().StringVar(&update, "update", "", updateFlagHelp+" (default "+subscription.DefaultUpdate+" for a URL, off for a file)")
 	cmd.Flags().StringArrayVar(&include, "include", nil, "keep only proxies whose names match this regular expression (repeatable)")
 	cmd.Flags().StringArrayVar(&exclude, "exclude", nil, "drop proxies whose names match this regular expression (repeatable)")
 	return cmd
@@ -206,13 +206,13 @@ func (a *app) askFilter(cmd *cobra.Command, name string) (filter, exclude string
 func describeFetching(period, source string) string {
 	file := !strings.Contains(source, "://")
 	if period == "" {
-		period = state.DefaultUpdate
+		period = subscription.DefaultUpdate
 		if file {
 			period = settings.PeriodOff
 		}
 	}
 	switch {
-	case source == state.PathStdin:
+	case source == subscription.PathStdin:
 		return "not updated automatically (it was read from standard input)"
 	case file && period == settings.PeriodOff:
 		return "read again by tunlr sub update"
@@ -242,7 +242,7 @@ func (a *app) listSubscriptions() error {
 			url = subscription.Redact(e.URL)
 		}
 		views = append(views, subscriptionView{
-			Name: e.Name, URL: url, Path: e.Path, Source: subscription.Describe(&e.Subscription), Active: e.Active, UserAgent: e.UserAgent,
+			Name: e.Name, URL: url, Path: e.Path, Source: subscription.Describe(&e.Def), Active: e.Active, UserAgent: e.UserAgent,
 			Update: e.UpdatePeriod(), AddedAt: e.AddedAt, FetchedAt: e.FetchedAt, LastError: e.LastError, LastErrorAt: e.LastErrorAt,
 			UserInfo: e.UserInfo, Summary: e.Summary, Mixins: append([]string{}, e.Mixins...),
 		})
@@ -384,7 +384,7 @@ func (a *app) confirmRemove(cmd *cobra.Command, names []string) (bool, error) {
 	var lines []string
 	for _, e := range entries {
 		if slices.Contains(names, e.Name) {
-			line := e.Name + "  " + subscription.Describe(&e.Subscription)
+			line := e.Name + "  " + subscription.Describe(&e.Def)
 			if n, err := a.subscriptions().MixinFiles(e.Name); err == nil && n > 0 {
 				line += fmt.Sprintf("  (and its %s in %s)", plural(n, "mixin file", "mixin files"), a.layout.SubscriptionMixinDir(e.Name))
 			}
@@ -453,11 +453,11 @@ func (a *app) newSubUpdateCommand() *cobra.Command {
 				opts.UserAgent = &userAgent
 			}
 			if cmd.Flags().Changed("source") {
-				if source == state.PathStdin && a.terminal() {
+				if source == subscription.PathStdin && a.terminal() {
 					return usageErrorf("--source - reads the subscription from standard input; redirect a file into it")
 				}
 				opts.Source = &source
-				if source == state.PathStdin {
+				if source == subscription.PathStdin {
 					opts.Stdin = a.stdin
 				}
 			}

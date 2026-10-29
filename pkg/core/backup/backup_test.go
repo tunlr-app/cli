@@ -18,23 +18,25 @@ import (
 func sample() *Backup {
 	return &Backup{
 		Version: Version, Tunlr: "v1.0.0", Host: "box", CreatedAt: time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC),
-		Subscriptions: []state.Subscription{
-			{Name: "main", URL: "https://example.com/sub?token=x"},
-			{Name: "spare", URL: "https://example.org/sub"},
-			{Name: "local", Path: "/root/airport.yaml"},
-			{Name: "piped", Path: "-"},
-		},
-		Active:    "main",
 		APISecret: "0123456789abcdef0123456789abcdef",
 		Devices:   []state.Device{{IP: "192.168.1.5", Name: "tv", Route: state.RouteDirect}},
 		Filter:    state.Filter{QUIC: true},
 		Switches:  Switches{Tun: true, Gateway: "ens3", PanelLAN: true},
 		Settings:  []byte("user-agent: x\n"),
+		List:      []byte(sampleList),
 		Mixins: []config.Mixin{{Name: "10-a.yaml", Data: []byte("a: 1\n")}, {Name: "20-b.yaml", Data: []byte("b: 2\n")},
 			{Name: "main/10-filter.yaml", Data: []byte("c: 3\n")}},
 		Contents: map[string][]byte{"main": []byte("proxies: []\n")},
 	}
 }
+
+const sampleList = `# comment
+active: main
+subscriptions:
+  - {name: main, url: "https://example.com/sub?token=x"}
+  - {name: spare, url: "https://example.org/sub"}
+  - {name: piped, path: "-"}
+`
 
 func TestRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
@@ -46,6 +48,10 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got.Subscriptions.Active != "main" || len(got.Subscriptions.Subscriptions) != 3 {
+		t.Errorf("subscriptions = %+v", got.Subscriptions)
+	}
+	want.Subscriptions = got.Subscriptions
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got  %+v\nwant %+v", got, want)
 	}
@@ -101,14 +107,12 @@ func TestReadRejects(t *testing.T) {
 		{"unknown subscription", nil, map[string]string{"subscriptions/other.yaml": "x"}, `content for unknown subscription "other"`},
 		{"bad settings", func(b *Backup) { b.Settings = []byte("nope: 1\n") }, nil, "settings:"},
 		{"active without content", func(b *Backup) { b.Contents = nil }, nil, `the active subscription "main" has no content`},
-		{"active missing", func(b *Backup) { b.Active = "gone"; b.Contents = nil }, nil, `the active subscription "gone" is not in the backup`},
-		{"bad name", func(b *Backup) { b.Subscriptions[1].Name = "../x" }, nil, "subscription name"},
-		{"bad url", func(b *Backup) { b.Subscriptions[1].URL = "file:///etc/passwd" }, nil, `subscription "spare": invalid URL`},
-		{"relative path", func(b *Backup) { b.Subscriptions[2].Path = "airport.yaml" }, nil, `subscription "local": invalid source`},
-		{"url and path", func(b *Backup) { b.Subscriptions[2].URL = "https://x.example/" }, nil, `subscription "local": invalid source`},
+		{"bad list", func(b *Backup) { b.List = []byte("active: gone\n") }, nil, `the active subscription "gone" is not in the list`},
+		{"content without list", func(b *Backup) { b.List = nil }, nil, `content for unknown subscription "main"`},
 		{"nested mixin", nil, map[string]string{"mixin.d/main/x/1.yaml": "x"}, "invalid mixin file name"},
 		{"newer", func(b *Backup) { b.Version = Version + 1 }, nil, "newer than this tunlr supports"},
 		{"no version", func(b *Backup) { b.Version = 0 }, nil, "invalid version 0"},
+		{"older", func(b *Backup) { b.Version = 1 }, nil, "made by an older tunlr"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -131,7 +135,7 @@ func TestReadRejects(t *testing.T) {
 	}
 	// 凭据不出现在错误信息中。
 	b := sample()
-	b.Subscriptions[0].URL = "ftp://secret-token@example.com/"
+	b.List = []byte("subscriptions:\n  - {name: main, url: \"ftp://secret-token@example.com/\"}\n")
 	if _, err := Read(archive(t, b, nil)); err == nil || strings.Contains(err.Error(), "secret-token") {
 		t.Errorf("bad url error leaks the URL: %v", err)
 	}

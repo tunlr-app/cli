@@ -10,7 +10,6 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/config"
-	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
 func TestParseSource(t *testing.T) {
@@ -24,7 +23,7 @@ func TestParseSource(t *testing.T) {
 		want Source
 	}{
 		{"https://x.example/sub?token=t", Source{URL: "https://x.example/sub?token=t"}},
-		{"-", Source{Path: state.PathStdin}},
+		{"-", Source{Path: PathStdin}},
 		{file, Source{Path: file}},
 	} {
 		if got, err := ParseSource(tt.in); err != nil || got != tt.want {
@@ -56,7 +55,7 @@ func TestFileSource(t *testing.T) {
 	}
 	entries, _ := m.List()
 	s := entries[0].Subscription
-	if s.URL != "" || s.Path != file || s.UpdatePeriod() != "off" || Describe(&s) != file || !NextUpdate(&s).IsZero() {
+	if s.URL != "" || s.Path != file || s.UpdatePeriod() != "off" || Describe(&s.Def) != file || !NextUpdate(&s).IsZero() {
 		t.Errorf("entry = %+v (period %s)", s, s.UpdatePeriod())
 	}
 
@@ -112,7 +111,7 @@ func TestStdinSource(t *testing.T) {
 		t.Error("a broken source was accepted")
 	}
 	entries, _ := m.List()
-	if entries[0].Path != state.PathStdin || entries[0].URL != "" || entries[0].LastError == "" {
+	if entries[0].Path != PathStdin || entries[0].URL != "" || entries[0].LastError == "" {
 		t.Errorf("after a failed --source: %+v", entries[0].Subscription)
 	}
 	good := p.URL + "/ok"
@@ -120,7 +119,7 @@ func TestStdinSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries, _ = m.List()
-	if entries[0].Path != "" || entries[0].URL != good || entries[0].UpdatePeriod() != state.DefaultUpdate {
+	if entries[0].Path != "" || entries[0].URL != good || entries[0].UpdatePeriod() != DefaultUpdate {
 		t.Errorf("after --source URL: %+v", entries[0].Subscription)
 	}
 	if _, err := m.Update(ctx, nil, UpdateOptions{Source: &good}); !errors.Is(err, core.ErrInvalidArgument) {

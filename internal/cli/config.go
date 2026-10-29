@@ -10,7 +10,7 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/setup"
-	"github.com/tunlr-app/cli/pkg/core/state"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
 // managedView 是受管 mixin 的展示形式。独占键的只列出键（其中有 API secret）；提供默认值的给出内容。
@@ -159,10 +159,11 @@ func (a *app) showConfig(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	active := ""
-	if st, err := state.Load(a.layout.StateFile()); err == nil {
-		active = st.Active
+	list, err := subscription.LoadList(a.layout.SubscriptionList())
+	if err != nil {
+		return err
 	}
+	active := list.Active
 	v := configView{ConfigStatus: cs, History: newRevisionViews(revs, current), Dir: a.layout.MixinDir(), Files: []string{}, Managed: newManagedViews(managed)}
 	for _, m := range mixins {
 		v.Files = append(v.Files, m.Name)

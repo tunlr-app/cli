@@ -25,6 +25,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/pkg/core/state"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 	"github.com/tunlr-app/cli/templates"
 )
 
@@ -90,15 +91,15 @@ func newPipeline(t *testing.T) (*Pipeline, *fakeValidator, *fakeReloader) {
 // useSubscription 让名为 name 的订阅成为启用的订阅，内容为 content。
 func useSubscription(t *testing.T, l paths.Layout, name, content string) {
 	t.Helper()
-	st, _, err := state.LoadOrNew(l.StateFile(), time.Now())
+	list, err := subscription.LoadList(l.SubscriptionList())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Find(name) == nil {
-		st.Subscriptions = append(st.Subscriptions, state.Subscription{Name: name, URL: "https://example.net/sub"})
+	if list.Find(name) == nil {
+		list.Subscriptions = append(list.Subscriptions, subscription.Def{Name: name, URL: "https://example.net/sub"})
 	}
-	st.Active = name
-	if err := state.Save(l.StateFile(), st); err != nil {
+	list.Active = name
+	if err := subscription.SaveList(l.SubscriptionList(), list); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, l.SubscriptionFile(name), content)

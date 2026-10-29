@@ -111,7 +111,9 @@ func TestAddListRemove(t *testing.T) {
 		t.Errorf("summary from state = %+v", entries[0].Summary)
 	}
 	st, _ := state.Load(m.Layout.StateFile())
-	st.Subscriptions[0].Counts = nil
+	f := st.Fetches["first"]
+	f.Counts = nil
+	st.Fetches["first"] = f
 	if err := state.Save(m.Layout.StateFile(), st); err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +129,9 @@ func TestAddListRemove(t *testing.T) {
 	}
 	if err := m.Remove(ctx, "second"); err != nil {
 		t.Fatal(err)
+	}
+	if st, _ := state.Load(m.Layout.StateFile()); len(st.Fetches) != 1 {
+		t.Errorf("record of removed subscription kept: %v", st.Fetches)
 	}
 	if _, err := os.Stat(m.Layout.SubscriptionFile("second")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("content of removed subscription still exists: %v", err)
@@ -160,8 +165,10 @@ func TestAddRejects(t *testing.T) {
 			}
 		})
 	}
-	if _, err := os.Stat(m.Layout.StateFile()); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("failed adds created the state file: %v", err)
+	for _, f := range []string{m.Layout.StateFile(), m.Layout.SubscriptionList()} {
+		if _, err := os.Stat(f); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("failed adds created %s: %v", f, err)
+		}
 	}
 }
 
@@ -202,7 +209,7 @@ func TestUpdateKeepsLastGood(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := st.Find("a"); s.LastError == "" || s.LastErrorAt.IsZero() || s.FetchedAt.IsZero() {
+	if s := st.Fetches["a"]; s.LastError == "" || s.LastErrorAt.IsZero() || s.FetchedAt.IsZero() {
 		t.Errorf("failure not recorded: %+v", s)
 	}
 
@@ -214,7 +221,7 @@ func TestUpdateKeepsLastGood(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := st.Find("a"); s.LastError != "" || !s.LastErrorAt.IsZero() {
+	if s := st.Fetches["a"]; s.LastError != "" || !s.LastErrorAt.IsZero() {
 		t.Errorf("error not cleared after success: %+v", s)
 	}
 
@@ -235,11 +242,11 @@ func TestUserAgent(t *testing.T) {
 		return err
 	}
 	savedUA := func() string {
-		st, err := state.Load(m.Layout.StateFile())
+		l, err := LoadList(m.Layout.SubscriptionList())
 		if err != nil {
 			t.Fatal(err)
 		}
-		return st.Find("a").UserAgent
+		return l.Find("a").UserAgent
 	}
 
 	if _, err := m.Add(ctx, "a", p.URL+"/ok", AddOptions{}); err != nil {
