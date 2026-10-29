@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -17,24 +16,17 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
-	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/setup"
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
-// 主菜单的分类（第二级），按 --help 的分组排列：Configuration、Network、Kernel。
+// 主菜单的分类（第二级），按用户要做的事划分，不按命令树。
 const (
-	groupSubscriptions = "Subscriptions"
-	groupConfiguration = "Configuration"
-	groupUpdates       = "Scheduled updates"
-	groupSettings      = "Settings"
-	groupBackup        = "Backup"
-	groupTun           = "Transparent proxy"
-	groupProxy         = "Proxy port"
-	groupPanel         = "Panel"
-	groupDevices       = "LAN devices"
-	groupFilter        = "Filters"
-	groupKernel        = "Kernel (mihomo)"
+	groupConfig   = "Subs & config"
+	groupTraffic  = "Traffic"
+	groupDevices  = "LAN devices"
+	groupCore     = "mihomo & panel"
+	groupMaintain = "Maintenance"
 )
 
 const (
@@ -45,22 +37,20 @@ const (
 // menuRefresh 是菜单空闲时刷新状态行的间隔。
 const menuRefresh = 10 * time.Second
 
-// menuChrome 是菜单中选项以外的行数：状态行、空行、列表标题、空行、按键说明、等价命令，再留一行。
-const menuChrome = 7
+// menuChrome 是菜单中选项以外的行数：状态行、空行、列表标题、分类的说明、空行、按键说明、
+// 光标所在项的说明和等价命令，再留一行。
+const menuChrome = 9
 
 // menuItem 是主菜单的一项，按以下顺序判断：quit 退出菜单，back 回到第一级，group 进入这一分类，
-// ask 不为空时先在表单中询问这些项、由 build 得到参数，否则执行子命令 args。
+// 否则执行子命令 args。菜单只负责选择，需要提问的由子命令自己问。
 type menuItem struct {
 	label string
-	// note 是分类右侧的当前状态。
+	// desc 是光标停在这一项时列表下方的一行说明：会发生什么、有什么前提。
+	desc string
+	// note 是分类右侧的当前状态，也是进入分类后标题下的说明。
 	note  string
 	group string
-	// args 是要执行的子命令；分类的 args 是对应的查看命令，只用于列表下方显示的等价命令。
-	args []string
-	// usage 是先询问再执行的项在列表下方显示的等价命令（不含 tunlr），如 "backup restore <file>"。
-	usage string
-	ask   []inputField
-	build func(values []string) []string
+	args  []string
 	back  bool
 	quit  bool
 }
@@ -123,8 +113,8 @@ func (a *app) loadMenu(ctx context.Context) (menuData, error) {
 	return menuData{status: s, subs: subs, revisions: len(revs), backups: len(saved)}, nil
 }
 
-// menuModel 是主菜单的 Bubble Tea 模型。列表和添加订阅的表单都是嵌在里面的 huh 表单；
-// 执行操作时经 tea.Exec 交出终端（见 menuRun）。
+// menuModel 是主菜单的 Bubble Tea 模型。列表是嵌在里面的 huh 表单；执行操作时经 tea.Exec 交出
+// 终端（见 menuRun）。
 type menuModel struct {
 	a    *app
 	ctx  context.Context
@@ -142,13 +132,11 @@ type menuModel struct {
 	// last 记录每一级上次选的项。
 	last   map[string]string
 	title  string
+	note   string
 	items  []menuItem
 	labels []string
 	list   *huh.Select[int]
 	choice int
-	// adding 是正在填写表单的菜单项，values 是表单的值。
-	adding *menuItem
-	values []string
 	form   *huh.Form
 	init   tea.Cmd
 
@@ -188,7 +176,7 @@ func (m *menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.size = msg
 		// 列表的高度随终端高度变化。只在行数变了时重建：huh 的表单在 Init 时总会再请求一次终端大小，
 		// 每次都重建会没完没了地重画。
-		if m.adding == nil && m.listRows() != rows {
+		if m.listRows() != rows {
 			return m, m.showList(m.hoveredKey())
 		}
 	case menuTickMsg:
@@ -223,27 +211,21 @@ func (m *menuModel) View() tea.View {
 	return tea.NewView(m.statusLine() + "\n\n" + m.form.View() + "\n" + m.hint())
 }
 
-// hint 是光标所在那一项（或正在填写的表单）的等价命令，显示在列表下方。
+// hint 是列表下方的两行：光标所在那一项的说明和等价命令。没有时留空行，列表不跳动。
 func (m *menuModel) hint() string {
-	it := m.adding
-	if it == nil {
-		i, ok := m.list.Hovered()
-		if !ok || i >= len(m.items) {
-			return ""
+	var desc, line string
+	if i, ok := m.list.Hovered(); ok && i < len(m.items) {
+		it := m.items[i]
+		desc = it.desc
+		if it.args != nil {
+			line = commandLine(it.args)
 		}
-		it = &m.items[i]
-	}
-	line := ""
-	switch {
-	case it.usage != "":
-		line = "$ tunlr " + it.usage
-	case it.args != nil:
-		line = commandLine(it.args)
 	}
 	if m.size.Width > 1 {
+		desc = ansi.Truncate(desc, m.size.Width-1, "…")
 		line = ansi.Truncate(line, m.size.Width-1, "…")
 	}
-	return m.a.style.dim(line)
+	return m.a.style.dim(desc) + "\n" + m.a.style.dim(line)
 }
 
 // hoveredKey 是列表中光标所在那一项的 key，没有时为空。
@@ -257,7 +239,7 @@ func (m *menuModel) hoveredKey() string {
 	return ""
 }
 
-// listRows 是列表一次显示的选项行数：按终端高度尽量让第一级一屏放下，至少 maxListRows 行，更多时滚动。
+// listRows 是列表一次显示的选项行数：按终端高度尽量让一级一屏放下，至少 maxListRows 行，更多时滚动。
 func (m *menuModel) listRows() int {
 	return max(maxListRows, m.size.Height-menuChrome)
 }
@@ -265,37 +247,24 @@ func (m *menuModel) listRows() int {
 // showList 显示当前分类的列表，光标停在 hover（为空时为上次在这一级选的那一项）。
 // 状态变了、这一分类已不存在（如未安装）时回到第一级。
 func (m *menuModel) showList(hover string) tea.Cmd {
-	title, items := m.a.menuItems(m.group, m.data)
+	title, note, items := m.a.menuItems(m.group, m.data)
 	if items == nil {
 		m.group = ""
-		title, items = m.a.menuItems("", m.data)
+		title, note, items = m.a.menuItems("", m.data)
 	}
 	if hover == "" {
 		hover = m.last[m.group]
 	}
-	m.title, m.items, m.labels = title, items, m.a.menuLabels(items)
+	m.title, m.note, m.items, m.labels = title, note, items, m.a.menuLabels(items)
 	m.choice = max(0, slices.IndexFunc(items, func(it menuItem) bool { return it.key() == hover }))
-	m.list = huh.NewSelect[int]().Title(title).Options(intOptions(m.labels)...).Value(&m.choice).
-		Height(min(len(m.labels), m.listRows()) + 1)
-	m.adding = nil
-	return m.setForm(promptKeys("q"), m.list)
-}
-
-// showAsk 显示菜单项 it 的表单。
-func (m *menuModel) showAsk(it menuItem) tea.Cmd {
-	m.values = make([]string, len(it.ask))
-	fields := make([]huh.Field, len(it.ask))
-	for i, f := range it.ask {
-		if f.options != nil {
-			m.values[i] = f.initial
-			fields[i] = huh.NewSelect[string]().Title(f.title).Description(f.description).Options(f.options...).
-				Value(&m.values[i]).Height(listHeight(make([]string, len(f.options)), 2))
-			continue
-		}
-		fields[i] = huh.NewInput().Title(f.title).Description(f.description).Validate(f.validate).Value(&m.values[i])
+	// 高度包括标题，有说明时再加一行。
+	height := min(len(m.labels), m.listRows()) + 1
+	if note != "" {
+		height++
 	}
-	m.adding = &it
-	return m.setForm(promptKeys(), fields...)
+	m.list = huh.NewSelect[int]().Title(title).Description(note).Options(intOptions(m.labels)...).Value(&m.choice).
+		Height(height)
+	return m.setForm(promptKeys("q"), m.list)
 }
 
 func (m *menuModel) setForm(km *huh.KeyMap, fields ...huh.Field) tea.Cmd {
@@ -309,12 +278,9 @@ func (m *menuModel) setForm(km *huh.KeyMap, fields ...huh.Field) tea.Cmd {
 	return cmd
 }
 
-// back 处理取消：表单回到列表，分类回到第一级，第一级退出菜单。
+// back 处理取消：分类回到第一级，第一级退出菜单。
 func (m *menuModel) back() tea.Cmd {
-	switch {
-	case m.adding != nil:
-		return m.showList("")
-	case m.group != "":
+	if m.group != "" {
 		m.group = ""
 		return m.showList("")
 	}
@@ -322,12 +288,8 @@ func (m *menuModel) back() tea.Cmd {
 	return tea.Quit
 }
 
-// choose 处理列表或表单的提交。
+// choose 处理列表的提交。
 func (m *menuModel) choose() tea.Cmd {
-	if it := m.adding; it != nil {
-		args := it.build(m.values)
-		return tea.Batch(m.showList(""), m.start(*it, args))
-	}
 	it := m.items[m.choice]
 	m.last[m.group] = it.key()
 	switch {
@@ -340,14 +302,13 @@ func (m *menuModel) choose() tea.Cmd {
 	case it.group != "":
 		m.group = it.group
 		return m.showList("")
-	case it.ask != nil:
-		return m.showAsk(it)
 	}
-	return tea.Batch(m.showList(""), m.start(it, it.args))
+	return tea.Batch(m.showList(""), m.start(it))
 }
 
 // start 执行一个操作；正在刷新状态时等刷新完再执行。
-func (m *menuModel) start(it menuItem, args []string) tea.Cmd {
+func (m *menuModel) start(it menuItem) tea.Cmd {
+	args := it.args
 	// 子命令重新解析全局参数，执行完恢复；--verbose 带下去。
 	if m.opts.Verbose {
 		args = append(slices.Clone(args), "--verbose")
@@ -391,11 +352,8 @@ func (m *menuModel) loaded(msg menuDataMsg) tea.Cmd {
 
 // refreshList 在列表内容随状态变化时重建列表，光标留在原来那一项。
 func (m *menuModel) refreshList() tea.Cmd {
-	if m.adding != nil {
-		return nil
-	}
-	title, items := m.a.menuItems(m.group, m.data)
-	if title == m.title && slices.Equal(m.a.menuLabels(items), m.labels) {
+	title, note, items := m.a.menuItems(m.group, m.data)
+	if title == m.title && note == m.note && slices.Equal(m.a.menuLabels(items), m.labels) {
 		return nil
 	}
 	return m.showList(m.hoveredKey())
@@ -479,172 +437,168 @@ func (a *app) result(code int, interrupted bool, took time.Duration) string {
 	return a.style.bad("✗ Failed") + elapsed
 }
 
-// menuItems 返回分类 group（"" 为第一级）的标题和菜单项。没安装时第一级只能安装或查看状态，
-// 分类不存在；订阅、历史、透明代理和内核的操作只在有意义时出现。第一级最上面是需要处理的事项
-// （见 attention），分类的标题带上第一级中它右侧的状态。
-func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
+// op 是执行子命令的菜单项。
+func op(label, desc string, args ...string) menuItem {
+	return menuItem{label: label, desc: desc, args: args}
+}
+
+// toggle 是开关类的菜单项：只给出与当前状态相反的那个动作。
+func toggle(on bool, offItem, onItem menuItem) menuItem {
+	if on {
+		return offItem
+	}
+	return onItem
+}
+
+// menuItems 返回分类 group（"" 为第一级）的标题、标题下的说明和菜单项。没安装时第一级只能安装、
+// 查看状态或诊断，分类不存在。菜单项只在有意义时出现；开关类的只出现与当前状态相反的动作。
+// 第一级最上面是需要处理的事项（见 attention）。
+func (a *app) menuItems(group string, d menuData) (title, note string, items []menuItem) {
 	s := d.status
-	status := menuItem{label: "Show status", args: []string{"status"}}
-	diagnose := menuItem{label: "Run diagnostics", args: []string{"doctor"}}
+	status := op("Show status", "The service, kernel, sub, config, TUN and updates at a glance", "status")
+	diagnose := op("Diagnose", "Check this server and the installation, with hints for what fails", "doctor")
 	if !s.Installed {
 		if group != "" {
-			return "", nil
+			return "", "", nil
 		}
-		return "tunlr · not installed yet", []menuItem{
-			{label: "Install tunlr (init)", args: []string{"init"}}, status, diagnose, {label: menuQuit, quit: true}}
-	}
-	cat := func(name, note string, args ...string) menuItem {
-		return menuItem{label: name, group: name, note: note, args: args}
+		return "tunlr · not installed yet", "", []menuItem{
+			op("Install tunlr", "Download mihomo, create its service and the scheduled updates; asks a few questions first", "init"),
+			status, diagnose, {label: menuQuit, quit: true}}
 	}
 	groups := []menuItem{
-		cat(groupSubscriptions, a.describeSubscriptions(s, d.subs), "sub"),
-		cat(groupConfiguration, a.describeRevision(s), "config"),
-		cat(groupUpdates, a.describeUpdates(s.Updates), "update"),
-		cat(groupSettings, "", "settings"),
-		cat(groupBackup, a.describeBackups(d.backups), "backup"),
-		cat(groupTun, a.describeTun(s.Tun), "tun"),
-		cat(groupProxy, a.describeProxyLAN(s.ProxyLAN), "proxy"),
-		cat(groupPanel, a.describePanelLAN(s.PanelLAN), "panel"),
-		cat(groupDevices, a.describeDevicesNote(s.Devices), "devices"),
-		cat(groupFilter, a.describeFilterNote(s.Filter), "filter"),
-		cat(groupKernel, a.describeService(s), "core"),
+		{label: groupConfig, group: groupConfig, note: a.configNote(s, d.subs),
+			desc: "Add, switch and change subs; mixins; publish or roll back the config"},
+		{label: groupTraffic, group: groupTraffic, note: a.trafficNote(s),
+			desc: "What goes through mihomo: TUN, gateway mode, the proxy port and filters"},
+		{label: groupDevices, group: groupDevices, note: a.describeDevicesNote(s.Devices),
+			desc: "Devices on the LAN that use this server: names and how each one goes"},
+		{label: groupCore, group: groupCore, note: a.coreNote(s),
+			desc: "Start, stop, logs, upgrades and geo data; how to open the panel"},
+		{label: groupMaintain, group: groupMaintain, note: a.describeBackups(d.backups),
+			desc: "Backups, tool settings, diagnostics and repair"},
 	}
 	if group == "" {
-		items := append(a.attention(d), status)
+		items = append(a.attention(d), status)
 		items = append(items, groups...)
-		return "tunlr", append(items, diagnose, menuItem{label: menuQuit, quit: true})
+		return "tunlr", "", append(items, menuItem{label: menuQuit, quit: true})
 	}
-	title := "tunlr › " + group
-	if i := slices.IndexFunc(groups, func(it menuItem) bool { return it.group == group }); i >= 0 && groups[i].note != "" {
-		title += a.style.dim(" · ") + groups[i].note
+	i := slices.IndexFunc(groups, func(it menuItem) bool { return it.group == group })
+	if i < 0 {
+		return "", "", nil
 	}
-	back := menuItem{label: menuBack, back: true}
-	var items []menuItem
+	title, note = "tunlr › "+group, groups[i].note
 	switch group {
-	case groupSubscriptions:
-		items = append(items, menuItem{label: "List subscriptions", args: []string{"sub"}})
-		if len(d.subs) > 0 {
-			items = append(items,
-				menuItem{label: "Switch subscription", args: []string{"sub", "use"}},
-				menuItem{label: "Update subscriptions", args: []string{"sub", "update"}})
-		}
-		items = append(items, menuItem{label: "Add a subscription", ask: subscriptionFields(),
-			usage: "sub add <name> <url> --update <period> --include <regexp> --exclude <regexp>", build: addSubscriptionArgs})
-		if len(d.subs) > 1 {
-			items = append(items, menuItem{label: "Remove subscriptions", args: []string{"sub", "remove"}})
-		}
-	case groupConfiguration:
-		items = append(items,
-			menuItem{label: "Show the configuration, history and mixins", args: []string{"config"}},
-			menuItem{label: "Preview changes", args: []string{"config", "plan"}},
-			menuItem{label: "Preview and apply", args: []string{"config", "apply"}},
-			menuItem{label: "Edit a mixin", args: []string{"config", "edit"}})
-		if d.revisions > 0 {
-			items = append(items, menuItem{label: "Roll back to an earlier revision", args: []string{"config", "rollback"}})
-		}
-	case groupSettings:
-		items = append(items,
-			menuItem{label: "Show tool settings", args: []string{"settings"}},
-			menuItem{label: "Edit tool settings", args: []string{"settings", "edit"}})
-	case groupBackup:
-		items = append(items,
-			menuItem{label: "List automatic backups", args: []string{"backup"}},
-			menuItem{label: "Back up to a file", args: []string{"backup", "create"}})
-		if d.backups > 0 {
-			items = append(items, menuItem{label: "Restore an automatic backup (undo a restore)", args: []string{"backup", "restore"}})
-		}
-		items = append(items, menuItem{label: "Restore from a file", ask: []inputField{{
-			title:       "Backup file",
-			description: "A file made by tunlr backup create; the diff is shown before anything changes.",
-			validate: func(s string) error {
-				if fi, err := os.Stat(s); err != nil || fi.IsDir() {
-					return errors.New("no such file")
-				}
-				return nil
-			},
-		}}, usage: "backup restore <file>", build: func(v []string) []string { return []string{"backup", "restore", v[0]} }})
-	case groupTun:
-		if s.Tun != nil && s.Tun.Switch != "off" {
-			items = append(items, menuItem{label: "Turn TUN off", args: []string{"tun", "off"}})
-		} else {
-			items = append(items, menuItem{label: "Turn TUN on", args: []string{"tun", "on"}})
-		}
-		if s.Tun != nil && s.Tun.Gateway != "" {
-			items = append(items, menuItem{label: "Turn gateway mode off", args: []string{"tun", "gateway", "off"}})
-		} else {
-			items = append(items, menuItem{label: "Turn gateway mode on (LAN devices route through mihomo)", args: []string{"tun", "gateway", "on"}})
-		}
-		items = append(items, menuItem{label: "Show details", args: []string{"tun"}})
-	case groupPanel:
-		items = append(items, menuItem{label: "Show how to open it", args: []string{"panel"}})
-		if s.PanelLAN {
-			items = append(items, menuItem{label: "Stop LAN access (only this server)", args: []string{"panel", "lan", "off"}})
-		} else {
-			items = append(items, menuItem{label: "Let LAN devices open it", args: []string{"panel", "lan", "on"}})
-		}
-		items = append(items, menuItem{label: "Replace the API secret", args: []string{"panel", "reset-secret"}})
-	case groupProxy:
-		items = append(items, menuItem{label: "Show the proxy address", args: []string{"proxy"}})
-		if s.ProxyLAN {
-			items = append(items, menuItem{label: "Stop LAN access (only this server)", args: []string{"proxy", "lan", "off"}})
-		} else {
-			items = append(items, menuItem{label: "Let LAN devices use it (HTTP/SOCKS5 proxy)", args: []string{"proxy", "lan", "on"}})
-		}
+	case groupConfig:
+		items = a.configItems(d)
+	case groupTraffic:
+		items = a.trafficItems(s)
 	case groupDevices:
-		items = append(items,
-			menuItem{label: "List devices", args: []string{"devices"}},
-			menuItem{label: "List all devices on the LAN", args: []string{"devices", "--all"}},
-			menuItem{label: "Name a device", args: []string{"devices", "name"}},
-			menuItem{label: "Forget a device", args: []string{"devices", "forget"}})
-	case groupFilter:
-		items = append(items,
-			menuItem{label: "Show filters", args: []string{"filter"}},
-			menuItem{label: "Set a device to go through proxies or directly", args: []string{"filter", "device"}},
-			menuItem{label: "Send a network direct", args: []string{"filter", "source", "add"}})
-		if s.Filter != nil && s.Filter.QUIC {
-			items = append(items, menuItem{label: "Allow QUIC again", args: []string{"filter", "quic", "off"}})
-		} else {
-			items = append(items, menuItem{label: "Block QUIC (browsers use TCP)", args: []string{"filter", "quic", "on"}})
+		items = []menuItem{
+			op("List devices", "Devices that use this server, their names and how they go", "devices"),
+			op("List all LAN devices", "Including those that do not use this server", "devices", "--all"),
+			op("Name a device", "Choose a device, then enter a name; an empty name removes it", "devices", "name"),
+			op("Route a device", "Through the proxies (it follows the rules) or direct for everything", "filter", "device"),
+			op("Forget a device", "Remove its name and setting; it follows the rules again", "devices", "forget"),
 		}
-		if s.Filter != nil && s.Filter.Ports {
-			// 已开启时改列表和关闭都在这一项里选，不再并列两项。
-			items = append(items, menuItem{label: "Change the proxied ports or proxy all again", usage: "filter ports set|off",
-				ask: []inputField{{title: "Proxied ports", description: "Now: " + strings.Join(s.Filter.PortList, ","),
-					options: []huh.Option[string]{huh.NewOption("Change the ports", "set"), huh.NewOption("Proxy all ports again", "off")},
-					initial: "set"}},
-				build: func(v []string) []string { return []string{"filter", "ports", v[0]} }})
-		} else {
-			items = append(items, menuItem{label: "Proxy only some ports (others go direct)", args: []string{"filter", "ports", "on"}})
+	case groupCore:
+		items = a.coreItems(s)
+	case groupMaintain:
+		items = []menuItem{
+			op("Back up to a file", "Settings, mixins and subs, to restore here or on another server", "backup", "create"),
+			op("Restore a backup", "An automatic backup or a file; the diff is shown before anything changes", "backup", "restore"),
+			op("Edit settings", "tunlr's own settings, such as the download mirror; checked, then applied", "settings", "edit"),
+			diagnose,
+			op("Repair install", "Set up the service, kernel and timers again; your config is kept", "init"),
 		}
-		if s.Filter != nil && len(s.Filter.Sources) > 0 {
-			items = append(items, menuItem{label: "Stop sending a network direct", args: []string{"filter", "source", "remove"}})
-		}
-	case groupKernel:
-		items = append(items, menuItem{label: "Show the kernel and its service", args: []string{"core"}})
-		if s.Service != nil && s.Service.Active() {
-			items = append(items,
-				menuItem{label: "Restart mihomo", args: []string{"core", "restart"}},
-				menuItem{label: "Stop mihomo", args: []string{"core", "stop"}})
-		} else {
-			items = append(items, menuItem{label: "Start mihomo", args: []string{"core", "start"}})
-		}
-		items = append(items,
-			menuItem{label: "Show recent logs", args: []string{"core", "logs", "-n", "50"}},
-			menuItem{label: "Upgrade mihomo to the latest release", args: []string{"core", "upgrade"}})
-		if canRollBackKernel(s.Kernel) {
-			items = append(items, menuItem{label: "Roll back to the previous known-good version", args: []string{"core", "rollback"}})
-		}
-		items = append(items, menuItem{label: "Repair the installation (init)", args: []string{"init"}})
-	case groupUpdates:
-		items = append(items, menuItem{label: "Show the schedule", args: []string{"update"}})
-		if len(d.subs) > 0 {
-			items = append(items, menuItem{label: "Change how often a subscription is fetched", args: []string{"update", "set", "sub"}})
-		}
-		items = append(items, menuItem{label: "Update everything now", args: []string{"update", "run"}})
-	default:
-		return "", nil
 	}
-	return title, append(items, back)
+	return title, note, append(items, menuItem{label: menuBack, back: true})
+}
+
+func (a *app) configItems(d menuData) []menuItem {
+	var items []menuItem
+	items = append(items, op("Add a sub", "Name, URL or file, fetch period and an optional proxy filter; the first one becomes active", "sub", "add"))
+	if len(d.subs) > 1 {
+		items = append(items, op("Switch sub", "Make another saved sub active and publish the config", "sub", "use"))
+	}
+	if len(d.subs) > 0 {
+		items = append(items,
+			op("Change a sub", "Its URL or file, User-Agent, fetch period or proxy filter", "sub", "set"),
+			op("Fetch subs now", "Fetch every sub again; the config is published if the active one changed", "sub", "update"))
+	}
+	if len(d.subs) > 1 {
+		items = append(items, op("Remove a sub", "Any but the active one", "sub", "remove"))
+	}
+	items = append(items,
+		op("Edit a mixin", "Your own changes on top of the sub; checked with mihomo -t, then published", "config", "edit"),
+		op("Publish config", "Compose and check the config, show the diff, publish after you confirm", "config", "apply"))
+	if d.revisions > 0 {
+		items = append(items, op("Roll back config", "Publish an earlier revision again", "config", "rollback"))
+	}
+	return append(items,
+		op("List subs", "Proxies, last fetch, period, usage and expiry of each sub", "sub"),
+		op("Config details", "The published config, its history and the mixins", "config"))
+}
+
+func (a *app) trafficItems(s *setup.Status) []menuItem {
+	tun := s.Tun != nil && s.Tun.Switch != "off"
+	f := s.Filter
+	if f == nil {
+		f = &setup.FilterStatus{}
+	}
+	items := []menuItem{
+		toggle(tun,
+			op("Turn TUN off", "This server's own traffic no longer goes through mihomo", "tun", "off"),
+			op("Turn TUN on", "This server's own traffic goes through mihomo; rolled back if the network breaks", "tun", "on")),
+		toggle(s.Tun != nil && s.Tun.Gateway != "",
+			op("Turn gateway off", "LAN devices that use this server as their gateway lose the proxy; TUN stays on", "tun", "gateway", "off"),
+			op("Turn gateway on", "LAN devices that use this server as their gateway go through mihomo (turns TUN on)", "tun", "gateway", "on")),
+		toggle(s.ProxyLAN,
+			op("Close proxy port to LAN", "Only this server can use the HTTP/SOCKS5 proxy port again", "proxy", "lan", "off"),
+			op("Open proxy port to LAN", "For devices that set this server as their HTTP/SOCKS5 proxy", "proxy", "lan", "on")),
+		toggle(f.QUIC,
+			op("Allow QUIC", "Browsers may use QUIC (HTTP/3) again", "filter", "quic", "off"),
+			op("Block QUIC", "Browsers fall back to TCP, which proxies better", "filter", "quic", "on")),
+	}
+	if f.Ports {
+		items = append(items,
+			op("Change proxied ports", "Now: "+strings.Join(f.PortList, ","), "filter", "ports", "set"),
+			op("Proxy all ports", "Every port goes through mihomo again", "filter", "ports", "off"))
+	} else {
+		items = append(items, op("Proxy some ports only", "Asks which ports; others go direct", "filter", "ports", "on"))
+	}
+	items = append(items, op("Send a network direct", "All traffic from an address range skips mihomo", "filter", "source", "add"))
+	if len(f.Sources) > 0 {
+		items = append(items, op("Stop sending a network direct", "Traffic from that range follows the rules again", "filter", "source", "remove"))
+	}
+	return append(items,
+		op("TUN details", "TUN, gateway mode and the checks behind them", "tun"),
+		op("Proxy port details", "The address other devices enter as their proxy", "proxy"),
+		op("Filter details", "Devices and networks sent direct, QUIC and ports", "filter"))
+}
+
+func (a *app) coreItems(s *setup.Status) []menuItem {
+	var items []menuItem
+	if s.Service != nil && s.Service.Active() {
+		items = append(items,
+			op("Restart mihomo", "Then check that it is healthy", "core", "restart"),
+			op("Stop mihomo", "Proxying stops until it is started again", "core", "stop"))
+	} else {
+		items = append(items, op("Start mihomo", "Then check that it is healthy", "core", "start"))
+	}
+	items = append(items,
+		op("Recent logs", "The last 50 lines; follow them with tunlr core logs -f", "core", "logs", "-n", "50"),
+		op("Upgrade mihomo", "To the latest release; checked against the config first, put back if unhealthy", "core", "upgrade"))
+	if canRollBackKernel(s.Kernel) {
+		items = append(items, op("Roll back mihomo", "To the previous known-good version kept on disk", "core", "rollback"))
+	}
+	return append(items,
+		op("Update geo data now", "Fetch the geo databases again, whether or not they are due", "update", "run", "geo"),
+		op("Open the panel", "How to reach it: the SSH tunnel and the link", "panel"),
+		toggle(s.PanelLAN,
+			op("Close panel to LAN", "Only this server can reach the panel again; mihomo restarts", "panel", "lan", "off"),
+			op("Open panel to LAN", "Devices on the LAN can open the panel; mihomo restarts", "panel", "lan", "on")),
+		op("New API secret", "Panels that are open must connect again with the new link", "panel", "reset-secret"),
+		op("mihomo details", "Kernel versions kept on disk and the service", "core"))
 }
 
 // attention 是第一级最上面需要处理的事项，每项对应一个命令：有还没发布的改动、内核服务失败或没有运行
@@ -654,14 +608,14 @@ func (a *app) attention(d menuData) []menuItem {
 	mark := a.style.warn("!") + " "
 	var items []menuItem
 	if s.Drift != nil && s.Drift.State == pipeline.DriftPending {
-		items = append(items, menuItem{label: mark + "Publish the changes not yet published", args: []string{"config", "apply"}})
+		items = append(items, op(mark+"Publish the changes not yet published", "Shows the diff first", "config", "apply"))
 	}
 	if s.Service != nil && !s.Service.Active() && d.revisions > 0 {
 		why := "not running"
 		if s.Service.ActiveState == "failed" {
 			why = "failed"
 		}
-		items = append(items, menuItem{label: mark + "Start mihomo (" + why + ")", args: []string{"core", "start"}})
+		items = append(items, op(mark+"Start mihomo ("+why+")", "Then check that it is healthy", "core", "start"))
 	}
 	var failed []string
 	for _, sc := range s.Updates {
@@ -679,9 +633,9 @@ func (a *app) attention(d menuData) []menuItem {
 	switch len(failed) {
 	case 0:
 	case 1:
-		items = append(items, menuItem{label: mark + "Run the failed update again", args: []string{"update", "run", failed[0]}})
+		items = append(items, op(mark+"Run the failed update again", "", "update", "run", failed[0]))
 	default:
-		items = append(items, menuItem{label: mark + "Run the failed updates again", args: []string{"update", "run"}})
+		items = append(items, op(mark+"Run the failed updates again", "", "update", "run"))
 	}
 	return items
 }
@@ -715,10 +669,30 @@ func (a *app) menuLabels(items []menuItem) []string {
 	return labels
 }
 
+// configNote 是“Subs & config”的状态：启用的订阅和发布的修订。
+func (a *app) configNote(s *setup.Status, subs []subscription.Entry) string {
+	return a.describeSubscriptions(s, subs) + a.style.dim(" · ") + a.describeRevision(s)
+}
+
+// trafficNote 是“Traffic”的状态：TUN 与网关、代理端口、过滤。
+func (a *app) trafficNote(s *setup.Status) string {
+	parts := []string{}
+	if s.Tun != nil {
+		parts = append(parts, "TUN "+a.describeTun(s.Tun))
+	}
+	parts = append(parts, "proxy port "+a.describeProxyLAN(s.ProxyLAN), "filters "+a.describeFilterNote(s.Filter))
+	return strings.Join(parts, a.style.dim(" · "))
+}
+
+// coreNote 是“mihomo & panel”的状态：内核服务和面板的局域网访问。
+func (a *app) coreNote(s *setup.Status) string {
+	return a.describeService(s) + a.style.dim(" · ") + "panel " + a.describePanelLAN(s.PanelLAN)
+}
+
 func (a *app) describeSubscriptions(s *setup.Status, subs []subscription.Entry) string {
 	switch {
 	case len(subs) == 0:
-		return a.style.warn("none")
+		return a.style.warn("no subs")
 	case s.Subscription == "":
 		return a.style.warn("none active") + a.style.dim(fmt.Sprintf(" · %d saved", len(subs)))
 	}
@@ -743,42 +717,15 @@ func (a *app) describeRevision(s *setup.Status) string {
 	return fmt.Sprintf("revision %d", s.Revision.Number) + note
 }
 
-// describeUpdates 是定时更新分类右侧的状态，如 "2 subscriptions · geo weekly"；最近一次失败的标红。
-func (a *app) describeUpdates(scheds []setup.Schedule) string {
-	subs, failed := 0, 0
-	geo := ""
-	for _, s := range scheds {
-		if s.Task == setup.TaskGeo {
-			geo = "geo " + settings.DescribePeriod(s.Period)
-			if s.Last != nil && s.Last.Status == setup.StepFailed {
-				geo = a.style.bad(geo + " (failed)")
-			}
-			continue
-		}
-		subs++
-		if s.Last != nil && s.Last.Status == setup.StepFailed {
-			failed++
-		}
-	}
-	part := fmt.Sprintf("%d subscriptions", subs)
-	if subs == 1 {
-		part = "1 subscription"
-	}
-	if failed > 0 {
-		part = a.style.bad(fmt.Sprintf("%s (%d failed)", part, failed))
-	}
-	return part + a.style.dim(" · ") + geo
-}
-
 // describeDevicesNote 是局域网设备分类右侧的状态；网关和代理端口的局域网访问都关闭时没有设备会使用本机。
 func (a *app) describeDevicesNote(d *setup.DeviceSummary) string {
 	if d == nil {
-		return a.style.dim("gateway and proxy LAN access off")
+		return a.style.dim("none: gateway and proxy port LAN access are off")
 	}
 	return a.describeDevices(d)
 }
 
-// describeFilterNote 是过滤分类右侧的状态。
+// describeFilterNote 是过滤的状态。
 func (a *app) describeFilterNote(f *setup.FilterStatus) string {
 	if f == nil {
 		return a.style.dim("none")
@@ -796,39 +743,9 @@ func (a *app) describeService(s *setup.Status) string {
 	return a.style.warn("not running")
 }
 
-// subscriptionFields 是添加订阅时在同一个表单中询问的名称、地址和自动更新周期。
-func subscriptionFields() []inputField {
-	periods := make([]huh.Option[string], len(periodChoices))
-	for i, p := range periodChoices {
-		periods[i] = huh.NewOption(describePeriod(p), p)
-	}
-	return []inputField{
-		{title: "Name of the subscription", description: "e.g. home or work; letters, digits, '.', '_' and '-'", validate: subscription.ValidateName},
-		{title: "Subscription URL or file", description: "The URL your provider gives for Clash/mihomo, or the path of a file on this server.", validate: func(s string) error {
-			if s == subscription.PathStdin {
-				return errors.New("standard input works only on the command line: tunlr sub add <name> - < file")
-			}
-			_, err := subscription.ParseSource(s)
-			return err
-		}},
-		{title: "Update it how often?", description: "A file is read again on this schedule. Change later with tunlr update set sub.", options: periods, initial: subscription.DefaultUpdate},
-		filterFields()[0], filterFields()[1],
-	}
-}
-
-// addSubscriptionArgs 是菜单中添加订阅的命令。筛选留空时也写出 --include=、--exclude=，表示已经问过、不筛选，
-// sub add 不再问；给用户看的命令行中省略它们（见 commandLine）。
-func addSubscriptionArgs(v []string) []string {
-	return []string{"sub", "add", v[0], v[1], "--update", v[2], "--include=" + v[3], "--exclude=" + v[4]}
-}
-
-// commandLine 是给用户看的等价命令，订阅地址只给出缩写，不显示访问令牌；留空的筛选参数省略。
-// 含空白或 shell 特殊字符的参数加上单引号。
+// commandLine 是给用户看的等价命令。含空白或 shell 特殊字符的参数加上单引号。
 func commandLine(args []string) string {
-	shown := slices.DeleteFunc(slices.Clone(args), func(s string) bool { return s == "--include=" || s == "--exclude=" })
-	if len(shown) >= 4 && shown[0] == "sub" && shown[1] == "add" && strings.Contains(shown[3], "://") {
-		shown[3] = subscription.Redact(shown[3])
-	}
+	shown := slices.Clone(args)
 	for i, s := range shown {
 		if strings.ContainsAny(s, " \t'\"`$|&;<>()*?!#~\\") {
 			shown[i] = "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

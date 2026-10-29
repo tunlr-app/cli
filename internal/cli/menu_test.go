@@ -129,9 +129,6 @@ func (mt *menuTest) commands() string {
 // hovered 返回光标所在的菜单项。
 func (mt *menuTest) hovered() string {
 	mt.t.Helper()
-	if mt.m.adding != nil {
-		mt.t.Fatalf("showing the form of %q, not a list", mt.m.adding.label)
-	}
 	i, ok := mt.m.list.Hovered()
 	if !ok {
 		mt.t.Fatal("no item hovered")
@@ -141,6 +138,12 @@ func (mt *menuTest) hovered() string {
 
 func (mt *menuTest) view() string {
 	return ansi.Strip(mt.m.View().Content)
+}
+
+// hintLines 返回列表下方的两行：说明和等价命令。
+func (mt *menuTest) hintLines() (desc, command string) {
+	lines := strings.Split(mt.view(), "\n")
+	return lines[len(lines)-2], lines[len(lines)-1]
 }
 
 var (
@@ -175,20 +178,21 @@ func TestMenuNavigation(t *testing.T) {
 		t.Fatalf("title %q, hovered %q", mt.m.title, mt.hovered())
 	}
 
+	// 进入分类：标题下是这一分类的状态。
 	mt.keys("down", "enter")
-	if mt.m.title != "tunlr › Subscriptions · home · 2 saved" || mt.hovered() != "List subscriptions" {
+	if mt.m.title != "tunlr › Subs & config" || mt.hovered() != "Add a sub" {
 		t.Fatalf("title %q, hovered %q", mt.m.title, mt.hovered())
 	}
-	if !strings.Contains(mt.view(), "tunlr · mihomo running") {
-		t.Errorf("status line missing in a group:\n%s", mt.view())
+	if v := mt.view(); !strings.Contains(v, "tunlr · mihomo running") || !strings.Contains(v, "home · 2 saved · revision 7") {
+		t.Errorf("status line or note missing in a group:\n%s", v)
 	}
 	// Esc 回到第一级，光标停在刚才进入的分类上；← Back 也一样。
 	mt.keys("esc")
-	if mt.m.title != "tunlr" || mt.hovered() != groupSubscriptions {
+	if mt.m.title != "tunlr" || mt.hovered() != groupConfig {
 		t.Fatalf("after esc: title %q, hovered %q", mt.m.title, mt.hovered())
 	}
 	mt.keys("down", "enter", "up", "enter")
-	if mt.m.title != "tunlr" || mt.hovered() != groupConfiguration {
+	if mt.m.title != "tunlr" || mt.hovered() != groupTraffic {
 		t.Fatalf("after back: title %q, hovered %q", mt.m.title, mt.hovered())
 	}
 	if len(mt.ran) != 0 {
@@ -203,7 +207,7 @@ func TestMenuNavigation(t *testing.T) {
 
 func TestMenuRun(t *testing.T) {
 	mt := newMenuTest(t, menuData{status: &setup.Status{}})
-	if got := strings.Join(mt.m.labels, "|"); got != "Install tunlr (init)|Show status|Run diagnostics|Quit" {
+	if got := strings.Join(mt.m.labels, "|"); got != "Install tunlr|Show status|Diagnose|Quit" {
 		t.Fatalf("labels = %q", got)
 	}
 	if first := strings.SplitN(mt.view(), "\n", 2)[0]; first != "tunlr · not installed" {
@@ -255,68 +259,30 @@ func TestMenuResult(t *testing.T) {
 	}
 }
 
-func TestMenuAddSubscription(t *testing.T) {
+// 菜单不嵌表单：需要提问的项直接执行子命令，由子命令自己问。
+func TestMenuRunsWithoutForm(t *testing.T) {
 	mt := newMenuTest(t, menuWith(runningStatus, 2, 3))
 	mt.record = true
-	mt.keys("down", "enter", "down", "down", "down", "enter")
-	if mt.m.adding == nil || mt.m.adding.label != "Add a subscription" {
-		t.Fatalf("not asking: %+v", mt.m.adding)
-	}
-	// Esc 回到列表，光标停在“添加”上。
-	mt.keys("esc")
-	if mt.m.title != "tunlr › Subscriptions · home · 2 saved" || mt.hovered() != "Add a subscription" {
-		t.Fatalf("after esc: title %q, hovered %q", mt.m.title, mt.hovered())
-	}
-	// 名称不合法时停在这一项。
-	mt.keys("enter", "../bad", "enter")
-	if mt.m.adding == nil || len(mt.ran) != 0 {
-		t.Fatalf("invalid name accepted: ran %q", mt.ran)
-	}
-	for range len("../bad") {
-		mt.send(tea.KeyPressMsg{Code: tea.KeyBackspace})
-	}
-	// 周期从列表中选，光标起始于每天；选每周。
-	mt.keys("home", "enter", "https://example.net/sub?token=secret", "enter")
-	if mt.m.adding == nil || len(mt.ran) != 0 {
-		t.Fatalf("submitted without the period: ran %q", mt.ran)
-	}
-	mt.keys("down", "enter")
-	if mt.m.adding == nil || len(mt.ran) != 0 {
-		t.Fatalf("submitted without the proxy filter: ran %q", mt.ran)
-	}
-	// 筛选：保留的写错时停在这一项；排除的留空。
-	mt.keys("(", "enter")
-	if mt.m.adding == nil || len(mt.ran) != 0 {
-		t.Fatalf("invalid regular expression accepted: ran %q", mt.ran)
-	}
-	mt.send(tea.KeyPressMsg{Code: tea.KeyBackspace})
-	mt.keys("香港|HK", "enter", "enter")
-	if mt.commands() != "sub add home https://example.net/sub?token=secret --update 7d --include=香港|HK --exclude=" {
-		t.Fatalf("ran %q", mt.ran)
-	}
-	if mt.m.adding != nil || mt.hovered() != "Add a subscription" {
-		t.Errorf("after adding: hovered %q", mt.hovered())
-	}
-	if line := commandLine(mt.ran[0]); strings.Contains(line, "secret") || !strings.HasPrefix(line, "$ tunlr sub add home https://example.net/") ||
-		!strings.HasSuffix(line, " --update 7d '--include=香港|HK'") {
-		t.Errorf("command line = %q", line)
+	mt.keys("down", "enter", "enter")
+	if mt.commands() != "sub add" || mt.hovered() != "Add a sub" {
+		t.Fatalf("ran %q, hovered %q", mt.ran, mt.hovered())
 	}
 }
 
 func TestMenuRefresh(t *testing.T) {
 	mt := newMenuTest(t, menuWith(runningStatus, 2, 3))
 	mt.record = true
-	mt.keys("up", "up", "up", "enter", "down", "down", "down") // Kernel (mihomo) › Show recent logs
-	if mt.hovered() != "Show recent logs" {
+	mt.keys("up", "up", "up", "enter", "down", "down") // mihomo & panel › Recent logs
+	if mt.hovered() != "Recent logs" {
 		t.Fatalf("hovered %q", mt.hovered())
 	}
 	// 内核停了：列表随之变化，光标留在原来那一项。
 	mt.data = menuWith(stoppedStatus, 2, 3)
 	mt.send(menuTickMsg(mt.m.tick))
-	if got := strings.Join(mt.m.labels, "|"); got != "Show the kernel and its service|Start mihomo|Show recent logs|Upgrade mihomo to the latest release|Repair the installation (init)|← Back" {
+	if got := strings.Join(mt.m.labels, "|"); got != "Start mihomo|Recent logs|Upgrade mihomo|Update geo data now|Open the panel|Open panel to LAN|New API secret|mihomo details|← Back" {
 		t.Fatalf("labels = %q", got)
 	}
-	if mt.hovered() != "Show recent logs" || !strings.Contains(mt.view(), "mihomo not running") {
+	if mt.hovered() != "Recent logs" || !strings.Contains(mt.view(), "mihomo not running") {
 		t.Errorf("hovered %q, view:\n%s", mt.hovered(), mt.view())
 	}
 
@@ -360,7 +326,7 @@ func TestMenuItems(t *testing.T) {
 	a := &app{}
 	labels := func(group string, s *setup.Status, subs, revs int) string {
 		t.Helper()
-		title, items := a.menuItems(group, menuWith(s, subs, revs))
+		title, _, items := a.menuItems(group, menuWith(s, subs, revs))
 		var l []string
 		for _, it := range items {
 			l = append(l, it.label)
@@ -368,55 +334,73 @@ func TestMenuItems(t *testing.T) {
 		return title + ": " + strings.Join(l, "|")
 	}
 
-	// 第一级按 --help 的分组排列；分类的标题带上它在第一级右侧的状态。
 	for group, want := range map[string]string{
-		"":                 "tunlr: Show status|Subscriptions|Configuration|Scheduled updates|Settings|Backup|Transparent proxy|Proxy port|Panel|LAN devices|Filters|Kernel (mihomo)|Run diagnostics|Quit",
-		groupSubscriptions: "tunlr › Subscriptions · home · 2 saved: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|Remove subscriptions|← Back",
-		groupConfiguration: "tunlr › Configuration · revision 7: Show the configuration, history and mixins|Preview changes|Preview and apply|Edit a mixin|Roll back to an earlier revision|← Back",
-		groupUpdates:       "tunlr › Scheduled updates · 2 subscriptions · geo weekly: Show the schedule|Change how often a subscription is fetched|Update everything now|← Back",
-		groupSettings:      "tunlr › Settings: Show tool settings|Edit tool settings|← Back",
-		groupBackup:        "tunlr › Backup · 3 automatic backups: List automatic backups|Back up to a file|Restore an automatic backup (undo a restore)|Restore from a file|← Back",
-		groupTun:           "tunlr › Transparent proxy · on: Turn TUN off|Turn gateway mode on (LAN devices route through mihomo)|Show details|← Back",
-		groupProxy:         "tunlr › Proxy port · this server only: Show the proxy address|Let LAN devices use it (HTTP/SOCKS5 proxy)|← Back",
-		groupPanel:         "tunlr › Panel · this server only: Show how to open it|Let LAN devices open it|Replace the API secret|← Back",
-		groupDevices:       "tunlr › LAN devices · gateway and proxy LAN access off: List devices|List all devices on the LAN|Name a device|Forget a device|← Back",
-		groupFilter:        "tunlr › Filters · none: Show filters|Set a device to go through proxies or directly|Send a network direct|Block QUIC (browsers use TCP)|Proxy only some ports (others go direct)|← Back",
-		groupKernel:        "tunlr › Kernel (mihomo) · running · v1.19.33: Show the kernel and its service|Restart mihomo|Stop mihomo|Show recent logs|Upgrade mihomo to the latest release|Repair the installation (init)|← Back",
+		"":            "tunlr: Show status|Subs & config|Traffic|LAN devices|mihomo & panel|Maintenance|Quit",
+		groupConfig:   "tunlr › Subs & config: Add a sub|Switch sub|Change a sub|Fetch subs now|Remove a sub|Edit a mixin|Publish config|Roll back config|List subs|Config details|← Back",
+		groupTraffic:  "tunlr › Traffic: Turn TUN off|Turn gateway on|Open proxy port to LAN|Block QUIC|Proxy some ports only|Send a network direct|TUN details|Proxy port details|Filter details|← Back",
+		groupDevices:  "tunlr › LAN devices: List devices|List all LAN devices|Name a device|Route a device|Forget a device|← Back",
+		groupCore:     "tunlr › mihomo & panel: Restart mihomo|Stop mihomo|Recent logs|Upgrade mihomo|Update geo data now|Open the panel|Open panel to LAN|New API secret|mihomo details|← Back",
+		groupMaintain: "tunlr › Maintenance: Back up to a file|Restore a backup|Edit settings|Diagnose|Repair install|← Back",
 	} {
 		if got := labels(group, runningStatus, 2, 3); got != want {
 			t.Errorf("running %q:\n got %s\nwant %s", group, got, want)
 		}
 	}
-	// 只代理部分端口开启时，改列表和关闭合在一项里选。
+	// 分类右侧的状态，也是进入后标题下的说明。
+	_, _, top := a.menuItems("", menuWith(runningStatus, 2, 3))
+	want := []string{
+		"Subs & config    home · 2 saved · revision 7",
+		"Traffic          TUN on · proxy port this server only · filters none",
+		"LAN devices      none: gateway and proxy port LAN access are off",
+		"mihomo & panel   running · v1.19.33 · panel this server only",
+		"Maintenance      3 automatic backups",
+	}
+	if got := a.menuLabels(top)[1:6]; !slices.Equal(got, want) {
+		t.Errorf("notes:\n got %q\nwant %q", got, want)
+	}
+	if _, note, _ := a.menuItems(groupTraffic, menuWith(runningStatus, 2, 3)); note != top[2].note {
+		t.Errorf("group note %q, first-level note %q", note, top[2].note)
+	}
+
+	// 只代理部分端口开启时，改列表和恢复全部是两项；说明中是当前的列表。
 	ports := *runningStatus
-	ports.Filter = &setup.FilterStatus{Ports: true, PortList: []string{"80", "443"}}
-	_, items := a.menuItems(groupFilter, menuWith(&ports, 2, 3))
-	k := slices.IndexFunc(items, func(it menuItem) bool { return it.label == "Change the proxied ports or proxy all again" })
-	if k < 0 || slices.ContainsFunc(items, func(it menuItem) bool { return strings.HasPrefix(it.label, "Proxy only") }) {
-		t.Fatalf("ports on: %v", items)
-	}
-	if it := items[k]; it.ask[0].description != "Now: 80,443" || strings.Join(it.build([]string{"off"}), " ") != "filter ports off" {
-		t.Errorf("ports item = %+v", it)
-	}
-	_, top := a.menuItems("", menuWith(runningStatus, 2, 3))
-	if got := strings.Join(a.menuLabels(top[1:3]), "|"); got != "Subscriptions   home · 2 saved|Configuration   revision 7" {
-		t.Errorf("notes = %q", got)
+	ports.Filter = &setup.FilterStatus{Ports: true, PortList: []string{"80", "443"}, Sources: []string{"10.0.0.0/8"}}
+	_, _, items := a.menuItems(groupTraffic, menuWith(&ports, 2, 3))
+	k := slices.IndexFunc(items, func(it menuItem) bool { return it.label == "Change proxied ports" })
+	if k < 0 || items[k].desc != "Now: 80,443" || items[k+1].label != "Proxy all ports" ||
+		slices.ContainsFunc(items, func(it menuItem) bool { return it.label == "Proxy some ports only" }) ||
+		!slices.ContainsFunc(items, func(it menuItem) bool { return it.label == "Stop sending a network direct" }) {
+		t.Errorf("ports on: %+v", items)
 	}
 
 	for group, want := range map[string]string{
-		groupSubscriptions: "tunlr › Subscriptions · none active · 1 saved: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|← Back",
-		groupConfiguration: "tunlr › Configuration · not published: Show the configuration, history and mixins|Preview changes|Preview and apply|Edit a mixin|← Back",
-		groupTun:           "tunlr › Transparent proxy · off: Turn TUN on|Turn gateway mode on (LAN devices route through mihomo)|Show details|← Back",
-		groupKernel:        "tunlr › Kernel (mihomo) · not running: Show the kernel and its service|Start mihomo|Show recent logs|Upgrade mihomo to the latest release|Repair the installation (init)|← Back",
-		groupBackup:        "tunlr › Backup · no automatic backups: List automatic backups|Back up to a file|Restore from a file|← Back",
+		groupConfig:  "tunlr › Subs & config: Add a sub|Change a sub|Fetch subs now|Edit a mixin|Publish config|List subs|Config details|← Back",
+		groupTraffic: "tunlr › Traffic: Turn TUN on|Turn gateway on|Open proxy port to LAN|Block QUIC|Proxy some ports only|Send a network direct|TUN details|Proxy port details|Filter details|← Back",
+		groupCore:    "tunlr › mihomo & panel: Start mihomo|Recent logs|Upgrade mihomo|Update geo data now|Open the panel|Open panel to LAN|New API secret|mihomo details|← Back",
 	} {
 		if got := labels(group, stoppedStatus, 1, 0); got != want {
 			t.Errorf("stopped %q:\n got %s\nwant %s", group, got, want)
 		}
 	}
+	if got := labels(groupConfig, stoppedStatus, 0, 0); got != "tunlr › Subs & config: Add a sub|Edit a mixin|Publish config|List subs|Config details|← Back" {
+		t.Errorf("no subs: %s", got)
+	}
+
+	// 每一项都有说明，执行的项都有命令。
+	for _, group := range []string{"", groupConfig, groupTraffic, groupDevices, groupCore, groupMaintain} {
+		_, _, items := a.menuItems(group, menuWith(runningStatus, 2, 3))
+		for _, it := range items {
+			if it.back || it.quit {
+				continue
+			}
+			if it.desc == "" || it.group == "" && it.args == nil {
+				t.Errorf("%q › %q: desc %q, args %q", group, it.label, it.desc, it.args)
+			}
+		}
+	}
 
 	// 没安装时分类不存在（例如在分类里卸载了），菜单回到第一级。
-	if _, items := a.menuItems(groupKernel, menuData{status: &setup.Status{}}); items != nil {
+	if _, _, items := a.menuItems(groupCore, menuData{status: &setup.Status{}}); items != nil {
 		t.Errorf("not installed: %v", items)
 	}
 
@@ -428,7 +412,7 @@ func TestMenuItems(t *testing.T) {
 	}{{true, 1, false}, {true, 2, true}, {false, 0, false}, {false, 1, true}} {
 		s := *runningStatus
 		s.Kernel = &mihomo.KernelStatus{Installed: true, KnownGood: tt.known, Kernels: make([]state.Kernel, tt.kernels)}
-		got := strings.Contains(labels(groupKernel, &s, 2, 3), "Roll back to the previous known-good version")
+		got := strings.Contains(labels(groupCore, &s, 2, 3), "Roll back mihomo")
 		if got != tt.want {
 			t.Errorf("known-good %v, %d kernels: rollback offered = %v", tt.known, tt.kernels, got)
 		}
@@ -440,7 +424,7 @@ func TestMenuAttention(t *testing.T) {
 	a := &app{}
 	attention := func(s *setup.Status, revs int) string {
 		t.Helper()
-		_, items := a.menuItems("", menuWith(s, 2, revs))
+		_, _, items := a.menuItems("", menuWith(s, 2, revs))
 		var l []string
 		for _, it := range items {
 			if it.label == "Show status" {
@@ -478,53 +462,42 @@ func TestMenuAttention(t *testing.T) {
 	if got := attention(&s, 3); !strings.HasSuffix(got, "|! Run the failed updates again = update run") {
 		t.Errorf("both failed: %q", got)
 	}
-	// 手工改过的配置不算没发布的改动（apply 会覆盖它，留给 Configuration 分类）。
+	// 手工改过的配置不算没发布的改动（apply 会覆盖它，留给 Subs & config 分类）。
 	s.Drift.State = pipeline.DriftEdited
 	if got := attention(&s, 3); strings.Contains(got, "Publish") {
 		t.Errorf("edited: %q", got)
 	}
 }
 
-// 列表下方显示光标所在那一项的等价命令；第一级按终端高度尽量一屏放下。
+// 列表下方两行：光标所在那一项的说明和等价命令；一级按终端高度尽量一屏放下。
 func TestMenuHint(t *testing.T) {
 	mt := newMenuTest(t, menuWith(runningStatus, 2, 3))
-	last := func() string {
-		lines := strings.Split(mt.view(), "\n")
-		return lines[len(lines)-1]
+	if desc, cmd := mt.hintLines(); cmd != "$ tunlr status" || !strings.HasPrefix(desc, "The service, kernel") {
+		t.Errorf("status: %q / %q", desc, cmd)
 	}
-	if got := last(); got != "$ tunlr status" {
-		t.Errorf("status: %q", got)
-	}
-	// 分类显示对应的查看命令；退出没有命令。
+	// 分类只有说明，没有命令；退出两行都空。
 	mt.keys("down")
-	if got := last(); got != "$ tunlr sub" {
-		t.Errorf("Subscriptions: %q", got)
+	if desc, cmd := mt.hintLines(); cmd != "" || !strings.HasPrefix(desc, "Add, switch and change subs") {
+		t.Errorf("Subs & config: %q / %q", desc, cmd)
 	}
 	mt.keys("up", "up")
-	if got := last(); mt.hovered() != menuQuit || got != "" {
-		t.Errorf("hovered %q, hint %q", mt.hovered(), got)
+	if desc, cmd := mt.hintLines(); mt.hovered() != menuQuit || desc != "" || cmd != "" {
+		t.Errorf("hovered %q, hint %q / %q", mt.hovered(), desc, cmd)
 	}
-	// 先询问再执行的项显示参数的形式，表单中也显示。
-	mt.keys("down", "down", "enter", "down", "down", "down")
-	const addUsage = "$ tunlr sub add <name> <url> --update <period> --include <regexp> --exclude <regexp>"
-	if got := last(); got != addUsage {
-		t.Errorf("add: %q", got)
-	}
-	mt.keys("enter")
-	if got := last(); mt.m.adding == nil || got != addUsage {
-		t.Errorf("form: %q", got)
+	mt.keys("down", "down", "enter")
+	if _, cmd := mt.hintLines(); cmd != "$ tunlr sub add" {
+		t.Errorf("add: %q", cmd)
 	}
 
-	// 40 行的终端放得下第一级的全部 14 项；矮的终端至少显示 maxListRows 行，其余滚动。
-	mt.keys("esc", "esc")
-	if !strings.Contains(mt.view(), "Run diagnostics") || !strings.Contains(mt.view(), "Quit") {
-		t.Errorf("first level does not fit:\n%s", mt.view())
+	// 分类比一屏长时滚动：40 行的终端放得下，矮的终端至少显示 maxListRows 行。
+	if !strings.Contains(mt.view(), menuBack) {
+		t.Errorf("group does not fit:\n%s", mt.view())
 	}
 	mt.send(tea.WindowSizeMsg{Width: 100, Height: 12})
-	if mt.m.listRows() != maxListRows || strings.Contains(mt.view(), "Run diagnostics") {
+	if mt.m.listRows() != maxListRows || strings.Contains(mt.view(), menuBack) {
 		t.Errorf("rows %d, view:\n%s", mt.m.listRows(), mt.view())
 	}
-	if mt.hovered() != groupSubscriptions {
+	if mt.hovered() != "Add a sub" {
 		t.Errorf("cursor moved on resize: %q", mt.hovered())
 	}
 	// 大小没变（huh 的表单在 Init 时会再请求一次）时不重建列表，否则会没完没了地重画。

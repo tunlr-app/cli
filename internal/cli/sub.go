@@ -58,13 +58,14 @@ func (a *app) subscriptions() *subscription.Manager {
 func (a *app) newSubCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sub",
-		Short: "List subscriptions (several can be saved, one is active); add, remove, update, use",
+		Short: "List subscriptions (several can be saved, one is active); add, set, remove, update, use",
 		Args:  usageArgs(cobra.NoArgs),
 		RunE:  func(cmd *cobra.Command, args []string) error { return a.listSubscriptions() },
 	}
 	cmd.AddCommand(
 		a.newSubAddCommand(),
 		a.newSubRemoveCommand(),
+		a.newSubSetCommand(),
 		a.newSubUpdateCommand(),
 		a.newSubUseCommand(),
 	)
@@ -87,7 +88,7 @@ func (a *app) newSubAddCommand() *cobra.Command {
 	var userAgent, update string
 	var include, exclude []string
 	cmd := &cobra.Command{
-		Use:   "add <name> <url|file|->",
+		Use:   "add [name] [url|file|-]",
 		Short: "Fetch and save a subscription; the first one becomes active",
 		Long: "Fetch and save a subscription; the first one becomes active. The source is a URL\n" +
 			"(http or https), a local file, or - to read it from standard input, e.g.\n" +
@@ -99,12 +100,22 @@ func (a *app) newSubAddCommand() *cobra.Command {
 			"mixin.d/<name>/10-filter.yaml (tunlr.proxy-filter, the same as mihomo's filter and\n" +
 			"exclude-filter): keep only the proxies whose names match --include, then drop those\n" +
 			"matching --exclude. Repeat a flag for several regular expressions. Change it later with\n" +
-			"tunlr config edit <name>/10-filter.",
-		Args: usageArgs(cobra.ExactArgs(2)),
+			"tunlr config edit <name>/10-filter.\n\n" +
+			"What is left out is asked for (needs a terminal).",
+		Args: usageArgs(cobra.MaximumNArgs(2)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			period, err := updatePeriodArg(update)
 			if err != nil {
 				return err
+			}
+			if len(args) < 2 {
+				if !a.interactive() {
+					return usageErrorf("sub add needs a name and a URL or file, e.g. tunlr sub add home https://example.com/sub")
+				}
+				if args, err = a.askNewSubscription(cmd, args); err != nil || args == nil {
+					_, err := a.cancelled(err)
+					return err
+				}
 			}
 			stdin := args[1] == subscription.PathStdin
 			if stdin && a.terminal() {
@@ -172,7 +183,38 @@ func (a *app) newSubAddCommand() *cobra.Command {
 	return cmd
 }
 
-// filterFields 是添加订阅时询问的节点筛选，两项都可以留空（留空表示不筛选）。菜单的表单、sub add 和 init
+// askNewSubscription 在终端里询问 sub add 没给出的名称和来源，返回完整的两个参数。
+func (a *app) askNewSubscription(cmd *cobra.Command, args []string) ([]string, error) {
+	fields := sourceFields()
+	for i := len(args); i < len(fields); i++ {
+		v, err := a.prompt.Input(cmd.Context(), fields[i].title, fields[i].description, "", fields[i].validate)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, strings.TrimSpace(v))
+	}
+	return args, nil
+}
+
+// sourceFields 是添加订阅时询问的名称和来源（地址或文件路径）。
+func sourceFields() []inputField {
+	return []inputField{
+		{title: "Name of the subscription", description: "e.g. home or work; letters, digits, '.', '_' and '-'", validate: subscription.ValidateName},
+		{title: "Subscription URL or file", description: "The URL your provider gives for Clash/mihomo, or the path of a file on this server.", validate: checkSource},
+	}
+}
+
+// checkSource 检查交互时输入的订阅来源；标准输入只能在命令行上用。
+func checkSource(s string) error {
+	s = strings.TrimSpace(s)
+	if s == subscription.PathStdin {
+		return errors.New("standard input works only on the command line: tunlr sub add <name> - < file")
+	}
+	_, err := subscription.ParseSource(s)
+	return err
+}
+
+// filterFields 是添加订阅时询问的节点筛选，两项都可以留空（留空表示不筛选）。sub add 和 init
 // 在终端里都问这两项；对应的参数是 --include、--exclude。
 func filterFields() []inputField {
 	check := func(s string) error { return config.CheckPatterns(s) }
@@ -461,46 +503,175 @@ func (a *app) newSubUpdateCommand() *cobra.Command {
 					opts.Stdin = a.stdin
 				}
 			}
-			var results []subscription.UpdateResult
-			err := a.spin("Fetching subscriptions", func() (err error) {
-				results, err = a.subscriptions().Update(cmd.Context(), args, opts)
-				return err
-			})
-			if results == nil {
-				return err
-			}
-			views := make([]updateView, 0, len(results))
-			for _, r := range results {
-				v := updateView{Name: r.Name, OK: r.Err == nil, Summary: r.Summary}
-				if r.Err != nil {
-					v.Error = r.Err.Error()
-				}
-				views = append(views, v)
-			}
-			rerr := a.render(views, func() error {
-				for _, v := range views {
-					switch {
-					case !a.style.on && v.OK:
-						fmt.Fprintf(a.stdout, "ok      %s: %s\n", v.Name, describeSummary(v.Summary))
-					case !a.style.on:
-						fmt.Fprintf(a.stdout, "FAILED  %s: %s (keeping the last good copy)\n", v.Name, v.Error)
-					case v.OK:
-						a.printCheck("ok", v.Name+":", 0, describeSummary(v.Summary))
-					default:
-						a.printCheck("failed", v.Name+":", 0, v.Error+" (keeping the last good copy)")
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				return renderedError{err}
-			}
-			return rerr
+			return a.fetchSubscriptions(cmd, args, opts)
 		},
 	}
 	cmd.Flags().StringVar(&userAgent, "user-agent", "", "change the User-Agent of the named subscriptions (\"\" restores the default)")
 	cmd.Flags().StringVar(&source, "source", "", "read the named subscription from a new source: a URL, a file, or - (standard input)")
 	return cmd
+}
+
+// fetchSubscriptions 抓取订阅 names（为空时全部）并逐个报告结果。
+func (a *app) fetchSubscriptions(cmd *cobra.Command, names []string, opts subscription.UpdateOptions) error {
+	var results []subscription.UpdateResult
+	err := a.spin("Fetching subscriptions", func() (err error) {
+		results, err = a.subscriptions().Update(cmd.Context(), names, opts)
+		return err
+	})
+	if results == nil {
+		return err
+	}
+	views := make([]updateView, 0, len(results))
+	for _, r := range results {
+		v := updateView{Name: r.Name, OK: r.Err == nil, Summary: r.Summary}
+		if r.Err != nil {
+			v.Error = r.Err.Error()
+		}
+		views = append(views, v)
+	}
+	rerr := a.render(views, func() error {
+		for _, v := range views {
+			switch {
+			case !a.style.on && v.OK:
+				fmt.Fprintf(a.stdout, "ok      %s: %s\n", v.Name, describeSummary(v.Summary))
+			case !a.style.on:
+				fmt.Fprintf(a.stdout, "FAILED  %s: %s (keeping the last good copy)\n", v.Name, v.Error)
+			case v.OK:
+				a.printCheck("ok", v.Name+":", 0, describeSummary(v.Summary))
+			default:
+				a.printCheck("failed", v.Name+":", 0, v.Error+" (keeping the last good copy)")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return renderedError{err}
+	}
+	return rerr
+}
+
+// sub set 交互时可以修改的项。
+const (
+	setSource    = "URL or file"
+	setUserAgent = "User-Agent"
+	setPeriod    = "Fetch period"
+	setFilter    = "Proxy filter"
+)
+
+func (a *app) newSubSetCommand() *cobra.Command {
+	var source, userAgent, update string
+	cmd := &cobra.Command{
+		Use:   "set [name]",
+		Short: "Change a subscription: its source, User-Agent, fetch period or proxy filter",
+		Long: "Change a saved subscription. --source and --user-agent fetch it again and are saved only\n" +
+			"if that succeeds (the same as tunlr sub update <name> --source/--user-agent); --update sets\n" +
+			"how often it is fetched (the same as tunlr update set sub). Without flags, choose the\n" +
+			"subscription and what to change (needs a terminal); the proxy filter opens\n" +
+			"tunlr config edit <name>/10-filter.",
+		Args: usageArgs(cobra.MaximumNArgs(1)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			flags := cmd.Flags().Changed("source") || cmd.Flags().Changed("user-agent") || cmd.Flags().Changed("update")
+			if (!flags || len(args) == 0) && !a.interactive() {
+				return usageErrorf("sub set needs the name of a subscription and what to change, e.g. tunlr sub set home --update 6h")
+			}
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			} else {
+				var err error
+				if name, err = a.chooseSubscription(cmd, "Change which subscription?"); err != nil {
+					_, err := a.cancelled(err)
+					return err
+				}
+			}
+			if !flags {
+				return a.changeSubscription(cmd, name)
+			}
+			if cmd.Flags().Changed("update") {
+				if err := a.setSubUpdate(cmd, []string{name, update}); err != nil {
+					return err
+				}
+			}
+			var opts subscription.UpdateOptions
+			if cmd.Flags().Changed("user-agent") {
+				opts.UserAgent = &userAgent
+			}
+			if cmd.Flags().Changed("source") {
+				if source == subscription.PathStdin && a.terminal() {
+					return usageErrorf("--source - reads the subscription from standard input; redirect a file into it")
+				}
+				opts.Source = &source
+				if source == subscription.PathStdin {
+					opts.Stdin = a.stdin
+				}
+			}
+			if opts.UserAgent == nil && opts.Source == nil {
+				return nil
+			}
+			return a.fetchSubscriptions(cmd, []string{name}, opts)
+		},
+	}
+	cmd.Flags().StringVar(&source, "source", "", "a new source: a URL, a file, or - (standard input)")
+	cmd.Flags().StringVar(&userAgent, "user-agent", "", "the User-Agent sent when fetching it (\"\" restores the default)")
+	cmd.Flags().StringVar(&update, "update", "", updateFlagHelp+", or default")
+	return cmd
+}
+
+// changeSubscription 是交互的 sub set：选择要改的项，再转到对应的流程。
+func (a *app) changeSubscription(cmd *cobra.Command, name string) error {
+	ctx := cmd.Context()
+	entries, err := a.subscriptions().List()
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(entries, func(e subscription.Entry) bool { return e.Name == name })
+	if i < 0 {
+		return fmt.Errorf("%w: %s", subscription.ErrNotFound, name)
+	}
+	e := entries[i]
+	ua := e.UserAgent
+	if ua == "" {
+		ua = "default"
+	}
+	options := []string{
+		setSource + " (now " + subscription.Describe(&e.Def) + ")",
+		setUserAgent + " (now " + ua + ")",
+		setPeriod + " (now " + settings.DescribePeriod(e.UpdatePeriod()) + ")",
+		setFilter + " (" + name + "/" + strings.TrimSuffix(config.FilterMixinFile, ".yaml") + ")",
+	}
+	if e.Path != "" {
+		// 文件不经 HTTP 抓取，User-Agent 没有意义。
+		options = slices.Delete(options, 1, 2)
+	}
+	k, err := a.prompt.Choose(ctx, fmt.Sprintf("Change what of %q?", name), options, 0)
+	if _, err := a.cancelled(err); err != nil || a.aborted {
+		return err
+	}
+	var opts subscription.UpdateOptions
+	switch what, _, _ := strings.Cut(options[k], " ("); what {
+	case setPeriod:
+		return a.setSubUpdate(cmd, []string{name})
+	case setFilter:
+		return a.editMixin(cmd, name+"/"+config.FilterMixinFile)
+	case setSource:
+		s, err := a.prompt.Input(ctx, "New URL or file for "+strconv.Quote(name),
+			"It is fetched now and saved only if that works.", "", checkSource)
+		if _, err := a.cancelled(err); err != nil || a.aborted {
+			return err
+		}
+		s = strings.TrimSpace(s)
+		opts.Source = &s
+	case setUserAgent:
+		s, err := a.prompt.Input(ctx, "User-Agent for "+strconv.Quote(name),
+			"Leave empty for the default ("+subscription.DefaultUserAgent(a.info.Version)+" unless set in "+a.layout.SettingsFile()+"). It is fetched now and saved only if that works.",
+			e.UserAgent, func(string) error { return nil })
+		if _, err := a.cancelled(err); err != nil || a.aborted {
+			return err
+		}
+		s = strings.TrimSpace(s)
+		opts.UserAgent = &s
+	}
+	return a.fetchSubscriptions(cmd, []string{name}, opts)
 }
 
 func (a *app) newSubUseCommand() *cobra.Command {

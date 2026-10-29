@@ -42,7 +42,14 @@ stderr 'update set sub needs the name of a subscription and the period'
 exitcode 2 tunlr update set sub main 6h --by tunlr
 stderr 'unknown flag: --by'
 exitcode 2 tunlr sub set main
-stderr 'unknown command "set" for "tunlr sub"'
+stderr 'sub set needs the name of a subscription and what to change'
+
+# sub set --update 与 update set sub 相同
+exec tunlr sub set main --update 12h
+stdout '^"main" is fetched again every 12 hours\.$'
+grep '^    update: 12h$' root/etc/tunlr/subscriptions.yaml
+exec tunlr sub set main --update default
+! grep '^    update: 12h$' root/etc/tunlr/subscriptions.yaml
 exitcode 1 tunlr update set sub nope off
 stderr 'subscription not found: nope'
 

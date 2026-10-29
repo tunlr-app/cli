@@ -158,7 +158,7 @@ func (d *Def) validate() error {
 
 // listHeader 是新建的订阅列表开头的说明。
 const listHeader = `# tunlr 的订阅列表：各订阅的来源（url 或 path）、User-Agent、更新周期（update），以及启用的订阅（active）。
-# 由 tunlr sub 修改（add、use、update、remove）；也可以直接改，下次抓取或 tunlr config apply 时生效。
+# 由 tunlr sub 修改（add、set、use、update、remove）；也可以直接改，下次抓取或 tunlr config apply 时生效。
 # 抓取到的内容和抓取记录由工具保存在 /var/lib/tunlr 中。
 `
 

@@ -178,3 +178,75 @@ func TestUpdateSetChooses(t *testing.T) {
 		t.Errorf("output:\n%s", et.stdout)
 	}
 }
+
+// writeSubscriptionFile 写一份可以当作订阅来源的本地文件，返回它的绝对路径（正斜杠）。
+func writeSubscriptionFile(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name+".yaml")
+	sub := "proxies:\n  - {name: " + name + ", type: ss, server: " + name + ".example.net, port: 1, cipher: aes-128-gcm, password: p}\nrules:\n  - MATCH," + name + "\n"
+	if err := os.WriteFile(path, []byte(sub), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.ToSlash(path)
+}
+
+// sub add 不带参数时依次问名称、来源、周期和筛选。
+func TestSubAddAsks(t *testing.T) {
+	et := newEditTest(t)
+	file := writeSubscriptionFile(t, "home")
+	et.prompt.inputs = []string{"home", " " + file + " ", "", ""}
+	et.prompt.choices = []int{0}
+	et.run(0, "sub", "add")
+	l := subscriptionList(t, et.a)
+	if len(l.Subscriptions) != 1 || l.Subscriptions[0].Name != "home" || filepath.ToSlash(l.Subscriptions[0].Path) != file || l.Active != "home" {
+		t.Fatalf("list = %+v\n%s", l, et.stdout)
+	}
+	if !strings.HasPrefix(et.prompt.described[1], "The URL your provider gives") {
+		t.Errorf("described = %q", et.prompt.described)
+	}
+	// 给了名称时只问来源。
+	et.prompt.inputs = []string{file, "", ""}
+	et.prompt.choices = []int{0}
+	et.run(0, "sub", "add", "spare")
+	if l := subscriptionList(t, et.a); len(l.Subscriptions) != 2 || l.Subscriptions[1].Name != "spare" {
+		t.Errorf("list = %+v\n%s", l, et.stdout)
+	}
+}
+
+// sub set 不带参数时先选订阅，再选改什么。
+func TestSubSetChooses(t *testing.T) {
+	et := newEditTest(t)
+	addSubscriptions(t, et.a, "main", "main", "backup")
+	et.prompt.picks = []string{"backup", "Fetch period", "every 6 hours"}
+	et.run(0, "sub", "set")
+	if got := subscriptionList(t, et.a).Subscriptions[1].Update; got != "6h" {
+		t.Fatalf("backup update = %q\n%s", got, et.stdout)
+	}
+	opts := et.prompt.asked[1]
+	if len(opts) != 4 || opts[0] != "URL or file (now https://example.net/...)" || opts[1] != "User-Agent (now default)" ||
+		opts[2] != "Fetch period (now daily)" || opts[3] != "Proxy filter (backup/10-filter)" {
+		t.Errorf("options = %q", opts)
+	}
+
+	// 换成本地文件：抓取成功才保存；文件没有 User-Agent 一项。
+	file := writeSubscriptionFile(t, "backup")
+	et.prompt.picks = []string{"URL or file"}
+	et.prompt.inputs = []string{file}
+	et.run(0, "sub", "set", "backup")
+	if d := subscriptionList(t, et.a).Subscriptions[1]; filepath.ToSlash(d.Path) != file || d.URL != "" {
+		t.Fatalf("backup = %+v\n%s", d, et.stdout)
+	}
+	et.prompt.picks = []string{""}
+	et.run(0, "sub", "set", "backup")
+	if opts := et.prompt.asked[len(et.prompt.asked)-1]; len(opts) != 3 || strings.HasPrefix(opts[1], "User-Agent") {
+		t.Errorf("options for a file = %q", opts)
+	}
+
+	// 非交互时要给出名称和要改的项。
+	et.a.terminal = func() bool { return false }
+	et.run(exitUsage, "sub", "set", "backup")
+	et.run(0, "sub", "set", "backup", "--update", "off")
+	if got := subscriptionList(t, et.a).Subscriptions[1].Update; got != "off" {
+		t.Errorf("backup update = %q", got)
+	}
+}

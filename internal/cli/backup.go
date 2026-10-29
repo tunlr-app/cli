@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -270,7 +271,7 @@ func (a *app) newBackupRestoreCommand() *cobra.Command {
 			"the panel) are not turned on by themselves: the network here may differ. Afterwards you\n" +
 			"choose which to turn on, each with its usual checks; without a terminal, or with --yes,\n" +
 			"the commands are listed instead.\n\n" +
-			"Without a file, choose one of the automatic backups (see tunlr backup).",
+			"Without a file, choose one of the automatic backups (see tunlr backup) or enter a file.",
 		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 && !a.interactive() {
@@ -305,19 +306,32 @@ func (a *app) chooseSavedBackup(ctx context.Context) (string, error) {
 			usable = append(usable, s)
 		}
 	}
-	if len(usable) == 0 {
-		fmt.Fprintln(a.stdout, "No automatic backups here; restore a file with: tunlr backup restore <file>")
-		return "", nil
-	}
-	options := make([]string, len(usable))
+	options := make([]string, len(usable), len(usable)+1)
 	for i, s := range usable {
 		options[i] = describeSaved(s)
 	}
-	i, err := a.prompt.Choose(ctx, "Restore which automatic backup?", options, 0)
+	i := 0
+	if len(usable) > 0 {
+		options = append(options, "A file on this server...")
+		if i, err = a.prompt.Choose(ctx, "Restore which backup?", options, 0); err != nil {
+			_, err := a.cancelled(err)
+			return "", err
+		}
+	}
+	if i < len(usable) {
+		return usable[i].Path, nil
+	}
+	file, err := a.prompt.Input(ctx, "Backup file", "A file made by tunlr backup create; the diff is shown before anything changes.", "",
+		func(s string) error {
+			if fi, err := os.Stat(strings.TrimSpace(s)); err != nil || fi.IsDir() {
+				return errors.New("no such file")
+			}
+			return nil
+		})
 	if _, err := a.cancelled(err); err != nil || a.aborted {
 		return "", err
 	}
-	return usable[i].Path, nil
+	return strings.TrimSpace(file), nil
 }
 
 func (a *app) restore(ctx context.Context, file string) error {

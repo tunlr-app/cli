@@ -46,7 +46,7 @@ cp nodes.txt provider/nodes.txt
 exitcode 1 tunlr sub add nodes $PROVIDER/nodes.txt
 stderr 'try a different --user-agent'
 exitcode 2 tunlr sub add onlyname
-stderr 'accepts 2 arg'
+stderr 'sub add needs a name and a URL or file'
 
 # 不能删除启用中的订阅
 exitcode 1 tunlr sub remove main --yes
