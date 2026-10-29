@@ -208,26 +208,37 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   1. 模板：工具内置的系统部分，如端口、DNS、geo 数据的自动更新与下载地址、面板、profile。
   2. 订阅：**只取白名单中的键**（`config.subscriptionKeys`），其余键一律丢弃并在 `config plan` 中列出。订阅是不可信输入，不能让机场配置打开端口、改监听地址或设置 API。随后按 mixin 中的 `tunlr.proxy-filter` 筛选订阅的节点，见下文“节点筛选”。白名单：
      - 路由：`proxies`、`proxy-groups`、`rules`、`proxy-providers`、`rule-providers`、`sub-rules`。
-     - DNS：`dns`、`hosts`、`sniffer`。机场的规则常与它的 DNS 配合（`nameserver-policy`、fake-ip 过滤、按 geosite 分流的上游），换成模板的 DNS 可能让规则失效，所以整段采用订阅的 `dns`，替换模板的。例外是 `dns.listen`：它决定 DNS 是否暴露在外（见下文“端口安全”），TUN 的 DNS 劫持也转到它，一律换回模板的 `127.0.0.1:1053`，在 `config plan` 中列为丢弃了 `dns.listen`。开启 TUN 时 `tunlr:tun` 独占 `dns.enable: true`：TUN 劫持 DNS，内核的 DNS 必须开着。
+     - DNS：`dns`、`hosts`、`sniffer`。机场的规则常与它的 DNS 配合（`nameserver-policy`、fake-ip 过滤、按 geosite 分流的上游），换成模板的 DNS 可能让规则失效，所以整段采用订阅的 `dns`，替换模板的。例外是 `dns.listen`：它决定 DNS 是否暴露在外（见下文“端口安全”），订阅里的一律丢弃，在 `config plan` 中列为丢弃了 `dns.listen`；监听地址由提供默认值的 `tunlr:dns` 设为 `127.0.0.1:1053`，用户的 mixin 可以改（如换端口），非回环地址仍由端口安全检查拒绝。开启 TUN 时 `tunlr:tun` 独占 `dns.enable: true`：TUN 劫持 DNS，内核的 DNS 必须开着。
      - geo 数据：`geox-url`、`geodata-mode`、`geodata-loader`、`geo-auto-update`、`geo-update-interval`。订阅的规则要用它指定来源的数据（如自己维护的 geosite 分类），见第 7 节“geo 数据更新”。
      - 订阅的 DNS 是为桌面客户端写的，可能在服务器上不成立。合成后检查（`config.DNSWarnings`），作为警告列在 `config plan` 中、不阻止发布：开启 DNS 却没有 `nameserver`；`dhcp://<网卡>` 指向本机没有的网卡（如 macOS 的 `en0`）。要改用 mixin 覆盖 `dns` 下的键。
-  3. 提供默认值的受管 mixin（`tunlr:mirror`），见下文“受管 mixin”。
+  3. 提供默认值的受管 mixin（`tunlr:dns`、`tunlr:mirror`、`tunlr:filter`），见下文“受管 mixin”。
   4. 用户的 mixin：先是共用的 `mixin.d/*.yaml`，再是启用订阅的 `mixin.d/<订阅名>/*.yaml`，见下文。
   5. 独占键的受管 mixin（`tunlr:core`、`tunlr:tun`、`tunlr:panel`、`tunlr:proxy`），最后写入。
-  6. 设置了 `github-mirror` 时，`geox-url` 中 `https://github.com/` 开头的地址改为经镜像（`Layers.Mirror`），不论来自模板、订阅还是 mixin：这样订阅自定义的来源也能在国内服务器上下载，工具的核对（见第 7 节）去掉镜像前缀后仍认得出是哪个 GitHub release 资产。其他地址原样保留。
+  6. 受管 mixin 的改写：设置了 `github-mirror` 时，`tunlr:mirror` 把 `geox-url` 中 `https://github.com/` 开头的地址改为经镜像（`Managed.RewriteGeoxURL`），不论来自模板、订阅还是 mixin：这样订阅自定义的来源也能在国内服务器上下载，工具的核对（见第 7 节）去掉镜像前缀后仍认得出是哪个 GitHub release 资产。其他地址原样保留。改写的键在 `config plan` 中列出（`Rewritten by tunlr:mirror: geox-url.geoip, …`，`--json` 中为 `rewrites`）。
+- **tunlr 对配置的改动只有三条途径**（2026-10-29 整理）。每一处改动都能在 `config plan` 或 `tunlr config` 中看到出自哪里，新增功能必须归入其中一类，不在 `Compose` 里另写特例：
+
+  | 途径 | 是什么 | 例子 | 在哪里看到 |
+  |---|---|---|---|
+  | 模板 | 基底，不是叠加层 | 端口、profile、DNS 和 geo 的默认设置 | 模板本身（注释说明哪些会被替换） |
+  | 合成规则 | 对不可信输入的过滤，不是对配置的修改 | 订阅的白名单、丢弃订阅的 `dns.listen` | `config plan` 列为 “Ignored from the subscription” |
+  | 受管 mixin | 交互功能和工具运行所需的设置，见下文 | `tunlr:tun`、`tunlr:dns`、`tunlr:mirror` | `tunlr config` 列出键或内容，`config plan` 列出名称、覆盖和改写 |
+
+  - 原来 `dns.listen` 由合成流程直接换回模板的值、`geox-url` 经镜像是合成流程里的一步，都绕开了受管 mixin，plan 中看不出是谁改的、能不能改。现在前者是 `tunlr:dns`，后者登记在 `tunlr:mirror` 名下。
+  - 为什么不把程序的改动都放进 `tunlr:` 命名空间：两个命名空间按操作的类型划分，而不是按谁写的（见下文“mixin”）。`mihomo:` 写值，`tunlr:` 是 mihomo 的写法表达不了的操作，tunlr 和用户都同时用到两种（`tunlr:tun` 写值，`tunlr:filter` 插入规则）。按“程序 / 用户”划分就得在 `tunlr:` 下再造一套写值的语法，与 `mihomo:` 重复。
+  - 为什么镜像改写不做成 mixin 的写法：它是对值的变换（给地址加前缀），既不是写值也不是列表操作；为这一个用例扩充 mixin 的语法划不来。它作为受管 mixin 的一个附加项（`RewriteGeoxURL`）登记，可见性与其他受管 mixin 相同。
 - **受管 mixin：mixin 是统一的底座**。mihomo 由配置驱动，tunlr 的交互功能（TUN 开关、面板与代理端口的局域网访问等）说到底都是对配置的修改。每个功能的开关存在状态文件或工具设置中，它在配置中写成什么由一份受管 mixin 表达，与用户的 mixin 走同一套合并引擎（`pkg/core/config/managed.go`）。原来分开的“工具生成的调整”和“强制项”两条路径合并为它。
   - 两种受管 mixin：
 
     | 种类 | 成员 | 应用时机 | 用户的 mixin 动了它的键 |
     |---|---|---|---|
     | 独占 | `tunlr:core`（`external-controller-unix`，工具经它访问 API）<br>`tunlr:tun`（`tun.enable` 等，见 8.3）<br>`tunlr:panel`（`external-controller`、`secret`）<br>`tunlr:proxy`（`allow-lan`、`lan-allowed-ips`，见第 10 节“代理端口的局域网访问”） | 用户的 mixin 之后 | 报错，不发布 |
-    | 默认值 | `tunlr:mirror`（配置了 `github-mirror` 时：`external-ui-url` 和让镜像直连的规则；`geox-url` 不在这里，见上面第 6 步） | 用户的 mixin 之前 | 允许，`config plan` 中记为“覆盖 tunlr:mirror” |
+    | 默认值 | `tunlr:dns`（`dns.listen`）<br>`tunlr:mirror`（配置了 `github-mirror` 时：`external-ui-url` 和让镜像直连的规则；另在合成的最后改写 `geox-url`，见上面第 6 步，用户的 mixin 不能取消，只能改用其他地址）<br>`tunlr:filter`（流量过滤的规则，见 8.13） | 用户的 mixin 之前 | 允许，`config plan` 中记为“覆盖 tunlr:dns”等 |
 
   - 冲突：用户的 mixin 在 `mihomo:` 下写了独占的键（即使值相同）、用 `null` 删除它，或把它的上级整个替换掉。报告为 mixin 错误（`*config.MixinError`，退出码 3），指出文件、行和改用的命令，例如 `mixin 20-x.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); remove it from the mixin`。同一映射中的其他键照常可改（如 `tun.stack`、`tun.route-exclude-address`）。
   - 为什么拒绝而不是像原来那样忽略并警告：被忽略的设置让人以为生效了，交互命令和手改的 mixin 各说各的；拒绝时用户立刻知道该用哪个命令。代价是工具升级新增独占的键后，已经写了它的 mixin 会让定时更新保持当前配置（与 mixin 出错相同），`doctor` 的 `install.mixins` 列出这种冲突。
   - `secret` 也是独占的，不支持自定义：换 secret 用 `tunlr panel reset-secret`。
-  - 受管 mixin 只在内存中合成，不写入 `mixin.d`：写成文件会让用户以为可以编辑它，改了又被工具覆盖；设置变化时还要同步文件。`tunlr config` 列出用户的 mixin 文件和全部受管 mixin（独占的列出键和命令，默认值的列出内容，`secret` 的值不出现），`config plan` 列出受管 mixin 的名称和默认值的内容。
-  - 默认值放在订阅之后而不是紧接模板：插入规则需要订阅的 `rules` 已经就位；这一层的键模板中都有，合并后位置不变，输出稳定。
+  - 受管 mixin 只在内存中合成，不写入 `mixin.d`：写成文件会让用户以为可以编辑它，改了又被工具覆盖；设置变化时还要同步文件。`tunlr config` 列出用户的 mixin 文件和全部受管 mixin（独占的列出键和命令，默认值的列出内容和改写，`secret` 的值不出现），`config plan` 只列出受管 mixin 的名称（每次都打印默认值的内容太啰嗦）、用户 mixin 覆盖了哪些默认值和改写了哪些键。
+  - 默认值放在订阅之后而不是紧接模板：插入规则需要订阅的 `rules` 已经就位，`dns.listen` 要补在订阅的 `dns` 之上。这一层的键模板中都有，合并后位置不变，输出稳定；只有订阅带 `dns` 时，`listen` 排在订阅的 `dns` 段末尾。
   - 回滚和自动关闭透明代理不重新合成，只把独占的受管 mixin 按当前状态重新写入生效的配置（`config.Enforce`），包括面板的监听地址和 `secret`。
 - **mixin**（`pkg/core/config/mixin.go`）。参考了 clashctl（单个 mixin.yaml，嵌套的 `prepend`/`append`/`override`/`inject`）和 ShellCrash（按类别分文件、文本拼接、`-t` 失败时静默丢弃全部自定义）后的设计：
   - 场景：改通用设置；加自己的节点、策略组、规则、rule-providers、listeners；改订阅里已有的策略组和节点（塞入自己的节点、改 interval、加 dialer-proxy）；去掉机场的信息节点和不要的组或规则；按用途分文件、可以单独停用。
@@ -291,7 +302,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - **一个文件内的执行顺序**固定，与书写顺序无关：先 `mihomo:`（替换与合并），再 `tunlr:` 的 删除 → 修改 → 插入。这样先删掉订阅的 `MATCH` 再追加自己的 `MATCH`、删除信息节点不会误删自己追加的节点；`patch` 也能改到 `mihomo:` 里刚替换的内容。`proxy-filter` 不在这个顺序里：它在任何 mixin 之前执行（见下文）。
   - 顶层以 `x-` 开头的键不写入配置，用来放 YAML 锚点；锚点不能跨文件。mixin 中的注释不带入生成的配置。
   - 多个文件时两个命名空间都是“后面的文件作用在前面的结果上”：`mihomo:` 逐键覆盖，`tunlr:` 的操作逐个执行（后面文件前插的规则排得更靠前，后面的文件可以 `patch` 前面文件加入的组），`proxy-filter` 逐字段覆盖。
-  - 受管 mixin 在内部用同一种写法表达（独占的键写在 `mihomo:` 下，`tunlr:mirror`、`tunlr:filter` 插入的规则写在 `tunlr.rules.prepend` 下），走同一套引擎。
+  - 受管 mixin 在内部用同一种写法表达（独占的键和 `tunlr:dns` 写在 `mihomo:` 下，`tunlr:mirror`、`tunlr:filter` 插入的规则写在 `tunlr.rules.prepend` 下），走同一套引擎。命名空间按操作的类型划分，不按谁写的划分，见上文“tunlr 对配置的改动只有三条途径”。
   - **正则与 mihomo 相同**（2026-10-29）：所有正则（`/正则/` 和 `proxy-filter`）都用 `github.com/dlclark/regexp2`，即 mihomo 筛选节点所用的库（.NET 语法，支持前后查找）。同一个字符串既由 tunlr 执行、又原样写给内核，两边的结果必须一致；只有一种正则语义，也不必记哪里支持什么。原来用 Go 的 `regexp`（RE2），常见写法两者相同。
 - **节点筛选（`tunlr.proxy-filter`）**（2026-10-29）：mihomo 没有全局的节点筛选，只有 provider 和策略组上的 `filter`、`exclude-filter`、`exclude-type`，而且策略组上的 `filter` 对 `proxies:` 中按名称列出的节点不生效。机场的完整配置绝大多数是顶层列出节点、策略组按名称引用，原生的筛选一个也去不掉，所以由 tunlr 实现：
 
@@ -342,7 +353,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - `-t` 在临时工作目录中运行，内核工作目录中的 geo 文件以符号链接提供：`-t` 可能写入缓存，直接用内核的工作目录会与运行中的内核冲突。
   - 校验失败时区分“配置错误”和“依赖下载失败”：mihomo 的错误消息含 `can't download` 时属于后者，不报告为配置问题（不映射到退出码 3）。
   - 实测 `-t` 不会抓取远程的 proxy-providers 和 rule-providers，它们暂时不可达不影响校验。
-  - 内核自己的 geo 定时更新（`geox-url`）同样受网络影响：设置了镜像时，合成的最后把其中 github.com 的地址改为经镜像（见上文合成的第 6 步）。
+  - 内核自己的 geo 定时更新（`geox-url`）同样受网络影响：设置了镜像时，`tunlr:mirror` 在合成的最后把其中 github.com 的地址改为经镜像（见上文合成的第 6 步）。
 - **内核自己的下载**：
 
   | 下载 | 发起者 | 路径 | 校验 |

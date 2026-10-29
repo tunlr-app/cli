@@ -93,12 +93,16 @@ rm root/etc/tunlr/mixin.d/50-rules.yaml root/etc/tunlr/mixin.d/10-level.yaml roo
 # plan 列出 tunlr 管理的 mixin，不显示 secret 的值
 exec tunlr config plan
 stdout '^Managed by tunlr: tunlr:core, tunlr:tun, tunlr:panel, tunlr:proxy \(mixins cannot change their keys; see: tunlr config\)$'
+stdout '^Defaults from tunlr: tunlr:dns \(mixins can override them; see: tunlr config\)$'
 ! stdout 'geox-url'
-! stdout 'Defaults from'
+! stdout 'Rewritten by'
 exec tunlr config
 stdout '^No mixin files in '
 stdout '^  tunlr:tun \(tunlr tun on/off\): tun.enable, tun.auto-route, '
 stdout '^  tunlr:panel \(tunlr panel lan on/off, tunlr panel reset-secret\): external-controller, secret$'
+stdout '^Defaults from tunlr:dns \(a mixin can override these\):$'
+stdout '^      listen: 127.0.0.1:1053$'
+! stdout 'tunlr:mirror'
 ! stdout 'tunlr:geo'
 exec tunlr config --json
 stdout '"name": "tunlr:core"'
@@ -111,18 +115,22 @@ stderr '^tunlr: mixin 20-mine.yaml:4: tun.enable is managed by tunlr:tun \(chang
 exitcode 3 tunlr config apply --yes
 rm root/etc/tunlr/mixin.d/20-mine.yaml
 
-# 配置了 GitHub 镜像：面板和 geo 数据经镜像下载，镜像主机直连的规则插在订阅规则前面，plan 中列出；
-# geox-url 中 github.com 的地址总是经镜像，不在默认值中
+# 配置了 GitHub 镜像：面板和 geo 数据经镜像下载，镜像主机直连的规则插在订阅规则前面；
+# geox-url 中 github.com 的地址在合成的最后改为经镜像，plan 列出改写的键，tunlr config 给出默认值和改写
 cp mirror-settings.yaml root/etc/tunlr/settings.yaml
 exec tunlr config plan
-stdout '^Defaults from tunlr:mirror \(tunlr settings edit; a mixin can override these, remove rules with tunlr.rules.delete\):$'
-stdout '^    external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip$'
+stdout '^Defaults from tunlr: tunlr:dns, tunlr:mirror \(mixins can override them; see: tunlr config\)$'
+stdout '^Rewritten by tunlr:mirror: geox-url.geoip, geox-url.geosite, geox-url.mmdb, geox-url.asn$'
 stdout '^\+  mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb$'
-stdout '^        - DOMAIN,gh-proxy.com,DIRECT$'
-stdout '^      prepend:$'
 stdout '^\+  - DOMAIN,gh-proxy.com,DIRECT$'
 exec tunlr config plan --json
 stdout '"name": "tunlr:mirror"'
+stdout '"path": "geox-url.mmdb",\s*$'
+exec tunlr config
+stdout '^Defaults from tunlr:mirror \(tunlr settings edit; a mixin can override these, remove rules with tunlr.rules.delete\):$'
+stdout '^    external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip$'
+stdout '^        - DOMAIN,gh-proxy.com,DIRECT$'
+stdout '^  # then, after the mixins, https://github.com/ addresses in geox-url go through the mirror$'
 rm root/etc/tunlr/settings.yaml
 
 # edit 需要终端

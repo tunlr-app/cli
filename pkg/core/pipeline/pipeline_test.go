@@ -721,7 +721,7 @@ func TestManagedConflicts(t *testing.T) {
 	}
 
 	ms, err := p.Managed()
-	if err != nil || len(ms) != 5 || ms[4].Name != ManagedMirror || !ms[4].Default || ms[1].Keys()[0] != "tun.enable" {
+	if err != nil || len(ms) != 6 || ms[4].Name != ManagedDNS || ms[5].Name != ManagedMirror || !ms[5].Default || ms[1].Keys()[0] != "tun.enable" {
 		t.Errorf("Managed = %+v, %v", ms, err)
 	}
 }
@@ -785,7 +785,11 @@ func TestProxyLAN(t *testing.T) {
 func TestMirrorDefaults(t *testing.T) {
 	p, _, _ := newPipeline(t)
 	writeFile(t, p.Layout.SettingsFile(), "github-mirror: https://gh-proxy.com\n")
-	cfg := string(mustPlan(t, p).Config)
+	plan := mustPlan(t, p)
+	if fmt.Sprint(plan.Rewrites) != "[{geox-url.geoip tunlr:mirror} {geox-url.geosite tunlr:mirror} {geox-url.mmdb tunlr:mirror} {geox-url.asn tunlr:mirror}]" {
+		t.Errorf("rewrites = %v", plan.Rewrites)
+	}
+	cfg := string(plan.Config)
 	for _, want := range []string{
 		"external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip\n",
 		"  mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb\n",
@@ -798,7 +802,7 @@ func TestMirrorDefaults(t *testing.T) {
 
 	// tunlr:mirror 应用在用户的 mixin 之前，用户可以覆盖，覆盖记录在计划中。
 	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "mihomo:\n  external-ui-url: https://example.com/ui.zip\n")
-	plan := mustPlan(t, p)
+	plan = mustPlan(t, p)
 	if cfg := string(plan.Config); !strings.Contains(cfg, "\nexternal-ui-url: https://example.com/ui.zip\n") {
 		t.Errorf("mixin did not override the default:\n%s", cfg)
 	}
@@ -817,7 +821,9 @@ func TestTemplateURLs(t *testing.T) {
 			t.Errorf("template geox-url lacks %s", f.URL())
 		}
 	}
-
+	if !bytes.Contains(templates.Config, []byte("\n  listen: "+DNSListen+"\n")) {
+		t.Errorf("template dns.listen differs from %s", DNSListen)
+	}
 }
 
 // TestMirrorRules 验证配置了 GitHub 镜像时，镜像主机的直连规则插在订阅规则前面，用户可以在 mixin 中去掉。
@@ -916,15 +922,18 @@ func fakeRelease(t *testing.T, repo, name string, data []byte) *download.Client 
 	return &download.Client{APIBase: srv.URL}
 }
 
-// TestSubscriptionDNS 验证采用订阅的 dns：listen 仍是模板的，开启 TUN 时强制 enable，指向本机没有的网卡的
-// DNS 服务器给出警告。
+// TestSubscriptionDNS 验证采用订阅的 dns：listen 由 tunlr:dns 提供、用户的 mixin 可以覆盖，开启 TUN 时
+// 强制 enable，指向本机没有的网卡的 DNS 服务器给出警告。
 func TestSubscriptionDNS(t *testing.T) {
 	p, _, _ := newPipeline(t)
 	ctx := context.Background()
 	useSubscription(t, p.Layout, "main", subscriptionV1+"dns:\n  enable: false\n  listen: 0.0.0.0:53\n  nameserver: [dhcp://tunlr-test-none0]\n")
 	plan := mustPlan(t, p)
-	if cfg := string(plan.Config); !strings.Contains(cfg, "\ndns:\n  enable: false\n  listen: 127.0.0.1:1053\n  nameserver: ['dhcp://tunlr-test-none0']\n") {
+	if cfg := string(plan.Config); !strings.Contains(cfg, "\ndns:\n  enable: false\n  nameserver: ['dhcp://tunlr-test-none0']\n  listen: 127.0.0.1:1053\n") {
 		t.Errorf("config:\n%s", cfg)
+	}
+	if !slices.Contains(plan.Dropped, "dns.listen") {
+		t.Errorf("dropped = %v", plan.Dropped)
 	}
 	if len(plan.Warnings) != 0 {
 		t.Errorf("warnings with DNS off = %+v", plan.Warnings)
@@ -933,11 +942,17 @@ func TestSubscriptionDNS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(plan.Config), "\ndns:\n  enable: true\n  listen: 127.0.0.1:1053\n") {
+	if !strings.Contains(string(plan.Config), "\ndns:\n  enable: true\n  nameserver: ['dhcp://tunlr-test-none0']\n  listen: 127.0.0.1:1053\n") {
 		t.Errorf("TUN did not turn DNS on:\n%s", plan.Config)
 	}
 	if len(plan.Warnings) != 1 || !strings.Contains(plan.Warnings[0].Message, "no network interface tunlr-test-none0") {
 		t.Errorf("warnings = %+v", plan.Warnings)
+	}
+
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-dns.yaml"), "mihomo:\n  dns:\n    listen: 127.0.0.1:5353\n")
+	plan = mustPlan(t, p)
+	if !strings.Contains(string(plan.Config), "\n  listen: 127.0.0.1:5353\n") || fmt.Sprint(plan.Overrides) != "[{dns.listen 10-dns.yaml tunlr:dns}]" {
+		t.Errorf("mixin override: %v\n%s", plan.Overrides, plan.Config)
 	}
 }
 

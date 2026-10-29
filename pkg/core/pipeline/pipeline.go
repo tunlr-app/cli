@@ -120,6 +120,8 @@ type Plan struct {
 	Warnings []config.Warning
 	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键（仅 KindApply）。
 	Overrides []config.Override
+	// Rewrites 是受管 mixin 在合成的最后改写的值，如经镜像的 geox-url（仅 KindApply）。
+	Rewrites []config.Rewrite
 	// ProxyFilter 是节点筛选的结果，没有设置时为 nil（仅 KindApply）。
 	ProxyFilter *config.ProxyFilterResult
 	// Inactive 表示这是按没有启用的订阅合成的计划（见 PlanWithMixin、PlanSubscription），只用来检查，
@@ -398,16 +400,12 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		plan.Mixins = append(plan.Mixins, m.Name)
 	}
 	plan.Managed = managed(secret, sw, set)
-	layers := config.Layers{
+	res, err := config.Compose(config.Layers{
 		Template:     templates.Config,
 		Subscription: sub,
 		Managed:      plan.Managed,
 		Mixins:       mixins,
-	}
-	if mirror := set.GitHubMirror; mirror != "" {
-		layers.Mirror = func(url string) string { return download.MirrorURL(mirror, url) }
-	}
-	res, err := config.Compose(layers)
+	})
 	if err != nil || opts.composeOnly {
 		return nil, err
 	}
@@ -417,7 +415,7 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		return nil, err
 	}
 	plan.Config, plan.Dropped, plan.facts = res.Config, res.Dropped, res.Facts
-	plan.Warnings, plan.Overrides, plan.ProxyFilter = res.Warnings, res.Overrides, res.ProxyFilter
+	plan.Warnings, plan.Overrides, plan.Rewrites, plan.ProxyFilter = res.Warnings, res.Overrides, res.Rewrites, res.ProxyFilter
 	if opts.noValidate {
 		if plan.Current, err = p.readCurrent(); err != nil {
 			return nil, err
@@ -957,9 +955,13 @@ const (
 	ManagedTun    = "tunlr:tun"
 	ManagedPanel  = "tunlr:panel"
 	ManagedProxy  = "tunlr:proxy"
+	ManagedDNS    = "tunlr:dns"
 	ManagedMirror = "tunlr:mirror"
 	ManagedFilter = "tunlr:filter"
 )
+
+// DNSListen 是内核 DNS 的监听地址，由 tunlr:dns 提供（模板中也写着同一个值）。
+const DNSListen = "127.0.0.1:1053"
 
 // managed 生成 tunlr 的交互功能对应的受管 mixin，顺序即展示的顺序。独占键的：
 //
@@ -970,8 +972,9 @@ const (
 //	tunlr:proxy  代理端口的局域网访问开关：开启时 allow-lan: true，lan-allowed-ips 限制为私有地址段
 //	             （config.LANAllowedIPs），内核拒绝其他来源；关闭时 allow-lan: false
 //
-// 提供默认值、用户可以覆盖的：tunlr:mirror，配置了 GitHub 镜像时经镜像的面板下载地址和让镜像直连的
-// 规则（用 tunlr.rules.delete 去掉；geox-url 经镜像由 config.Layers.Mirror 处理）；tunlr:filter，有过滤项
+// 提供默认值、用户可以覆盖的：tunlr:dns，DNS 的监听地址（订阅中的被丢弃，见 config.Compose）；
+// tunlr:mirror，配置了 GitHub 镜像时经镜像的面板下载地址和让镜像直连的规则（用 tunlr.rules.delete 去掉），
+// 并在合成的最后把 geox-url 中 GitHub 的地址改为经镜像（RewriteGeoxURL，用户的 mixin 不能取消）；tunlr:filter，有过滤项
 // 时在规则最前插入的规则（设为直连的设备、拒绝 QUIC、只代理常用端口，见 filterRules 和 DESIGN.md 8.13）。
 func managed(secret string, sw switches, set *settings.Settings) []config.Managed {
 	tunDNS := ""
@@ -1000,7 +1003,10 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 			ExternalUIURL string `yaml:"external-ui-url"`
 		}{download.MirrorURL(mirror, mihomo.ZashboardURL)}
 	}
-	mirrorData := marshal(mirrorSection)
+	mirrorManaged := config.Managed{Name: ManagedMirror, Command: "tunlr settings edit", Default: true, Data: marshal(mirrorSection)}
+	if mirror != "" {
+		mirrorManaged.RewriteGeoxURL = func(url string) string { return download.MirrorURL(mirror, url) }
+	}
 
 	list := []config.Managed{
 		{Name: ManagedCore, Data: fmt.Appendf(nil, "mihomo:\n  external-controller-unix: %s\n", paths.CoreSocketName)},
@@ -1016,7 +1022,8 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 %s`, sw.tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex, tunDNS)},
 		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel reset-secret", Data: panel},
 		{Name: ManagedProxy, Command: "tunlr proxy lan on/off", Data: proxy, Owns: []string{"allow-lan", "lan-allowed-ips"}},
-		{Name: ManagedMirror, Command: "tunlr settings edit", Default: true, Data: mirrorData},
+		{Name: ManagedDNS, Default: true, Data: fmt.Appendf(nil, "mihomo:\n  dns:\n    listen: %s\n", DNSListen)},
+		mirrorManaged,
 	}
 	if rules := filterRules(sw); len(rules) > 0 {
 		list = append(list, config.Managed{Name: ManagedFilter, Command: "tunlr filter", Default: true,

@@ -30,6 +30,8 @@ type planView struct {
 	Dropped      []string          `json:"dropped,omitempty"`
 	Mixins       []string          `json:"mixins,omitempty"`
 	Overrides    []config.Override `json:"overrides,omitempty"`
+	// Rewrites 是受管 mixin 在合成的最后改写的值，如经镜像的 geox-url。
+	Rewrites []config.Rewrite `json:"rewrites,omitempty"`
 	// ProxyFilter 是节点筛选（tunlr.proxy-filter）的结果，没有设置时省略。
 	ProxyFilter *config.ProxyFilterResult `json:"proxy_filter,omitempty"`
 	// Managed 是 tunlr 的交互功能生成的受管 mixin。
@@ -87,7 +89,7 @@ func newPlanView(p *pipeline.Plan, full bool) planView {
 	v := planView{
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
 		Subscription: p.Subscription, Dropped: p.Dropped, Mixins: p.Mixins,
-		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, GeoReplaced: p.GeoReplaced, Proxies: p.Proxies, Diff: hideSecretInDiff(p.Diff),
+		Overrides: p.Overrides, Rewrites: p.Rewrites, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, GeoReplaced: p.GeoReplaced, Proxies: p.Proxies, Diff: hideSecretInDiff(p.Diff),
 		DiffSections: p.DiffSections, ProxyFilter: p.ProxyFilter,
 	}
 	if p.Managed != nil {
@@ -127,6 +129,21 @@ func describeProxyFilter(f *config.ProxyFilterResult) string {
 	return strings.Join(parts, "; ")
 }
 
+// writeRewrites 按受管 mixin 分组列出它在合成的最后改写的值，如 "Rewritten by tunlr:mirror: geox-url.geoip, geox-url.mmdb"。
+func writeRewrites(w io.Writer, rs []config.Rewrite) {
+	var by []string
+	paths := map[string][]string{}
+	for _, r := range rs {
+		if _, ok := paths[r.By]; !ok {
+			by = append(by, r.By)
+		}
+		paths[r.By] = append(paths[r.By], r.Path)
+	}
+	for _, b := range by {
+		fmt.Fprintf(w, "Rewritten by %s: %s\n", b, strings.Join(paths[b], ", "))
+	}
+}
+
 // printPlan 以文本输出计划：来源、差异（或完整配置）、校验结果。在终端里超过一屏时交给分页器。
 func (a *app) printPlan(v planView) {
 	var b strings.Builder
@@ -156,15 +173,21 @@ func (a *app) writePlan(w io.Writer, v planView) {
 		fmt.Fprintf(w, "Proxy filter: %s\n", describeProxyFilter(f))
 	}
 	if len(v.Managed) > 0 {
-		var names []string
+		var names, defaults []string
 		for _, m := range v.Managed {
-			if !m.Default {
+			switch {
+			case !m.Default:
 				names = append(names, m.Name)
+			case !m.empty():
+				defaults = append(defaults, m.Name)
 			}
 		}
 		fmt.Fprintf(w, "Managed by tunlr: %s (mixins cannot change their keys; see: tunlr config)\n", strings.Join(names, ", "))
-		writeDefaults(w, v.Managed)
+		if len(defaults) > 0 {
+			fmt.Fprintf(w, "Defaults from tunlr: %s (mixins can override them; see: tunlr config)\n", strings.Join(defaults, ", "))
+		}
 	}
+	writeRewrites(w, v.Rewrites)
 	if len(v.Warnings) > 0 {
 		fmt.Fprintln(w, a.style.warn("Warnings:"))
 		for _, wn := range v.Warnings {

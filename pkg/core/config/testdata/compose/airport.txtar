@@ -1,9 +1,13 @@
 内置模板 + 机场完整配置（结构仿照真实订阅，节点信息为假值）+ 常见 mixin。
-订阅中的端口、API、DNS 等系统设置被丢弃，只采用路由部分。
+订阅中的端口、API 等系统设置被丢弃；采用路由、DNS 等部分，DNS 的监听地址由 tunlr:dns 提供。
 
 -- managed/tunlr:panel --
 mihomo:
   secret: generated
+-- default/tunlr:dns --
+mihomo:
+  dns:
+    listen: 127.0.0.1:1053
 -- subscription.yaml --
 # Example Airport
 # Generated for clash-verge
@@ -166,14 +170,14 @@ geox-url:
   mmdb: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
   asn: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb
 
-# 订阅带有 dns 时整段换成订阅的，listen 仍用这里的（TUN 的 DNS 劫持转到它）；
+# 订阅带有 dns 时整段换成订阅的，但不采用订阅的 listen：由 tunlr:dns 设为下面的值（mixin 可以改）；
 # 开启 TUN 时 tunlr 强制 enable: true。
 dns:
   enable: true
-  listen: 127.0.0.1:1053
   enhanced-mode: fake-ip
   nameserver:
     - https://1.1.1.1/dns-query
+  listen: 127.0.0.1:1053
 
 # 透明代理（TUN），用 tunlr tun on/off 开关。enable、auto-route、auto-redirect、strict-route、
 # device 和 iproute2 的索引由 tunlr 决定，mixin 改不了。不要用 route-exclude-address 排除整个

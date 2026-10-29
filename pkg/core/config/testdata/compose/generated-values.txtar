@@ -79,7 +79,7 @@ geox-url:
   mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
   asn: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb
 
-# 订阅带有 dns 时整段换成订阅的，listen 仍用这里的（TUN 的 DNS 劫持转到它）；
+# 订阅带有 dns 时整段换成订阅的，但不采用订阅的 listen：由 tunlr:dns 设为下面的值（mixin 可以改）；
 # 开启 TUN 时 tunlr 强制 enable: true。
 dns:
   enable: true

@@ -21,6 +21,8 @@ type managedView struct {
 	Default bool     `json:"default"`
 	Keys    []string `json:"keys,omitempty"`
 	Content string   `json:"content,omitempty"`
+	// Rewrites 是它在合成的最后改写的键，用户的 mixin 不能取消（目前只有 geox-url 经镜像）。
+	Rewrites []string `json:"rewrites,omitempty"`
 }
 
 func newManagedViews(ms []config.Managed) []managedView {
@@ -29,6 +31,9 @@ func newManagedViews(ms []config.Managed) []managedView {
 		v := managedView{Name: m.Name, Command: m.Command, Default: m.Default, Keys: m.Keys()}
 		if m.Default {
 			v.Content = string(m.Data)
+		}
+		if m.RewriteGeoxURL != nil {
+			v.Rewrites = []string{"geox-url"}
 		}
 		vs = append(vs, v)
 	}
@@ -51,15 +56,33 @@ func writeManaged(w io.Writer, vs []managedView) {
 	writeDefaults(w, vs)
 }
 
-// writeDefaults 输出提供默认值的受管 mixin 的内容，没有内容的省略。
+// empty 报告提供默认值的受管 mixin 既没有内容也没有改写，例如没有配置 GitHub 镜像时的 tunlr:mirror。
+func (v managedView) empty() bool {
+	return strings.TrimSpace(v.Content) == "{}" && len(v.Rewrites) == 0
+}
+
+// writeDefaults 输出提供默认值的受管 mixin 的内容和改写，都没有的省略。
 func writeDefaults(w io.Writer, vs []managedView) {
 	for _, v := range vs {
-		if !v.Default || strings.TrimSpace(v.Content) == "{}" {
+		if !v.Default || v.empty() {
 			continue
 		}
-		fmt.Fprintf(w, "Defaults from %s (%s; a mixin can override these, remove rules with tunlr.rules.delete):\n", v.Name, v.Command)
-		for l := range strings.SplitSeq(strings.TrimRight(v.Content, "\n"), "\n") {
-			fmt.Fprintf(w, "  %s\n", l)
+		empty := strings.TrimSpace(v.Content) == "{}"
+		how := "a mixin can override these"
+		if strings.Contains("\n"+v.Content, "\ntunlr:") {
+			how += ", remove rules with tunlr.rules.delete"
+		}
+		if v.Command != "" {
+			how = v.Command + "; " + how
+		}
+		fmt.Fprintf(w, "Defaults from %s (%s):\n", v.Name, how)
+		if !empty {
+			for l := range strings.SplitSeq(strings.TrimRight(v.Content, "\n"), "\n") {
+				fmt.Fprintf(w, "  %s\n", l)
+			}
+		}
+		if len(v.Rewrites) > 0 {
+			fmt.Fprintf(w, "  # then, after the mixins, https://github.com/ addresses in %s go through the mirror\n", strings.Join(v.Rewrites, ", "))
 		}
 	}
 }
@@ -105,8 +128,8 @@ func (a *app) newConfigCommand() *cobra.Command {
 			"published, the history rollback can go back to, your mixin files in the order they apply,\n" +
 			"and the mixins tunlr generates for its own settings (TUN, the panel, the LAN proxy).\n" +
 			"Your mixins may not set, change or delete the keys tunlr manages; plan, apply and edit\n" +
-			"refuse such a mixin and name the command that changes the key instead. tunlr:mirror only\n" +
-			"gives defaults you can override.",
+			"refuse such a mixin and name the command that changes the key instead. tunlr:dns,\n" +
+			"tunlr:mirror and tunlr:filter only give defaults you can override.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.showConfig(cmd.Context()) },
 	}

@@ -13,7 +13,8 @@ import (
 // subscriptionKeys 是从订阅中采用的顶层键：路由，以及和规则配套的解析与数据（DNS、hosts、嗅探、
 // geo 数据的来源和自动更新）。其余的键（端口、监听地址、API、TUN、运行参数）一律丢弃，避免机场配置
 // 打开端口、改监听地址或设置 API；内核新增的键在评估之前也丢弃，用户在 config plan 中看得到。
-// 采用的键整个替换模板中的同名键，dns.listen 除外（见 Compose）。
+// 采用的键整个替换模板中的同名键。dns.listen 例外：它决定 DNS 是否暴露在外，订阅里的一律丢弃，
+// 由受管 mixin 提供（见 Compose）。
 var subscriptionKeys = map[string]bool{
 	"proxies":             true,
 	"proxy-groups":        true,
@@ -48,8 +49,6 @@ type Layers struct {
 	Managed []Managed
 	// Mixins 是用户的 mixin 文件，按顺序逐个应用，语义见 Mixin。
 	Mixins []Mixin
-	// Mirror 不为 nil 时，合成的最后把 geox-url 中 github.com 的地址换成它返回的经镜像的地址。
-	Mirror func(url string) string
 }
 
 // Result 是合成的结果。
@@ -62,14 +61,16 @@ type Result struct {
 	Warnings []Warning
 	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键。
 	Overrides []Override
+	// Rewrites 是受管 mixin 在合成的最后改写的值（见 Managed.RewriteGeoxURL），按出现顺序排列。
+	Rewrites []Rewrite
 	// ProxyFilter 是节点筛选（tunlr.proxy-filter）的结果，没有设置或没有订阅时为 nil。
 	ProxyFilter *ProxyFilterResult
 	// Facts 是从 Config 中提取的信息，与 Inspect(Config) 的结果相同。
 	Facts *Facts
 }
 
-// Compose 按 模板 → 订阅 → 提供默认值的受管 mixin → 用户的 mixin → 独占键的受管 mixin 的顺序
-// 合成最终配置。合并基于 yaml.Node，保留模板的键顺序与注释；模板中没有的键追加在末尾。
+// Compose 按 模板 → 订阅 → 提供默认值的受管 mixin → 用户的 mixin → 独占键的受管 mixin → 受管 mixin 的改写
+// 的顺序合成最终配置。合并基于 yaml.Node，保留模板的键顺序与注释；模板中没有的键追加在末尾。
 // mixin 有错，或用户的 mixin 动了受管 mixin 独占的键时返回 *MixinError。
 func Compose(l Layers) (*Result, error) {
 	doc, err := parseDocument("template", l.Template)
@@ -88,9 +89,6 @@ func Compose(l Layers) (*Result, error) {
 	}
 	m := &mixer{root: root, subKeys: map[string]bool{}, setBy: map[string]string{}}
 	if sub != nil {
-		// 订阅的 DNS 整段替换模板的，但监听地址仍用模板的：机场常写 0.0.0.0:53，在公网服务器上
-		// 就是开放的 DNS 解析器（见 CheckExposure）。
-		listen := lookup(root, []string{"dns", "listen"})
 		s := sub.Content[0]
 		for i := 0; i < len(s.Content); i += 2 {
 			k, v := s.Content[i].Value, s.Content[i+1]
@@ -98,9 +96,11 @@ func Compose(l Layers) (*Result, error) {
 				res.Dropped = append(res.Dropped, k)
 				continue
 			}
+			// 订阅的 DNS 整段替换模板的，但不采用监听地址：机场常写 0.0.0.0:53，在公网服务器上
+			// 就是开放的 DNS 解析器（见 CheckExposure）。监听地址由受管 mixin 提供。
 			if k == "dns" && v.Kind == yaml.MappingNode {
 				var dropped bool
-				if v, dropped = withListen(v, listen); dropped {
+				if v, dropped = withoutKey(v, "listen"); dropped {
 					res.Dropped = append(res.Dropped, "dns.listen")
 				}
 			}
@@ -188,8 +188,12 @@ func Compose(l Layers) (*Result, error) {
 			mergeMapping(root, mihomoOf(doc.Content[0]))
 		}
 	}
-	if l.Mirror != nil {
-		mirrorGeoxURL(root, l.Mirror)
+	for _, mg := range l.Managed {
+		if mg.RewriteGeoxURL != nil {
+			for _, k := range rewriteGeoxURL(root, mg.RewriteGeoxURL) {
+				res.Rewrites = append(res.Rewrites, Rewrite{Path: "geox-url." + k, By: mg.Name})
+			}
+		}
 	}
 	res.Facts = factsOf(root)
 
@@ -201,41 +205,35 @@ func Compose(l Layers) (*Result, error) {
 	return res, nil
 }
 
-// withListen 返回去掉了 listen 的 DNS 映射 dns 的拷贝（不改动 dns）；listen 不为 nil 时换成它，
-// 放在 enable 之后（没有 enable 时放在最前）。dropped 报告 dns 原来是否有 listen。
-func withListen(dns, listen *yaml.Node) (out *yaml.Node, dropped bool) {
-	c := *dns
-	c.Content = make([]*yaml.Node, 0, len(dns.Content)+2)
-	at := 0
-	for i := 0; i+1 < len(dns.Content); i += 2 {
-		switch dns.Content[i].Value {
-		case "listen":
+// withoutKey 返回去掉了 key 的映射 m 的拷贝（不改动 m），dropped 报告 m 原来是否有 key。
+func withoutKey(m *yaml.Node, key string) (out *yaml.Node, dropped bool) {
+	c := *m
+	c.Content = make([]*yaml.Node, 0, len(m.Content))
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
 			dropped = true
 			continue
-		case "enable":
-			at = len(c.Content) + 2
 		}
-		c.Content = append(c.Content, dns.Content[i], dns.Content[i+1])
-	}
-	if listen != nil {
-		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "listen"}
-		c.Content = slices.Insert(c.Content, at, key, clone(listen))
+		c.Content = append(c.Content, m.Content[i], m.Content[i+1])
 	}
 	return &c, dropped
 }
 
-// mirrorGeoxURL 把 geox-url 中指向 github.com 的地址换成 mirror 返回的经镜像的地址，不论它来自模板、
-// 订阅还是 mixin，与 tunlr 自己的 GitHub 下载一致。其他地址原样保留。
-func mirrorGeoxURL(root *yaml.Node, mirror func(string) string) {
+// rewriteGeoxURL 把 geox-url 中 https://github.com/ 开头的地址换成 rewrite 的返回值，不论它来自模板、
+// 订阅还是 mixin，返回改写了的键。其他地址原样保留。
+func rewriteGeoxURL(root *yaml.Node, rewrite func(string) string) []string {
 	m := lookup(root, []string{"geox-url"})
 	if m == nil || m.Kind != yaml.MappingNode {
-		return
+		return nil
 	}
+	var keys []string
 	for i := 1; i < len(m.Content); i += 2 {
 		if v := m.Content[i]; v.Kind == yaml.ScalarNode && strings.HasPrefix(v.Value, "https://github.com/") {
-			m.Content[i] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: mirror(v.Value)}
+			m.Content[i] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: rewrite(v.Value)}
+			keys = append(keys, m.Content[i-1].Value)
 		}
 	}
+	return keys
 }
 
 // Enforce 把 managed 中独占键的受管 mixin 写入已经合成好的配置 cfg（例如回滚到的历史修订），

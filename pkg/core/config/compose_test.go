@@ -436,20 +436,22 @@ func TestExternalUI(t *testing.T) {
 	}
 }
 
-// TestComposeDNS 检查订阅的 dns 整段替换模板的，listen 仍用模板的；没有 enable 时 listen 放在最前。
+// TestComposeDNS 检查订阅的 dns 整段替换模板的，但丢弃其中的 listen，由提供默认值的受管 mixin 补上。
 func TestComposeDNS(t *testing.T) {
 	template := "dns:\n  enable: true\n  listen: 127.0.0.1:1053\n  ipv6: true\n"
+	dns := Managed{Name: "tunlr:dns", Default: true, Data: []byte("mihomo:\n  dns:\n    listen: 127.0.0.1:1053\n")}
 	for _, tt := range []struct {
 		name, sub, want string
 		dropped         []string
 	}{
-		{"listen replaced", "dns:\n  listen: 0.0.0.0:53\n  enable: false\n  nameserver: [1.1.1.1]\n",
-			"dns:\n  enable: false\n  listen: 127.0.0.1:1053\n  nameserver: [1.1.1.1]\n", []string{"dns.listen"}},
-		{"no enable", "dns:\n  nameserver: [1.1.1.1]\n",
-			"dns:\n  listen: 127.0.0.1:1053\n  nameserver: [1.1.1.1]\n", nil},
+		{"listen dropped", "dns:\n  listen: 0.0.0.0:53\n  enable: false\n  nameserver: [1.1.1.1]\n",
+			"dns:\n  enable: false\n  nameserver: [1.1.1.1]\n  listen: 127.0.0.1:1053\n", []string{"dns.listen"}},
+		{"no listen", "dns:\n  nameserver: [1.1.1.1]\n",
+			"dns:\n  nameserver: [1.1.1.1]\n  listen: 127.0.0.1:1053\n", nil},
+		{"no dns", "rules: []\n", template + "\nrules: []\n", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			res, err := Compose(Layers{Template: []byte(template), Subscription: []byte(tt.sub)})
+			res, err := Compose(Layers{Template: []byte(template), Subscription: []byte(tt.sub), Managed: []Managed{dns}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -463,12 +465,13 @@ func TestComposeDNS(t *testing.T) {
 	}
 }
 
-// TestComposeMirrorGeoxURL 检查 geox-url 中 github.com 的地址不论来自哪一层都经镜像，其他地址不变。
+// TestComposeMirrorGeoxURL 检查 geox-url 中 github.com 的地址不论来自哪一层都经镜像，其他地址不变，
+// 改写的键记在结果中。
 func TestComposeMirrorGeoxURL(t *testing.T) {
 	l := mixinLayers("geox-url:\n  geoip: https://github.com/a/b/releases/download/v1/geoip.dat\n",
 		"mihomo:\n  geox-url:\n    mmdb: https://github.com/c/d/releases/latest/download/geoip.metadb\n    asn: https://cdn.example/asn.mmdb\n")
 	l.Subscription = []byte("geox-url:\n  geosite: https://github.com/e/f/raw/main/geosite.dat\n")
-	l.Mirror = func(u string) string { return "https://m.example/" + u }
+	l.Managed = []Managed{{Name: "tunlr:mirror", Default: true, RewriteGeoxURL: func(u string) string { return "https://m.example/" + u }}}
 	res, err := Compose(l)
 	if err != nil {
 		t.Fatal(err)
@@ -482,5 +485,8 @@ func TestComposeMirrorGeoxURL(t *testing.T) {
 	}
 	if res.Facts.Geo.URLs["mmdb"] != "https://m.example/https://github.com/c/d/releases/latest/download/geoip.metadb" {
 		t.Errorf("facts URLs = %v", res.Facts.Geo.URLs)
+	}
+	if fmt.Sprint(res.Rewrites) != "[{geox-url.geosite tunlr:mirror} {geox-url.mmdb tunlr:mirror}]" {
+		t.Errorf("rewrites = %v", res.Rewrites)
 	}
 }

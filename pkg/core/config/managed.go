@@ -23,6 +23,18 @@ type Managed struct {
 	Data []byte `json:"-"`
 	// Owns 是 Data 之外另行独占的键（点分路径），例如开关关闭时不写的键。
 	Owns []string `json:"owns,omitempty"`
+	// RewriteGeoxURL 不为 nil 时，合成的最后（独占键的受管 mixin 之后）把 geox-url 中
+	// https://github.com/ 开头的地址换成它的返回值，不论来自哪一层，结果记在 Result.Rewrites 中。
+	// 这是对值的变换，mixin 的写法表达不了；用户的 mixin 不能取消它，只能改用其他地址。
+	RewriteGeoxURL func(url string) string `json:"-"`
+}
+
+// Rewrite 是受管 mixin 在合成的最后改写的一个值。
+type Rewrite struct {
+	// Path 是点分路径，如 geox-url.geoip。
+	Path string `json:"path"`
+	// By 是改写它的受管 mixin 的名称。
+	By string `json:"by"`
 }
 
 // Keys 返回独占的键（点分路径）：Data 中的叶子和 Owns，按出现顺序。Default 时为空。
