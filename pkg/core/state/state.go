@@ -176,8 +176,10 @@ func (s *State) FindKernel(sum string) *Kernel {
 // Subscription 是一个已保存的订阅。抓取到的内容单独存放在 paths.Layout.SubscriptionFile 中。
 type Subscription struct {
 	Name string `json:"name"`
-	// URL 通常带有机场的访问令牌，不能出现在输出和日志中。
-	URL string `json:"url"`
+	// URL 通常带有机场的访问令牌，不能出现在输出和日志中。与 Path 二选一。
+	URL string `json:"url,omitempty"`
+	// Path 是本地文件订阅的绝对路径，更新时重新读取；为 PathStdin 时是从标准输入导入的，没有可以重读的来源。
+	Path string `json:"path,omitempty"`
 	// UserAgent 为空时使用默认值。机场按 User-Agent 决定返回的格式。
 	UserAgent string `json:"user_agent,omitempty"`
 	// Update 是自动更新的周期（如 "6h"、"1d"，"off" 为不自动更新），为空时为 DefaultUpdate。
@@ -197,13 +199,24 @@ type Subscription struct {
 	LastErrorAt time.Time `json:"last_error_at,omitzero"`
 }
 
-// DefaultUpdate 是订阅自动更新的默认周期。
+// DefaultUpdate 是地址订阅自动更新的默认周期。本地文件只会被用户自己改，默认不自动更新。
 const DefaultUpdate = "1d"
 
-// UpdatePeriod 返回订阅的自动更新周期（没有设置时为默认值）。
+// PathStdin 是从标准输入导入的订阅的 Path。
+const PathStdin = "-"
+
+// DefaultPeriod 返回订阅自动更新的默认周期：地址为 DefaultUpdate，本地文件和标准输入为 "off"。
+func (s *Subscription) DefaultPeriod() string {
+	if s.URL == "" {
+		return "off"
+	}
+	return DefaultUpdate
+}
+
+// UpdatePeriod 返回订阅的自动更新周期（没有设置时为默认值）。从标准输入导入的总是 "off"。
 func (s *Subscription) UpdatePeriod() string {
-	if s.Update == "" {
-		return DefaultUpdate
+	if s.Update == "" || s.Path == PathStdin {
+		return s.DefaultPeriod()
 	}
 	return s.Update
 }

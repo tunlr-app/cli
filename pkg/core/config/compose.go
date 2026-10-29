@@ -23,7 +23,8 @@ var routingKeys = map[string]bool{
 // maxNodes 限制展开锚点和别名后的 YAML 节点数，防止恶意订阅用别名放大。
 const maxNodes = 1_000_000
 
-var errNotMapping = errors.New("not a YAML mapping")
+// ErrNotMapping 表示 YAML 内容不是映射，例如订阅返回了节点列表。
+var ErrNotMapping = errors.New("not a YAML mapping")
 
 // Layers 是配置合成的各层输入，均为 YAML 文本。除 Template 外都可以为空。
 type Layers struct {
@@ -48,6 +49,8 @@ type Result struct {
 	Warnings []Warning
 	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键。
 	Overrides []Override
+	// ProxyFilter 是节点筛选（tunlr.proxy-filter）的结果，没有设置或没有订阅时为 nil。
+	ProxyFilter *ProxyFilterResult
 	// Facts 是从 Config 中提取的信息，与 Inspect(Config) 的结果相同。
 	Facts *Facts
 }
@@ -99,7 +102,12 @@ func Compose(l Layers) (*Result, error) {
 	}
 	keys := ownedKeys(l.Managed)
 
-	for _, mx := range append(defaults, l.Mixins...) {
+	// 先从所有 mixin 中取出 tunlr 命名空间并合并：订阅的节点按合并后的 tunlr.proxy-filter 筛选，
+	// 然后才应用 mixin，mixin 自己加的节点不受筛选影响。
+	user := append(defaults, l.Mixins...)
+	srcs := make([]*yaml.Node, len(user))
+	ns := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for i, mx := range user {
 		doc, err := parseNode(mx.Data)
 		if err != nil {
 			return nil, &MixinError{File: mx.Name, Err: err}
@@ -107,8 +115,28 @@ func Compose(l Layers) (*Result, error) {
 		if doc == nil {
 			continue
 		}
-		src := doc.Content[0]
-		stripComments(src)
+		srcs[i] = doc.Content[0]
+		stripComments(srcs[i])
+		m.file = mx.Name
+		if err := m.takeNamespace(ns, srcs[i]); err != nil {
+			return nil, err
+		}
+	}
+	var removedGroups []string
+	if pf := proxyFilterOf(ns); pf != nil && sub != nil {
+		if res.ProxyFilter, err = m.filterProxies(root, pf); err != nil {
+			return nil, err
+		}
+		removedGroups = res.ProxyFilter.Groups
+	}
+	filterWarnings := m.warnings
+	m.warnings = nil
+
+	for i, mx := range user {
+		src := srcs[i]
+		if src == nil {
+			continue
+		}
 		before := make([]*yaml.Node, len(keys))
 		for i, k := range keys {
 			if n := lookup(root, k.path); n != nil {
@@ -125,7 +153,12 @@ func Compose(l Layers) (*Result, error) {
 		}
 		slices.SortStableFunc(m.warnings[first:], func(a, b Warning) int { return a.Line - b.Line })
 	}
-	res.Warnings = append(orderWarnings(l.Mixins), m.warnings...)
+	if len(removedGroups) > 0 {
+		if err := m.checkRemovedGroups(root, removedGroups); err != nil {
+			return nil, err
+		}
+	}
+	res.Warnings = slices.Concat(orderWarnings(l.Mixins), filterWarnings, m.warnings)
 	res.Overrides = m.overrides
 
 	for _, mx := range exclusive {
@@ -204,7 +237,7 @@ func parseNode(data []byte) (*yaml.Node, error) {
 		return nil, nil
 	}
 	if doc.Content[0].Kind != yaml.MappingNode {
-		return nil, errNotMapping
+		return nil, ErrNotMapping
 	}
 	// 常见的订阅没有别名和合并键，只需原地去掉锚点；有的才整棵复制展开，免得大订阅多占一份内存。
 	if dropAnchors(doc.Content[0]) {

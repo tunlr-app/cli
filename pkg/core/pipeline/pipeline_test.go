@@ -248,6 +248,61 @@ func TestPlanWithMixin(t *testing.T) {
 	}
 }
 
+// TestSubscriptionMixins 验证订阅 mixin 只在它的订阅启用时应用、排在共用的之后；编辑没有启用的订阅的
+// mixin 时按它被启用合成，计划不能发布；订阅不存在时报错。
+func TestSubscriptionMixins(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	ctx := context.Background()
+	useSubscription(t, p.Layout, "spare", subscriptionV1)
+	useSubscription(t, p.Layout, "main", subscriptionV1)
+	dir := p.Layout.MixinDir()
+	writeFile(t, filepath.Join(dir, "10-a.yaml"), "log-level: warning\n")
+	writeFile(t, filepath.Join(dir, "main", "10-x.yaml"), "log-level: debug\n")
+	writeFile(t, filepath.Join(dir, "spare", "10-x.yaml"), "log-level: error\n")
+
+	plan := mustPlan(t, p)
+	if strings.Join(plan.Mixins, ",") != "10-a.yaml,main/10-x.yaml" || !strings.Contains(string(plan.Config), "\nlog-level: debug\n") {
+		t.Errorf("mixins %v\n%s", plan.Mixins, plan.Config)
+	}
+	if len(plan.Overrides) != 1 || plan.Overrides[0] != (config.Override{Path: "log-level", File: "main/10-x.yaml", Previous: "10-a.yaml"}) {
+		t.Errorf("overrides = %+v", plan.Overrides)
+	}
+
+	// 编辑共用的和启用订阅的：照常是可以发布的计划；新文件插在所在那一段的正确位置。
+	plan, err := p.PlanWithMixin(ctx, config.Mixin{Name: "main/05-y.yaml", Data: []byte("mode: global\n")})
+	if err != nil || plan.Inactive || strings.Join(plan.Mixins, ",") != "10-a.yaml,main/05-y.yaml,main/10-x.yaml" {
+		t.Errorf("active: %v %v %v", plan.Mixins, plan.Inactive, err)
+	}
+	plan, err = p.PlanWithMixin(ctx, config.Mixin{Name: "20-b.yaml", Data: []byte("mode: global\n")})
+	if err != nil || strings.Join(plan.Mixins, ",") != "10-a.yaml,20-b.yaml,main/10-x.yaml" {
+		t.Errorf("shared: %v %v", plan.Mixins, err)
+	}
+
+	plan, err = p.PlanWithMixin(ctx, config.Mixin{Name: "spare/10-x.yaml", Data: []byte("log-level: silent\n")})
+	if err != nil || !plan.Inactive || plan.Subscription != "spare" || strings.Join(plan.Mixins, ",") != "10-a.yaml,spare/10-x.yaml" ||
+		!strings.Contains(string(plan.Config), "\nlog-level: silent\n") {
+		t.Fatalf("inactive: %+v, %v", plan, err)
+	}
+	if _, err := p.Apply(ctx, plan); err == nil || !strings.Contains(err.Error(), "not active") {
+		t.Errorf("Apply(inactive) = %v", err)
+	}
+	if _, err := p.PlanWithMixin(ctx, config.Mixin{Name: "gone/10-x.yaml", Data: []byte("{}\n")}); !errors.Is(err, core.ErrInvalidArgument) {
+		t.Errorf("unknown subscription: %v", err)
+	}
+
+	// 恢复备份时只用启用订阅的 mixin。
+	all, err := config.LoadAllMixins(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mixinsFor(all, "spare"); len(got) != 2 || got[1].Name != "spare/10-x.yaml" {
+		t.Errorf("mixinsFor = %+v", got)
+	}
+	if got := mixinsFor(all, ""); len(got) != 1 {
+		t.Errorf("mixinsFor(none) = %+v", got)
+	}
+}
+
 // TestMixinErrorIsCheckFailure 验证有错的 mixin 不能发布，按“检查未通过”报告并指出文件。
 func TestMixinErrorIsCheckFailure(t *testing.T) {
 	p, _, _ := newPipeline(t)

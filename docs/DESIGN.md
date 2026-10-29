@@ -142,13 +142,14 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 - **YAML 合并基于 `yaml.Node`**：保留键顺序和注释，生成的配置可读、diff 干净；不需要为 mihomo 的大量字段定义结构体。
 - **nftables 用 `nft -f`，不用 `google/nftables`**：规则用 nft 原生语法写成模板，生成的脚本落盘可读、可手动执行、易于 golden 测试，`config plan --full` 原样给用户审查；`nft -f` 整个文件在一个事务中提交。用库直接发 netlink 的话，规则是一串字节表达式，与 `nft list ruleset` 对不上，用户无法审查，出问题也无法手动复现；很多语法特性还要自己拼表达式。`nft` 命令在目标系统上一定存在（`doctor` 要求 nftables），用户排查也离不开它。目前只需要加载、删表、列出表名，都用 `nft` 命令完成；将来真要程序化读取规则的计数器、集合内容等，再考虑引入它。
 - **diff 自己实现**：锚定（patience）逐行 diff，约 80 行。原先用的 `sergi/go-diff` 是字符级的 diff-match-patch，按行用要把每行映射成一个字符，求的是最短差异，新旧差别大时要算几秒，统一格式也要自己拼；锚定算法以两侧各只出现一次的行对齐，耗时 O(n log n)（5000 节点换成 1 万节点约 30 毫秒），对每行多半唯一的配置结果也更易读。
+- **正则用 `dlclark/regexp2`**（MIT，独立的库，不属于 mihomo）：mihomo 筛选节点用的就是它，节点筛选的正则要原样写给内核，两边必须一致（见第 6 节“节点筛选”）。
 - **没有引入的**：`coder/websocket`（实时视图交给 zashboard，见 3.1 和 5.2）。
 
 ### 5.5 磁盘布局
 
 | 路径 | 内容 | 说明 |
 |---|---|---|
-| `/etc/tunlr/` | mixin（`mixin.d/*.yaml`，目录 0700、文件 0600）、工具设置（`settings.yaml`） | 用户可编辑，备份时最需要保留 |
+| `/etc/tunlr/` | mixin（`mixin.d/*.yaml`，订阅 mixin 在 `mixin.d/<订阅名>/*.yaml`，目录 0700、文件 0600）、工具设置（`settings.yaml`） | 用户可编辑，备份时最需要保留 |
 | `/var/lib/tunlr/state.json` | 状态文件：结构版本号、安装实例 ID、订阅、已知可用内核、TUN 开关、网关开关、各定时更新最近一次的执行情况 | 工具维护，权限 0600。只存最新状态，不存会增长的历史（配置历史在 `history/`，历次更新在 journal） |
 | `/var/lib/tunlr/subscriptions/` | 每个订阅最近一次成功抓取的内容 | 含机场凭据 |
 | `/var/lib/tunlr/backups/` | `backup restore` 前自动备份的当前内容（`before-restore-<时间>.tar.gz`） | 保留最近 3 份，目录 0700、文件 0600 |
@@ -185,7 +186,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 - **可以保存多个订阅，同一时间只启用一个**。订阅本身就是一份完整的 YAML，不存在多份订阅的节点、策略组和规则互相合并的情况。下面的分层合成只是在启用的那份订阅之上叠加系统设置和用户覆盖。
   - 适用场景：有备用机场、或在几个机场之间切换。`sub use <name>` 切换启用的订阅，切换本身就是一次配置发布，同样经过校验，失败则回滚。
   - 每个订阅保留最近一次成功抓取的内容。切换到从未成功抓取的订阅时先抓取，失败则不切换。
-  - mixin 对所有订阅共用。它可能引用某个机场特有的策略组：`patch-`、`delete-` 找不到目标时只给出警告；插入了不存在的名称等导致 `mihomo -t` 不通过时，不发布并提示原因。
+  - `mixin.d/*.yaml` 对所有订阅共用，每个订阅另有自己的 mixin（`mixin.d/<订阅名>/*.yaml`，只在它启用时应用，排在共用的之后，见下文“订阅 mixin”）。共用的 mixin 可能引用某个机场特有的策略组：`patch-`、`delete-` 找不到目标时只给出警告；插入了不存在的名称等导致 `mihomo -t` 不通过时，不发布并提示原因。
   - 不能删除正在启用的订阅，需先切换到其他订阅。
 - **订阅抓取**（`pkg/core/subscription`）：
   - 机场按 User-Agent 决定返回的格式。默认 `clash.meta mihomo tunlr/<版本>`，同时命中面板常见的 `clash.meta` 与 `mihomo` 子串判断；返回 base64 节点列表时，报错提示更换 User-Agent。可以自定义，优先级从高到低：
@@ -198,11 +199,16 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 订阅 URL 通常带有访问令牌：输出、日志和错误信息中只出现 `scheme://host/...`，net/http 错误中附带的完整 URL 会被去掉。
   - 订阅列表和抓取信息存在状态文件中，内容存在 `subscriptions/<名称>.yaml`（目录 0700，文件 0600）。添加失败时不留下任何文件；内容未变时不重写，减少刷盘（测试机的虚拟磁盘每次刷盘 35～140 毫秒）。
   - 只含节点的订阅（走 proxy-providers、由模板提供策略组和规则）留作将来的第二种来源，与完整配置共用同一条流水线。
+- **订阅的来源**（2026-10-29）：地址、本地文件或标准输入，由 `sub add <名称> <来源>` 的第二个参数决定，不另设参数：含 `://` 的是地址（只认 http、https），`-` 是标准输入，其余都是路径（转为绝对路径，必须是普通文件）。
+  - 本地文件记住路径（状态中的 `path`，与 `url` 二选一），`sub update` 时重新读取；内容照样复制到 `subscriptions/`，源文件删掉后配置照常可用，`sub update` 记一次失败，与抓取失败相同。自动更新默认关闭（文件只会被用户自己改，改完 `sub update`），可以用 `update set sub` 打开。
+  - 标准输入用于文件在自己电脑上的情况：`ssh host tunlr sub add home - < airport.yaml`。没有可以重读的来源，不自动更新（`update set sub` 拒绝），`update run`、定时任务跳过它；更新时由 `sub update <名称> --source -` 再读一次标准输入。
+  - `sub update <名称> --source <来源>` 换一个来源（地址、文件或 `-`），与 `--user-agent` 相同，只在读取成功时保存。换机场地址也不必再删了重加。
+  - 本地文件和标准输入没有流量与到期信息，也没有 User-Agent（`--user-agent` 报用法错误）。内容的要求与地址相同。`sub` 的来源一栏显示路径或 `stdin`。
 - **分层合成，各层职责固定**（`pkg/core/config.Compose`）：
   1. 模板：工具内置的系统部分，如端口、DNS、geo 更新与下载地址、面板、profile。
-  2. 订阅：**只取路由部分**，即 `proxies`、`proxy-groups`、`rules`、`proxy-providers`、`rule-providers`、`sub-rules`，其余键一律丢弃并在 `config plan` 中列出。订阅是不可信输入，不能让机场配置打开端口、改监听地址或设置 API。
+  2. 订阅：**只取路由部分**，即 `proxies`、`proxy-groups`、`rules`、`proxy-providers`、`rule-providers`、`sub-rules`，其余键一律丢弃并在 `config plan` 中列出。订阅是不可信输入，不能让机场配置打开端口、改监听地址或设置 API。随后按 mixin 中的 `tunlr.proxy-filter` 筛选订阅的节点，见下文“节点筛选”。
   3. 提供默认值的受管 mixin（`tunlr:mirror`），见下文“受管 mixin”。
-  4. 用户的 mixin，见下文。
+  4. 用户的 mixin：先是共用的 `mixin.d/*.yaml`，再是启用订阅的 `mixin.d/<订阅名>/*.yaml`，见下文。
   5. 独占键的受管 mixin（`tunlr:core`、`tunlr:tun`、`tunlr:geo`、`tunlr:panel`、`tunlr:proxy`），最后写入。
 - **受管 mixin：mixin 是统一的底座**。mihomo 由配置驱动，tunlr 的交互功能（TUN 开关、面板的局域网访问、geo 数据的更新方式等）说到底都是对配置的修改。每个功能的开关存在状态文件或工具设置中，它在配置中写成什么由一份受管 mixin 表达，与用户的 mixin 走同一套合并引擎（`pkg/core/config/managed.go`）。原来分开的“工具生成的调整”和“强制项”两条路径合并为它。
   - 两种受管 mixin：
@@ -230,13 +236,35 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
     | `patch-键` | 每一项按 `name` 找到列表中的项，用同样的语义递归修改它（可以在项里用 `prepend-proxies` 等）。找不到时警告，不报错：机场改名很常见 |
     | `delete-键` | 列表按 `name`（字符串列表按值）删除，映射按键删除。顶层删除节点或策略组时，同时从所有策略组的 `proxies` 中移除 |
 
-  - 前缀可用在任何一层映射里，例如 `dns` 下的 `prepend-nameserver`、`sub-rules` 下的 `append-<名称>`。`patch-`、`delete-` 中的名称写成 `/正则/` 时匹配所有符合的项（用于过滤“剩余流量”“官网”这类信息节点、批量修改同一地区的节点）。
+  - 前缀可用在任何一层映射里，例如 `dns` 下的 `prepend-nameserver`、`sub-rules` 下的 `append-<名称>`。`patch-`、`delete-` 中的名称写成 `/正则/` 时匹配所有符合的项（用于批量修改同一地区的节点、删掉个别的组或规则；成批筛选节点用 `tunlr.proxy-filter`）。
   - 同一层中按 替换 → 删除 → 修改 → 插入 的固定顺序执行，与书写顺序无关。这样先删掉订阅的 `MATCH` 再追加自己的 `MATCH`、删除信息节点不会误删自己追加的节点。
   - 顶层以 `x-` 开头的键不写入配置，用来放 YAML 锚点；锚点不能跨文件。mixin 中的注释不带入生成的配置。
+  - 顶层的 `tunlr` 是 tunlr 自己的命名空间，同样不写入配置，合并规则与其他键相同（后面的文件逐字段覆盖前面的）。目前只有 `proxy-filter`；其中出现不认识的键时报错，免得写错了以为生效。
+  - **正则与 mihomo 相同**（2026-10-29）：所有正则（`/正则/` 和 `proxy-filter`）都用 `github.com/dlclark/regexp2`，即 mihomo 筛选节点所用的库（.NET 语法，支持前后查找）。同一个字符串既由 tunlr 执行、又原样写给内核，两边的结果必须一致；只有一种正则语义，也不必记哪里支持什么。原来用 Go 的 `regexp`（RE2），常见写法两者相同。
+- **节点筛选（`tunlr.proxy-filter`）**（2026-10-29）：mihomo 没有全局的节点筛选，只有 provider 和策略组上的 `filter`、`exclude-filter`、`exclude-type`，而且策略组上的 `filter` 对 `proxies:` 中按名称列出的节点不生效。机场的完整配置绝大多数是顶层列出节点、策略组按名称引用，原生的筛选一个也去不掉，所以由 tunlr 实现：
+
+    ```yaml
+    tunlr:
+      proxy-filter:
+        filter: "(?i)港|hk`日本"        # 只保留匹配的节点，多条用反引号分隔，任一匹配即可
+        exclude-filter: "倍率`剩余流量"   # 去掉匹配的节点
+        exclude-type: "ss|http"         # 按配置中的 type 去掉，| 分隔，不区分大小写
+    ```
+
+  - 字段、写法和语义照搬 mihomo 的 provider（读源码 `adapter/outboundgroup/groupbase.go` 与文档）：先取 `filter`，再去掉 `exclude-filter`，最后去掉 `exclude-type`，两边都匹配时去掉。按 provider 而不是策略组的语义，因为它决定的是“有哪些节点”：`exclude-type` 匹配配置中 `type` 的写法（`ss`、`vmess`），而不是策略组用的内部类型名（`Shadowsocks`）。
+  - 写在共用的 mixin 里对所有订阅生效，写在订阅 mixin 里只对这个订阅生效、并逐字段覆盖共用的。
+  - **只筛选订阅带来的节点**：在订阅层之后、任何 mixin 之前执行（用的是全部 mixin 合并后的 `tunlr.proxy-filter`）。mixin 用 `append-proxies` 加的自己的节点不受影响，`delete-proxies` 照常只删点名的。
+  - 订阅中直接列出的 `proxies`：tunlr 筛选，去掉的节点从所有策略组的 `proxies` 中移除。策略组因此变空（原来有成员，现在没有，且没有 `use`、`include-all*`）时删掉它，并从其他组中移除，直到没有空组；mihomo 运行时会给空组放一个兜底出站，但组里已经没有可用的节点，发布前删掉、在 plan 中说明更清楚。被删的组如果在全部 mixin 应用之后仍被规则（`rules`、`sub-rules`）引用，报错不发布（退出码 3），列出这些规则，由用户放宽筛选或用 mixin 处理，不悄悄把这部分流量改成直连或拒绝。订阅只有直接列出的节点、却全被筛掉时同样报错。
+  - 订阅中的 `proxy-providers`：tunlr 看不到其中的节点，把三个字段写进每个 provider 由内核筛选。provider 原来就有的：`exclude-filter` 用反引号、`exclude-type` 用 `|` 追加（都是任一匹配即去掉，可以直接拼接）；`filter` 要两边都满足，组合为 `^(?=.*?(?:原有))(?=.*?(?:新的))`（多条时各自先合成 `(?:a)|(?:b)`），只有 regexp2 支持前瞻，这也是正则要与 mihomo 一致的原因之一。
+  - 正则在合成时检查语法。订阅只有直接列出的节点时，某条正则一个节点都没匹配到给出警告（多半是写错了）。`config plan` 给出一行摘要，如 `Proxy filter: kept 20 of 43 proxies; removed empty groups: 美国, 新加坡; filtered by mihomo in providers: airport`，`--json` 中为 `proxy_filter`。
 - **多个 mixin 文件**：`/etc/tunlr/mixin.d/*.yaml` 按文件名排序，**逐个应用**，每个文件作用在前一个文件处理后的结果上。由此后面的文件优先级一致地更高：同一个键以后面的为准（plan 列出“哪个文件覆盖了哪个文件”），后面文件前插的规则排得更靠前，后面的文件可以 patch 前面文件加入的组。
   - 分类由文件名约定，工具不强制，例如 `10-dns.yaml`、`20-nodes.yaml`、`50-rules.yaml`。只读取 `.yaml`，改名为 `.yaml.off` 即停用；以点开头的文件（编辑器临时文件）被忽略。
   - 排序按文件名逐字符比较，与 `ls`、`run-parts`、systemd 的 drop-in 目录一致，不做“自然排序”（按数值比较数字前缀）：规则简单，用户看到的 `ls` 顺序就是应用顺序。代价是位数不同的前缀会出乎意料（`9-a.yaml` 排在 `10-b.yaml` 之后），因此 `config plan` 发现数字前缀的数值顺序与应用顺序不一致时给出警告，并建议补零后的文件名；`tunlr config edit` 新建文件时列出已有文件的应用顺序，方便选择前缀。
-  - 子目录被忽略，预留给将来按订阅区分的 mixin（如 `mixin.d/<订阅名>/`，先应用全局文件，再应用启用订阅的文件）。第一版不做：patch、delete 找不到目标时只警告，切换订阅一般不会因此失败。
+  - **订阅 mixin**（2026-10-29）：`mixin.d/<订阅名>/*.yaml`，写法与共用的相同，排在共用的之后，所以覆盖共用的（plan 照样列出覆盖关系）；只应用启用的那个订阅的，`sub use` 切换时 diff 中可以看到两边的 mixin 互换。用途是只对一个机场有意义的修改：它的节点筛选、它特有的策略组。文件名在提示中写成 `<订阅名>/<文件名>`，`config edit home/10-filter` 编辑它。
+    - `sub add` 的 `--include`、`--exclude`（可重复，多个用反引号连起来）只是快捷方式：添加成功后写入 `mixin.d/<名称>/10-filter.yaml`（`tunlr.proxy-filter` 的 `filter`、`exclude-filter`），之后用 `config edit <名称>/10-filter` 修改。不另设 `sub filter`：筛选就是 mixin 的一种能力，改它与改其他 mixin 是同一条路。
+    - 跟着订阅走：`sub remove` 一并删除（确认时列出文件数），备份与还原包含它；没有这个订阅的目录被忽略，`doctor` 不报错。更深的子目录被忽略。
+    - 数字前缀的顺序警告在共用的和每个订阅的文件之间分别检查。
+    - 编辑没有启用的订阅的 mixin 时，按“它被启用”合成并运行 `-t` 来检查，通过后保存，不发布，提示 `sub use` 后生效。
   - mixin 可能含有节点密码，目录 0700，文件 0600。
 - **范围与检查**：
   - 受管的键：动了独占的受管 mixin 的键时报错（见上文“受管 mixin”）。
@@ -251,7 +279,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
     - 认证的用户名和密码由用户写在 mixin 里，tunlr 不生成、不保存。`doctor` 对生效的配置做同样的检查（`install.exposure`）。
   - mixin 有错时绝不丢掉它去发布（ShellCrash 的做法）：丢掉用户写的直连或拦截规则可能让流量走错路。定时更新遇到 mixin 错误同样保持当前配置。
 - **`tunlr config edit [名称]`**：同 visudo、`kubectl edit`，在临时副本上编辑，保存后合成并运行 `-t`，有错就显示原因并让用户选择重新编辑或放弃，**通过后才写回 `mixin.d`**，然后显示 diff、确认后发布。有错的编辑因此不会进入 `mixin.d`，定时任务读不到。
-  - 新文件以带完整说明、全部注释掉的示例开始（`templates/mixin.yaml`），未修改就不保存。省略名称时从已有文件中选择或新建。
+  - 新文件以带完整说明、全部注释掉的示例开始（`templates/mixin.yaml`），未修改就不保存。省略名称时从已有文件中选择或新建（共用的，或启用订阅的）。名称写成 `<订阅名>/<文件名>` 时是订阅 mixin，订阅必须存在。
   - `-t` 因下载数据失败而未能完成时，可以选择只保存不发布。编辑期间文件被别人改过时不覆盖，编辑结果留在临时文件中。
   - 编辑器取 `$VISUAL`、`$EDITOR`，否则依次尝试 `vim`、`nano`、`vi`（有 vim 就用 vim，不经 Debian 的 `editor` 替代项，它常指向 nano）；需要终端，非交互模式下报用法错误，直接改文件后用 `config plan`/`config apply` 即可。
   - 打开编辑器前只说明 tunlr 自己的规则（保存退出后校验并显示差异、确认后才发布；不保存退出则不做改动），不讲编辑器本身的用法。
@@ -706,9 +734,10 @@ tunlr config              当前修订与漂移，配置历史，mixin 文件和
 tunlr config plan         预览变更（--full 输出将写入系统的全部文件）
 tunlr config apply        应用变更（默认先展示 diff，--yes 跳过确认；diff 超过 300 行时按段汇总，--full-diff 显示全部）
 tunlr config rollback [号]   回滚配置（不给修订号时回到上一个不同的修订，交互时从历史中选）
-tunlr config edit [名称]  用 $EDITOR 编辑 mixin.d 中的文件，校验通过才保存，然后发布
+tunlr config edit [名称]  用 $EDITOR 编辑 mixin.d 中的文件（<订阅名>/<文件> 为订阅 mixin），校验通过才保存，然后发布
 tunlr sub                 已保存的订阅（可保存多个，同一时间只启用一个）
-tunlr sub add | remove | update | use   添加（--update 指定自动更新周期）、删除、立即抓取、切换启用的订阅
+tunlr sub add <名称> <地址|文件|->   添加（--update 自动更新周期；--include、--exclude 生成订阅 mixin 中的节点筛选）
+tunlr sub remove | update | use   删除、立即抓取（--source 换来源）、切换启用的订阅
 tunlr update              定时更新：每个订阅和 geo 数据的周期、上次执行、下次到期
 tunlr update run [sub|geo]   立即执行订阅、geo 数据的更新（不看周期；只抓某个订阅用 sub update）
 tunlr update set sub [name] [period]   修改一个订阅的自动更新周期（6h、1d、off、default）
@@ -766,10 +795,10 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
   - 不做 `config set/unset <key>`：只有四项，编辑器配合模板中的说明足够；geo 两项另有 `update set geo`。四项不常改，命令越多越难记。
 - `backup`：与 `settings`、`config` 一致，不带子命令时只列出（自动备份），`create`、`restore` 才有动作。主要用于换服务器（VPS 重装、迁移），其次是同一台机器重装后恢复；只改配置时用 `config rollback`。
   - 不直接打包 `/etc/tunlr` 与 `/var/lib/tunlr`：状态文件中混有只对本机有意义的内容（实例 ID、已知可用的内核、TUN 的检测期限、网关开启前的转发设置），原样搬过去会出错。
-  - 备份是一个 tar.gz（`pkg/core/backup`）：`backup.json`（格式版本、tunlr 版本、主机名、时间，以及状态中的订阅、启用的订阅、API secret、设备、过滤项和备份时开着的开关）、`settings.yaml`、`mixin.d/*.yaml`、`subscriptions/<名称>.yaml`（最近一次抓取的内容，新机器暂时抓不到订阅也能立即发布）。不含内核、geo 数据、面板和配置历史（还原后要回滚的是还原前的配置，在本机历史中）。文件 0600，输出提示它含订阅地址与 API secret；不加密：要么引入依赖，要么自己实现，用户把文件放在哪里工具也管不了。
+  - 备份是一个 tar.gz（`pkg/core/backup`）：`backup.json`（格式版本、tunlr 版本、主机名、时间，以及状态中的订阅、启用的订阅、API secret、设备、过滤项和备份时开着的开关）、`settings.yaml`、`mixin.d/*.yaml` 与 `mixin.d/<订阅名>/*.yaml`、`subscriptions/<名称>.yaml`（最近一次抓取的内容，新机器暂时抓不到订阅也能立即发布）。不含内核、geo 数据、面板和配置历史（还原后要回滚的是还原前的配置，在本机历史中）。文件 0600，输出提示它含订阅地址与 API secret；不加密：要么引入依赖，要么自己实现，用户把文件放在哪里工具也管不了。
   - `backup create` 默认写到当前目录的 `tunlr-backup-<主机名>-<时间>.tar.gz`，已存在时不覆盖；`-o -` 写到标准输出，迁移可以一条命令完成：`ssh old tunlr backup create -o - | ssh new tunlr backup restore - --yes`（标准输入被占用，只能 `--yes`）。
   - `backup restore` 要求这台机器已经 `init`（有状态文件）。读取时检查格式版本（比当前新则拒绝）、文件名（只认上面几类，mixin 与订阅名称照常校验）、设置文件、订阅地址，以及启用的订阅有内容；错误信息不含订阅地址。
-  - 设置文件、`mixin.d` 中的 `.yaml` 与订阅内容整体替换（不合并，结果可以预料；原来的内容在自动备份中），状态只替换订阅、启用的订阅、API secret、设备和过滤项；实例 ID、内核、开关、定时任务的记录保持本机的。设备按地址记录，换了局域网就匹配不到，照样还原，diff 中可见。
+  - 设置文件、`mixin.d` 中的 `.yaml`（含订阅 mixin 的目录）与订阅内容整体替换（不合并，结果可以预料；原来的内容在自动备份中），状态只替换订阅、启用的订阅、API secret、设备和过滤项；实例 ID、内核、开关、定时任务的记录保持本机的。设备按地址记录，换了局域网就匹配不到，照样还原，diff 中可见。
   - 先按还原后的样子合成并校验（`pipeline.PlanRestore`，不写入任何东西），显示 diff，确认后在锁内：把当前内容自动备份到 `/var/lib/tunlr/backups`（保留 3 份）→ 写入 → 发布 → 按新的订阅周期与 geo 设置同步 timer。全有或全无：发布失败时写回自动备份的内容，配置由流水线回滚，退出码 4；拒绝或预览时什么都不写。这一点与 `config edit`、`settings edit` 不同：还原只做一半，状态难以看明白。
   - 开关不自动打开：网卡、局域网、是否有公网地址都跟着机器，TUN 还有失联的风险。还原后比较备份与本机，备份时开着、这里关着的（网关的网卡在这里不存在时改用默认路由所在的网卡）在交互模式下列成多选、默认全选，选中的依次走 `tun gateway on`（或 `tun on`）、`proxy lan on`、`panel lan on` 的流程，同 `init`；非交互或 `--yes` 时只列出命令，`--json` 中为 `commands`。
   - 自动备份就是“撤销还原”的入口：`tunlr backup` 按时间列出（订阅、mixin 数和路径，`--json` 中为列表），`backup restore` 不给文件时在交互模式下从中选择；非交互时必须给出文件。
@@ -785,7 +814,7 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
 | `core stop` | Stop mihomo? | 代理停止；TUN 开着时本机流量改为直连 |
 | `core restart` | Restart mihomo? | 连接会断开几秒 |
 | `core upgrade`、`core rollback` | Replace mihomo vX with vY? | 先查询目标版本（确认的是哪个就装哪个），已是该版本时不问；`rollback` 时给出将换回的已知可用版本 |
-| `sub remove` | Remove the subscription …? | 列出地址（缩写），删除后只能用完整地址重新添加 |
+| `sub remove` | Remove the subscription …? | 列出来源（地址缩写），删除后只能用完整地址重新添加；有订阅 mixin 时说明一并删除几个文件 |
 | `uninstall` | Uninstall tunlr …? | |
 | `update set geo --by`（切换到或离开 mihomo） | Apply this configuration? | 同 `config apply`：diff 之后确认，内核会重启；回答否则设置改回去 |
 | `config edit`、`settings edit` 放弃修改 | Discard your edits? | 在“What now?”选择放弃或按 Esc 时再问一次，回答否回到选项 |
@@ -834,7 +863,7 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
 - 选中操作后，菜单那块换成一行操作名和等价命令（订阅地址不含令牌），终端经 `tea.Exec` 交给子命令（Bubble Tea 先等读取输入的协程退出），子命令照常输出和提问，vim、less 也照常使用。结束后输出一行结果（`✓ Done`、`✗ Failed`、`✗ Failed; the change was rolled back`、`✗ Check failed`、`– Interrupted`，带耗时），菜单紧接着出现在结果下面，光标停在刚才那一项。结果就在菜单正上方，不必再按回车确认；所有输出都留在滚动记录里，退出菜单时菜单本身不留在屏幕上。提问被取消或确认时回答否（什么都没做）时结果为 `– Cancelled`，不算失败。
 - 按键规则处处相同：任何提问（列表、输入、确认）按 Esc 或 Ctrl-C 取消，回到上一级；在第一级按 Esc 退出菜单。列表不需要输入文字，`q` 也能取消（与 less 一致）。
 - 子命令里的提问是菜单交出终端期间另起的 huh 程序。取消的提问必须像提交一样正常退出。huh 在用户取消时发送 `tea.Interrupt`，Bubble Tea（v2.1.0 仍是如此）把中断当作程序被杀死，不等读取输入的协程退出就返回；紧接着运行的下一个提问或菜单与这个残留的协程争抢输入，按键时而被它读走丢掉。在 tunlr-dev 上约一半的菜单流程因此丢键，曾把方向键丢掉而误执行了“停止内核”。所以每个表单都带一个 `tea.WithFilter`：表单已标记为取消时，把它发出的中断换成正常退出，`Run` 照样返回 `huh.ErrUserAborted`；不是用户取消的中断保持原样。不要用每次打开 `/dev/tty` 的办法绕开。操作执行中按 Ctrl-C 只中断这一个操作（照常走事务的回滚），结果为 `– Interrupted`，不会退出菜单。
-- 添加订阅时名称和地址在菜单里的同一个表单中，可以用 Shift-Tab 回到名称修改，两项都当场校验；Esc 回到列表。
+- 添加订阅时名称和来源（地址或文件路径）在菜单里的同一个表单中，可以用 Shift-Tab 回到名称修改，两项都当场校验；Esc 回到列表。
 - 不放 `uninstall`：卸载不该是在菜单里顺手按到的操作。
 - 子命令失败不退出菜单：错误照常报告，结果行显示失败。
 

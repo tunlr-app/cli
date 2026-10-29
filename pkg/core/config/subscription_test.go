@@ -30,9 +30,9 @@ rules:
 func TestInspectSubscriptionErrors(t *testing.T) {
 	tests := []struct{ name, data, want string }{
 		{"empty", "", "subscription: empty"},
-		{"node list", "c3M6Ly9ZV1Z6TFRJMU5pMW5ZMjA2QGV4YW1wbGUubmV0OjQ0Mw==\n", "try a different --user-agent"},
+		{"node list", "c3M6Ly9ZV1Z6TFRJMU5pMW5ZMjA2QGV4YW1wbGUubmV0OjQ0Mw==\n", "subscription: not a YAML mapping"},
 		{"no proxies", "rules:\n  - MATCH,DIRECT\n", "subscription: no proxies or proxy-providers"},
-		{"html", "<html><body>login</body></html>\n", "try a different --user-agent"},
+		{"html", "<html><body>login</body></html>\n", "subscription: not a YAML mapping"},
 		{"broken yaml", "proxies: [\n", "subscription: yaml:"},
 	}
 	for _, tt := range tests {

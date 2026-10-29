@@ -2,7 +2,6 @@ package config
 
 import (
 	"errors"
-	"fmt"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -20,10 +19,6 @@ type SubscriptionSummary struct {
 func InspectSubscription(data []byte) (SubscriptionSummary, error) {
 	var sum SubscriptionSummary
 	doc, err := parseDocument("subscription", data)
-	if errors.Is(err, errNotMapping) {
-		// 最常见的原因是机场没有识别出 User-Agent，返回了 base64 编码的节点列表。
-		return sum, fmt.Errorf("%w; the provider may have returned a plain node list, try a different --user-agent", err)
-	}
 	if err != nil {
 		return sum, err
 	}

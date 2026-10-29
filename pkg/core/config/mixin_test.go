@@ -80,12 +80,13 @@ rules:
 }
 
 func TestMixinFileName(t *testing.T) {
-	for in, want := range map[string]string{"20-rules": "20-rules.yaml", "dns.yaml": "dns.yaml", "a_b.c": "a_b.c.yaml"} {
+	for in, want := range map[string]string{"20-rules": "20-rules.yaml", "dns.yaml": "dns.yaml", "a_b.c": "a_b.c.yaml",
+		"home/10-filter": "home/10-filter.yaml", "home/10-filter.yaml": "home/10-filter.yaml"} {
 		if got, err := MixinFileName(in); err != nil || got != want {
 			t.Errorf("MixinFileName(%q) = %q, %v", in, got, err)
 		}
 	}
-	for _, in := range []string{"", ".yaml", ".hidden", "../x", "a/b", "a b", strings.Repeat("a", 65)} {
+	for _, in := range []string{"", ".yaml", ".hidden", "../x", "/x", "a/", "a/b/c", "a/../b", ".a/b", "a b", strings.Repeat("a", 65)} {
 		if _, err := MixinFileName(in); err == nil {
 			t.Errorf("MixinFileName(%q) accepted", in)
 		}
@@ -128,5 +129,48 @@ func TestLoadMixins(t *testing.T) {
 	m, err := LoadMixins(dir)
 	if err != nil || len(m) != 2 || m[0].Name != "10-a.yaml" || string(m[0].Data) != "a" || m[1].Name != "20-b.yaml" {
 		t.Fatalf("mixins = %+v, %v", m, err)
+	}
+
+	// 订阅 mixin：LoadMixinsFor 只带上这个订阅的，排在共用的之后；LoadAllMixins 带上所有子目录的。
+	for _, name := range []string{"home/05-x.yaml", "home/deep/1.yaml", "work/10-y.yaml", ".git/1.yaml"} {
+		path := MixinPath(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names := func(ms []Mixin) string {
+		var s []string
+		for _, m := range ms {
+			s = append(s, m.Name)
+		}
+		return strings.Join(s, ",")
+	}
+	if m, err := LoadMixinsFor(dir, "home"); err != nil || names(m) != "10-a.yaml,20-b.yaml,home/05-x.yaml" {
+		t.Errorf("LoadMixinsFor = %s, %v", names(m), err)
+	}
+	if m, err := LoadMixinsFor(dir, "none"); err != nil || names(m) != "10-a.yaml,20-b.yaml" {
+		t.Errorf("LoadMixinsFor(none) = %s, %v", names(m), err)
+	}
+	if m, err := LoadAllMixins(dir); err != nil || names(m) != "10-a.yaml,20-b.yaml,home/05-x.yaml,work/10-y.yaml" {
+		t.Errorf("LoadAllMixins = %s, %v", names(m), err)
+	}
+}
+
+func TestFilterMixin(t *testing.T) {
+	data := FilterMixin("home", "香港`(?i)hk", "")
+	res, err := Compose(Layers{Template: []byte("a: 1\n"),
+		Subscription: []byte("proxies:\n  - {name: 香港 1}\n  - {name: HK 2}\n  - {name: 日本 3}\n"),
+		Mixins:       []Mixin{{Name: "home/" + FilterMixinFile, Data: data}}})
+	if err != nil {
+		t.Fatalf("%v\n%s", err, data)
+	}
+	if res.ProxyFilter == nil || res.ProxyFilter.Kept != 2 {
+		t.Errorf("ProxyFilter = %+v\n%s", res.ProxyFilter, data)
+	}
+	if CheckPatterns("a`(") == nil || CheckPatterns("a`b") != nil {
+		t.Error("CheckPatterns")
 	}
 }

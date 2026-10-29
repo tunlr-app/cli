@@ -20,8 +20,11 @@ import (
 
 // subscriptionView 是订阅在 --json 输出中的形式。URL 只给出缩写，不输出访问令牌。
 type subscriptionView struct {
-	Name        string                     `json:"name"`
-	URL         string                     `json:"url"`
+	Name string `json:"name"`
+	URL  string `json:"url,omitempty"`
+	// Path 是本地文件的路径，"-" 为从标准输入导入。
+	Path        string                     `json:"path,omitempty"`
+	Source      string                     `json:"source"`
 	Active      bool                       `json:"active"`
 	UserAgent   string                     `json:"user_agent,omitempty"`
 	Update      string                     `json:"update"`
@@ -80,57 +83,104 @@ func updatePeriodArg(v string) (string, error) {
 
 func (a *app) newSubAddCommand() *cobra.Command {
 	var userAgent, update string
+	var include, exclude []string
 	cmd := &cobra.Command{
-		Use:   "add <name> <url>",
+		Use:   "add <name> <url|file|->",
 		Short: "Fetch and save a subscription; the first one becomes active",
-		Long: "Fetch and save a subscription; the first one becomes active. It is fetched again\n" +
-			"automatically every day unless --update says otherwise (interactively tunlr asks);\n" +
-			"the active subscription's configuration is published after each fetch that changed it.",
+		Long: "Fetch and save a subscription; the first one becomes active. The source is a URL\n" +
+			"(http or https), a local file, or - to read it from standard input, e.g.\n" +
+			"ssh server tunlr sub add home - < airport.yaml. A URL is fetched again automatically\n" +
+			"every day and a file is read again only by sub update, unless --update says otherwise\n" +
+			"(interactively tunlr asks); a copy from standard input is never updated automatically.\n" +
+			"The active subscription's configuration is published after each fetch that changed it.\n\n" +
+			"--include and --exclude write a proxy filter for this subscription to\n" +
+			"mixin.d/<name>/10-filter.yaml (tunlr.proxy-filter, the same as mihomo's filter and\n" +
+			"exclude-filter): keep only the proxies whose names match --include, then drop those\n" +
+			"matching --exclude. Repeat a flag for several regular expressions. Change it later with\n" +
+			"tunlr config edit <name>/10-filter.",
 		Args: usageArgs(cobra.ExactArgs(2)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			period, err := updatePeriodArg(update)
 			if err != nil {
 				return err
 			}
+			stdin := args[1] == state.PathStdin
+			if stdin && a.terminal() {
+				return usageErrorf("- reads the subscription from standard input; redirect a file into it: tunlr sub add %s - < file.yaml", args[0])
+			}
 			if !cmd.Flags().Changed("update") && a.interactive() {
-				if period, err = a.choosePeriod(cmd, fmt.Sprintf("subscription %q", args[0]), state.DefaultUpdate); err != nil || period == "" {
+				initial := state.DefaultUpdate
+				if !strings.Contains(args[1], "://") {
+					initial = settings.PeriodOff
+				}
+				if period, err = a.choosePeriod(cmd, fmt.Sprintf("subscription %q", args[0]), initial); err != nil || period == "" {
 					_, err := a.cancelled(err)
 					return err
 				}
 			}
+			opts := subscription.AddOptions{UserAgent: userAgent, Update: period,
+				Filter: strings.Join(include, "`"), Exclude: strings.Join(exclude, "`")}
+			if stdin {
+				opts.Stdin = a.stdin
+			}
+			step := "Fetching the subscription"
+			if !strings.Contains(args[1], "://") {
+				step = "Reading the subscription"
+			}
 			var res *subscription.Fetched
-			err = a.spin("Fetching the subscription", func() (err error) {
-				res, err = a.subscriptions().Add(cmd.Context(), args[0], args[1], subscription.AddOptions{UserAgent: userAgent, Update: period})
+			err = a.spin(step, func() (err error) {
+				res, err = a.subscriptions().Add(cmd.Context(), args[0], args[1], opts)
 				return err
 			})
-			if err != nil {
+			if res == nil {
 				return err
 			}
-			if err := a.syncTimers(cmd); err != nil {
-				return err
+			if serr := a.syncTimers(cmd); err == nil {
+				err = serr
 			}
-			return a.render(fetchedView{res.Name, res.Activated, res.Summary}, func() error {
-				fmt.Fprintf(a.stdout, "Added subscription %q: %s; %s.\n", res.Name, describeSummary(res.Summary), describeFetching(period))
+			rerr := a.render(fetchedView{res.Name, res.Activated, res.Summary}, func() error {
+				fmt.Fprintf(a.stdout, "Added subscription %q: %s; %s.\n", res.Name, describeSummary(res.Summary), describeFetching(period, args[1]))
+				if opts.Filter != "" || opts.Exclude != "" {
+					fmt.Fprintf(a.stdout, "Its proxy filter is in %s (tunlr config edit %s/10-filter).\n",
+						config.MixinPath(a.layout.MixinDir(), res.Name+"/"+config.FilterMixinFile), res.Name)
+				}
 				if res.Activated {
 					fmt.Fprintf(a.stdout, "%q is now the active subscription.\n", res.Name)
 				}
 				return nil
 			})
+			if err != nil {
+				return renderedError{err}
+			}
+			return rerr
 		},
 	}
 	cmd.Flags().StringVar(&userAgent, "user-agent", "",
-		"User-Agent sent when fetching (default: user-agent in "+a.layout.SettingsFile()+", or "+
+		"User-Agent sent when fetching a URL (default: user-agent in "+a.layout.SettingsFile()+", or "+
 			fmt.Sprintf("%q", subscription.DefaultUserAgent(a.info.Version))+")")
-	cmd.Flags().StringVar(&update, "update", "", updateFlagHelp+" (default "+state.DefaultUpdate+")")
+	cmd.Flags().StringVar(&update, "update", "", updateFlagHelp+" (default "+state.DefaultUpdate+" for a URL, off for a file)")
+	cmd.Flags().StringArrayVar(&include, "include", nil, "keep only proxies whose names match this regular expression (repeatable)")
+	cmd.Flags().StringArrayVar(&exclude, "exclude", nil, "drop proxies whose names match this regular expression (repeatable)")
 	return cmd
 }
 
-// describeFetching 是订阅自动更新周期的说法，如 "fetched again daily"；空字符串为默认值。
-func describeFetching(period string) string {
+// describeFetching 是订阅自动更新周期的说法，如 "fetched again daily"；period 为空时是 source 的默认值。
+func describeFetching(period, source string) string {
+	file := !strings.Contains(source, "://")
 	if period == "" {
 		period = state.DefaultUpdate
+		if file {
+			period = settings.PeriodOff
+		}
 	}
-	if period == settings.PeriodOff {
+	switch {
+	case source == state.PathStdin:
+		return "not updated automatically (it was read from standard input)"
+	case file && period == settings.PeriodOff:
+		return "read again by tunlr sub update"
+	case file:
+		return "read again " + settings.DescribePeriod(period)
+	case period == settings.PeriodOff:
 		return "not fetched again automatically"
 	}
 	return "fetched again " + settings.DescribePeriod(period)
@@ -149,19 +199,23 @@ func (a *app) listSubscriptions() error {
 	}
 	views := make([]subscriptionView, 0, len(entries))
 	for _, e := range entries {
+		url := ""
+		if e.URL != "" {
+			url = subscription.Redact(e.URL)
+		}
 		views = append(views, subscriptionView{
-			Name: e.Name, URL: subscription.Redact(e.URL), Active: e.Active, UserAgent: e.UserAgent,
+			Name: e.Name, URL: url, Path: e.Path, Source: subscription.Describe(&e.Subscription), Active: e.Active, UserAgent: e.UserAgent,
 			Update: e.UpdatePeriod(), AddedAt: e.AddedAt, FetchedAt: e.FetchedAt, LastError: e.LastError, LastErrorAt: e.LastErrorAt,
 			UserInfo: e.UserInfo, Summary: e.Summary,
 		})
 	}
 	return a.render(views, func() error {
 		if len(views) == 0 {
-			_, err := fmt.Fprintln(a.stdout, "No subscriptions. Add one with: tunlr sub add <name> <url>")
+			_, err := fmt.Fprintln(a.stdout, "No subscriptions. Add one with: tunlr sub add <name> <url|file>")
 			return err
 		}
 		tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "\tNAME\tPROXIES\tUPDATED\tEVERY\tUSAGE\tEXPIRES\tURL")
+		fmt.Fprintln(tw, "\tNAME\tPROXIES\tUPDATED\tEVERY\tUSAGE\tEXPIRES\tSOURCE")
 		for _, v := range views {
 			mark := ""
 			if v.Active {
@@ -172,7 +226,7 @@ func (a *app) listSubscriptions() error {
 				updated += " (last update failed)"
 			}
 			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
-				mark, v.Name, v.Summary.Proxies, updated, settings.DescribePeriod(v.Update), formatUsage(v.UserInfo), formatExpire(v.UserInfo), v.URL)
+				mark, v.Name, v.Summary.Proxies, updated, settings.DescribePeriod(v.Update), formatUsage(v.UserInfo), formatExpire(v.UserInfo), v.Source)
 		}
 		return tw.Flush()
 	})
@@ -270,7 +324,11 @@ func (a *app) confirmRemove(cmd *cobra.Command, names []string) (bool, error) {
 	var lines []string
 	for _, e := range entries {
 		if slices.Contains(names, e.Name) {
-			lines = append(lines, e.Name+"  "+subscription.Redact(e.URL))
+			line := e.Name + "  " + subscription.Describe(&e.Subscription)
+			if n, err := a.subscriptions().MixinFiles(e.Name); err == nil && n > 0 {
+				line += fmt.Sprintf("  (and its %s in %s)", plural(n, "mixin file", "mixin files"), a.layout.SubscriptionMixinDir(e.Name))
+			}
+			lines = append(lines, line)
 		}
 	}
 	desc := "Their saved copies are deleted; to get one back, add it again with its full URL."
@@ -291,7 +349,7 @@ func (a *app) chooseSubscription(cmd *cobra.Command, question string) (string, e
 		return "", err
 	}
 	if len(entries) == 0 {
-		return "", errors.New("no subscriptions yet; add one with: tunlr sub add <name> <url>")
+		return "", errors.New("no subscriptions yet; add one with: tunlr sub add <name> <url|file>")
 	}
 	initial := 0
 	for i, e := range entries {
@@ -315,20 +373,33 @@ func quoteAll(names []string) []string {
 }
 
 func (a *app) newSubUpdateCommand() *cobra.Command {
-	var userAgent string
+	var userAgent, source string
 	cmd := &cobra.Command{
 		Use:   "update [name...]",
 		Short: "Fetch subscriptions again (all of them by default)",
-		Long: "Fetch subscriptions again (all of them by default). A subscription that fails\n" +
-			"to update keeps its last good copy.\n\n" +
+		Long: "Fetch subscriptions again (all of them by default); a local file is read again.\n" +
+			"A subscription that fails to update keeps its last good copy. One read from standard\n" +
+			"input is skipped unless named with --source -.\n\n" +
 			"--user-agent changes the User-Agent of the named subscriptions; it is saved only\n" +
 			"if the fetch succeeds. --user-agent \"\" goes back to the default, which is the\n" +
-			"user-agent in " + a.layout.SettingsFile() + " if set, or the built-in one.",
+			"user-agent in " + a.layout.SettingsFile() + " if set, or the built-in one.\n\n" +
+			"--source gives one subscription a new source: a URL, a file, or - for standard input\n" +
+			"(e.g. ssh server tunlr sub update home --source - < airport.yaml). It is saved only if\n" +
+			"the new source can be read.",
 		Args: usageArgs(cobra.ArbitraryArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var opts subscription.UpdateOptions
 			if cmd.Flags().Changed("user-agent") {
 				opts.UserAgent = &userAgent
+			}
+			if cmd.Flags().Changed("source") {
+				if source == state.PathStdin && a.terminal() {
+					return usageErrorf("--source - reads the subscription from standard input; redirect a file into it")
+				}
+				opts.Source = &source
+				if source == state.PathStdin {
+					opts.Stdin = a.stdin
+				}
 			}
 			var results []subscription.UpdateResult
 			err := a.spin("Fetching subscriptions", func() (err error) {
@@ -368,6 +439,7 @@ func (a *app) newSubUpdateCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&userAgent, "user-agent", "", "change the User-Agent of the named subscriptions (\"\" restores the default)")
+	cmd.Flags().StringVar(&source, "source", "", "read the named subscription from a new source: a URL, a file, or - (standard input)")
 	return cmd
 }
 

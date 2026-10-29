@@ -21,6 +21,8 @@ func sample() *Backup {
 		Subscriptions: []state.Subscription{
 			{Name: "main", URL: "https://example.com/sub?token=x"},
 			{Name: "spare", URL: "https://example.org/sub"},
+			{Name: "local", Path: "/root/airport.yaml"},
+			{Name: "piped", Path: "-"},
 		},
 		Active:    "main",
 		APISecret: "0123456789abcdef0123456789abcdef",
@@ -28,8 +30,9 @@ func sample() *Backup {
 		Filter:    state.Filter{QUIC: true},
 		Switches:  Switches{Tun: true, Gateway: "ens3", PanelLAN: true},
 		Settings:  []byte("geo-update: 1d\n"),
-		Mixins:    []config.Mixin{{Name: "10-a.yaml", Data: []byte("a: 1\n")}, {Name: "20-b.yaml", Data: []byte("b: 2\n")}},
-		Contents:  map[string][]byte{"main": []byte("proxies: []\n")},
+		Mixins: []config.Mixin{{Name: "10-a.yaml", Data: []byte("a: 1\n")}, {Name: "20-b.yaml", Data: []byte("b: 2\n")},
+			{Name: "main/10-filter.yaml", Data: []byte("c: 3\n")}},
+		Contents: map[string][]byte{"main": []byte("proxies: []\n")},
 	}
 }
 
@@ -101,6 +104,9 @@ func TestReadRejects(t *testing.T) {
 		{"active missing", func(b *Backup) { b.Active = "gone"; b.Contents = nil }, nil, `the active subscription "gone" is not in the backup`},
 		{"bad name", func(b *Backup) { b.Subscriptions[1].Name = "../x" }, nil, "subscription name"},
 		{"bad url", func(b *Backup) { b.Subscriptions[1].URL = "file:///etc/passwd" }, nil, `subscription "spare": invalid URL`},
+		{"relative path", func(b *Backup) { b.Subscriptions[2].Path = "airport.yaml" }, nil, `subscription "local": invalid source`},
+		{"url and path", func(b *Backup) { b.Subscriptions[2].URL = "https://x.example/" }, nil, `subscription "local": invalid source`},
+		{"nested mixin", nil, map[string]string{"mixin.d/main/x/1.yaml": "x"}, "invalid mixin file name"},
 		{"newer", func(b *Backup) { b.Version = Version + 1 }, nil, "newer than this tunlr supports"},
 		{"no version", func(b *Backup) { b.Version = 0 }, nil, "invalid version 0"},
 	}

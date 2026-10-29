@@ -807,15 +807,21 @@ func subscriptionFields() []inputField {
 	}
 	return []inputField{
 		{title: "Name of the subscription", description: "e.g. home or work; letters, digits, '.', '_' and '-'", validate: subscription.ValidateName},
-		{title: "Subscription URL", description: "The URL your provider gives for Clash/mihomo.", validate: subscription.ValidateURL},
-		{title: "Fetch it again how often?", description: "Change later with tunlr update set sub.", options: periods, initial: state.DefaultUpdate},
+		{title: "Subscription URL or file", description: "The URL your provider gives for Clash/mihomo, or the path of a file on this server.", validate: func(s string) error {
+			if s == state.PathStdin {
+				return errors.New("standard input works only on the command line: tunlr sub add <name> - < file")
+			}
+			_, err := subscription.ParseSource(s)
+			return err
+		}},
+		{title: "Update it how often?", description: "A file is read again on this schedule. Change later with tunlr update set sub.", options: periods, initial: state.DefaultUpdate},
 	}
 }
 
 // commandLine 是给用户看的等价命令，订阅地址只给出缩写，不显示访问令牌。
 func commandLine(args []string) string {
 	shown := slices.Clone(args)
-	if len(shown) >= 4 && shown[0] == "sub" && shown[1] == "add" {
+	if len(shown) >= 4 && shown[0] == "sub" && shown[1] == "add" && strings.Contains(shown[3], "://") {
 		shown[3] = subscription.Redact(shown[3])
 	}
 	return "$ tunlr " + strings.Join(shown, " ")

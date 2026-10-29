@@ -59,7 +59,7 @@ type Backup struct {
 
 	// Settings 是设置文件的内容，没有设置文件时为 nil。
 	Settings []byte `json:"-"`
-	// Mixins 是 mixin.d 中的文件，按文件名排序。
+	// Mixins 是 mixin.d 中的文件，订阅 mixin 的名称带订阅名（如 home/10-filter.yaml），顺序同 config.LoadAllMixins。
 	Mixins []config.Mixin `json:"-"`
 	// Contents 是订阅最近一次抓取的内容，键为订阅名称；从未抓取成功的订阅没有。
 	Contents map[string][]byte `json:"-"`
@@ -216,7 +216,16 @@ func Read(r io.Reader) (*Backup, error) {
 			return nil, fmt.Errorf("%w: unexpected file %q", ErrInvalid, name)
 		}
 	}
-	slices.SortFunc(b.Mixins, func(x, y config.Mixin) int { return strings.Compare(x.Name, y.Name) })
+	// 与 config.LoadAllMixins 的顺序相同：共用的在前，订阅的在后。
+	slices.SortFunc(b.Mixins, func(x, y config.Mixin) int {
+		if xs, ys := strings.Contains(x.Name, "/"), strings.Contains(y.Name, "/"); xs != ys {
+			if xs {
+				return 1
+			}
+			return -1
+		}
+		return strings.Compare(x.Name, y.Name)
+	})
 	if b.Active != "" && b.Contents[b.Active] == nil {
 		return nil, fmt.Errorf("%w: the active subscription %q has no content", ErrInvalid, b.Active)
 	}
@@ -244,8 +253,14 @@ func decode(data []byte) (*Backup, error) {
 			return nil, fmt.Errorf("%w: subscription %q appears twice", ErrInvalid, s.Name)
 		}
 		seen[s.Name] = true
-		if err := subscription.ValidateURL(s.URL); err != nil {
-			return nil, fmt.Errorf("%w: subscription %q: invalid URL", ErrInvalid, s.Name)
+		switch {
+		case s.Path == "":
+			if err := subscription.ValidateURL(s.URL); err != nil {
+				return nil, fmt.Errorf("%w: subscription %q: invalid URL", ErrInvalid, s.Name)
+			}
+		case s.URL != "" || (s.Path != state.PathStdin && !path.IsAbs(s.Path)):
+			// 本地文件在新机器上可能不存在，照样还原（内容在备份中），只检查写法。
+			return nil, fmt.Errorf("%w: subscription %q: invalid source", ErrInvalid, s.Name)
 		}
 	}
 	if b.Active != "" && !seen[b.Active] {

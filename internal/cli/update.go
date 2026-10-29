@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -327,21 +328,21 @@ func (a *app) setSubUpdate(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
+	entries, err := a.subscriptions().List()
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(entries, func(e subscription.Entry) bool { return e.Name == name })
+	if i < 0 {
+		return fmt.Errorf("%w: %s", subscription.ErrNotFound, name)
+	}
+	source := cmp.Or(entries[i].URL, entries[i].Path)
 	var period string
 	if len(args) == 2 {
-		var err error
 		if period, err = updatePeriodArg(args[1]); err != nil {
 			return err
 		}
 	} else {
-		entries, err := a.subscriptions().List()
-		if err != nil {
-			return err
-		}
-		i := slices.IndexFunc(entries, func(e subscription.Entry) bool { return e.Name == name })
-		if i < 0 {
-			return fmt.Errorf("%w: %s", subscription.ErrNotFound, name)
-		}
 		if period, err = a.choosePeriod(cmd, fmt.Sprintf("subscription %q", name), entries[i].UpdatePeriod()); err != nil || period == "" {
 			_, err := a.cancelled(err)
 			return err
@@ -355,10 +356,10 @@ func (a *app) setSubUpdate(cmd *cobra.Command, args []string) error {
 	}
 	return a.render(map[string]string{"name": name, "update": period}, func() error {
 		if period == settings.PeriodOff {
-			_, err := fmt.Fprintf(a.stdout, "%q is no longer fetched automatically; fetch it with tunlr sub update %s.\n", name, name)
+			_, err := fmt.Fprintf(a.stdout, "%q is no longer updated automatically; update it with tunlr sub update %s.\n", name, name)
 			return err
 		}
-		_, err := fmt.Fprintf(a.stdout, "%q is %s.\n", name, describeFetching(period))
+		_, err := fmt.Fprintf(a.stdout, "%q is %s.\n", name, describeFetching(period, source))
 		return err
 	})
 }

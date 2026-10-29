@@ -1,0 +1,61 @@
+tunlr.proxy-filter 筛选订阅直接列出的节点：先取 filter，再去掉 exclude-filter，最后去掉 exclude-type。
+订阅 mixin（home/）排在共用的之后，逐字段覆盖共用的 filter。筛选在 mixin 之前执行，mixin 追加的节点不受影响。
+被删掉的节点从策略组中移除；因此变空的组被删掉并从其他组中移除，连带变空的组同样删掉；
+有 use 的组和原本就空的组不动。没有匹配到任何节点的正则给出警告。tunlr 命名空间不写入配置。
+
+-- template.yaml --
+mixed-port: 7890
+-- subscription.yaml --
+proxies:
+  - {name: 剩余流量：10G, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: 香港 01, type: vmess, server: hk.example.net, port: 2, uuid: u}
+  - {name: 香港 02 倍率2, type: vmess, server: hk.example.net, port: 3, uuid: u}
+  - {name: HK 03, type: ss, server: hk.example.net, port: 4, cipher: aes-128-gcm, password: p}
+  - {name: 日本 01, type: trojan, server: jp.example.net, port: 5, password: p}
+  - {name: 美国 01, type: vmess, server: us.example.net, port: 6, uuid: u}
+proxy-groups:
+  - {name: 节点选择, type: select, proxies: [自动选择, 香港, 美国, 美国备用, DIRECT]}
+  - {name: 自动选择, type: url-test, proxies: [香港 01, 香港 02 倍率2, HK 03, 日本 01, 美国 01]}
+  - {name: 香港, type: select, proxies: [香港 01, 香港 02 倍率2, HK 03]}
+  - {name: 美国, type: select, proxies: [美国 01]}
+  - {name: 美国备用, type: select, proxies: [美国]}
+  - {name: 外部, type: select, use: [p], proxies: [美国 01]}
+  - {name: 空组, type: select, proxies: []}
+rules:
+  - DOMAIN-SUFFIX,hk.example,香港
+  - MATCH,节点选择
+-- mixin.d/10-filter.yaml --
+tunlr:
+  proxy-filter:
+    filter: 美国
+    exclude-filter: 倍率`剩余流量`新加坡
+-- mixin.d/20-own.yaml --
+append-proxies:
+  - {name: 美国 自建, type: ss, server: home.example.net, port: 7, cipher: aes-128-gcm, password: p}
+-- mixin.d/home/10-filter.yaml --
+tunlr:
+  proxy-filter:
+    filter: (?i)香港|hk|日本
+    exclude-type: SS
+-- want.yaml --
+mixed-port: 7890
+
+proxies:
+  - {name: 香港 01, type: vmess, server: hk.example.net, port: 2, uuid: u}
+  - {name: 日本 01, type: trojan, server: jp.example.net, port: 5, password: p}
+  - {name: 美国 自建, type: ss, server: home.example.net, port: 7, cipher: aes-128-gcm, password: p}
+
+proxy-groups:
+  - {name: 节点选择, type: select, proxies: [自动选择, 香港, DIRECT]}
+  - {name: 自动选择, type: url-test, proxies: [香港 01, 日本 01]}
+  - {name: 香港, type: select, proxies: [香港 01]}
+  - {name: 外部, type: select, use: [p], proxies: []}
+  - {name: 空组, type: select, proxies: []}
+
+rules:
+  - DOMAIN-SUFFIX,hk.example,香港
+  - MATCH,节点选择
+-- warnings --
+10-filter.yaml: tunlr.proxy-filter.exclude-filter: no proxy matches 新加坡
+-- overrides --
+tunlr.proxy-filter.filter: home/10-filter.yaml overrides 10-filter.yaml

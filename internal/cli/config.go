@@ -10,6 +10,7 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/setup"
+	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
 // managedView 是受管 mixin 的展示形式。独占键的只列出键（其中有 API secret）；提供默认值的给出内容。
@@ -63,6 +64,28 @@ func writeDefaults(w io.Writer, vs []managedView) {
 	}
 }
 
+// writeMixinFiles 输出 mixin 文件：先是共用的，再按订阅分组，标出启用的订阅（只有它的在应用）。
+func writeMixinFiles(w io.Writer, st styles, dir string, files []string, active string) {
+	if len(files) == 0 {
+		fmt.Fprintf(w, "No mixin files in %s (create one with: tunlr config edit).\n", dir)
+		return
+	}
+	fmt.Fprintf(w, "Mixin files in %s (in order):\n", dir)
+	group := ""
+	for _, f := range files {
+		sub, file := splitMixin(f)
+		if sub != group {
+			group = sub
+			note := st.dim(" (not active, not applied)")
+			if sub == active {
+				note = " (active, applied after the shared files)"
+			}
+			fmt.Fprintf(w, "Mixins of subscription %s%s:\n", sub, note)
+		}
+		fmt.Fprintf(w, "  %s\n", file)
+	}
+}
+
 // configView 是 tunlr config 在 --json 输出中的形式。
 type configView struct {
 	*setup.ConfigStatus
@@ -105,13 +128,17 @@ func (a *app) showConfig(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	mixins, err := config.LoadMixins(a.layout.MixinDir())
+	mixins, err := config.LoadAllMixins(a.layout.MixinDir())
 	if err != nil {
 		return err
 	}
 	managed, err := a.pipeline().Managed()
 	if err != nil {
 		return err
+	}
+	active := ""
+	if st, err := state.Load(a.layout.StateFile()); err == nil {
+		active = st.Active
 	}
 	v := configView{ConfigStatus: cs, History: newRevisionViews(revs, current), Dir: a.layout.MixinDir(), Files: []string{}, Managed: newManagedViews(managed)}
 	for _, m := range mixins {
@@ -127,14 +154,7 @@ func (a *app) showConfig(ctx context.Context) error {
 			writeRevisions(a.stdout, v.History)
 		}
 		fmt.Fprintln(a.stdout)
-		if len(v.Files) == 0 {
-			fmt.Fprintf(a.stdout, "No mixin files in %s (create one with: tunlr config edit).\n", v.Dir)
-		} else {
-			fmt.Fprintf(a.stdout, "Mixin files in %s (in order):\n", v.Dir)
-			for _, f := range v.Files {
-				fmt.Fprintf(a.stdout, "  %s\n", f)
-			}
-		}
+		writeMixinFiles(a.stdout, a.style, v.Dir, v.Files, active)
 		fmt.Fprintln(a.stdout)
 		writeManaged(a.stdout, v.Managed)
 		return nil

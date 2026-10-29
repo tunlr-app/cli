@@ -89,15 +89,29 @@ func (p *Pipeline) DriftKey() (string, error) {
 			return "", err
 		}
 	}
-	for _, dir := range []string{p.Layout.MixinDir(), p.Layout.SubscriptionsDir(), p.Layout.HistoryDir()} {
+	// 订阅 mixin 在 mixin.d 的子目录中；原地改写文件不会改变目录的修改时间，所以逐个文件看。
+	var walk func(dir string, sub bool) error
+	walk = func(dir string, sub bool) error {
 		entries, err := os.ReadDir(dir)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return "", err
+			return err
 		}
 		for _, e := range entries {
-			if err := stat(filepath.Join(dir, e.Name())); err != nil {
-				return "", err
+			path := filepath.Join(dir, e.Name())
+			if err := stat(path); err != nil {
+				return err
 			}
+			if sub && e.IsDir() {
+				if err := walk(path, false); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	for _, dir := range []string{p.Layout.MixinDir(), p.Layout.SubscriptionsDir(), p.Layout.HistoryDir()} {
+		if err := walk(dir, dir == p.Layout.MixinDir()); err != nil {
+			return "", err
 		}
 	}
 	return b.String(), nil

@@ -59,7 +59,7 @@ func (i *Installer) collect() (*backup.Backup, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	if b.Mixins, err = config.LoadMixins(i.Layout.MixinDir()); err != nil {
+	if b.Mixins, err = config.LoadAllMixins(i.Layout.MixinDir()); err != nil {
 		return nil, err
 	}
 	for _, s := range st.Subscriptions {
@@ -192,14 +192,10 @@ func (i *Installer) write(b *backup.Backup) error {
 		}
 	}
 
-	files := map[string][]byte{}
-	for _, m := range b.Mixins {
-		files[m.Name] = m.Data
-	}
-	if err := replaceYAML(i.Layout.MixinDir(), files); err != nil {
+	if err := i.writeMixins(b.Mixins); err != nil {
 		return err
 	}
-	files = map[string][]byte{}
+	files := map[string][]byte{}
 	for name, data := range b.Contents {
 		files[name+".yaml"] = data
 	}
@@ -214,6 +210,47 @@ func (i *Installer) write(b *backup.Backup) error {
 	st.Subscriptions, st.Active, st.APISecret = b.Subscriptions, b.Active, b.APISecret
 	st.Devices, st.Filter = b.Devices, b.Filter
 	return state.Save(i.Layout.StateFile(), st)
+}
+
+// writeMixins 让 mixin.d 和其中订阅 mixin 的目录恰好是 mixins：备份中没有的订阅目录清空 .yaml 后删除
+// （目录中还有别的文件时保留目录）。
+func (i *Installer) writeMixins(mixins []config.Mixin) error {
+	dir := i.Layout.MixinDir()
+	byDir := map[string]map[string][]byte{"": {}}
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() && config.ValidMixinDir(e.Name()) {
+				byDir[e.Name()] = map[string][]byte{}
+			}
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	for _, m := range mixins {
+		sub, file, ok := strings.Cut(m.Name, "/")
+		if !ok {
+			sub, file = "", m.Name
+		}
+		if byDir[sub] == nil {
+			byDir[sub] = map[string][]byte{}
+		}
+		byDir[sub][file] = m.Data
+	}
+	if err := replaceYAML(dir, byDir[""]); err != nil {
+		return err
+	}
+	for sub, files := range byDir {
+		if sub == "" {
+			continue
+		}
+		if err := replaceYAML(filepath.Join(dir, sub), files); err != nil {
+			return err
+		}
+		if len(files) == 0 {
+			os.Remove(filepath.Join(dir, sub)) // 不为空（有别的文件）时失败，保留
+		}
+	}
+	return nil
 }
 
 // replaceYAML 让目录 dir 中的 .yaml 文件恰好是 files（0600，目录 0700）。以点开头的文件和子目录不动，

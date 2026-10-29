@@ -10,6 +10,7 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/backup"
+	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
@@ -58,18 +59,29 @@ func TestWriteKeepsOtherFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(mixins, "10-old.yaml"), []byte("a: 1\n"), 0o600)
 	os.WriteFile(filepath.Join(mixins, ".10-old.yaml.swp"), []byte("x"), 0o600)
 	os.WriteFile(filepath.Join(mixins, "README"), []byte("x"), 0o600)
+	os.MkdirAll(filepath.Join(mixins, "old"), 0o700)
+	os.WriteFile(filepath.Join(mixins, "old", "10-f.yaml"), []byte("a: 1\n"), 0o600)
+	os.MkdirAll(filepath.Join(mixins, "kept"), 0o700)
+	os.WriteFile(filepath.Join(mixins, "kept", "10-f.yaml"), []byte("a: 1\n"), 0o600)
+	os.WriteFile(filepath.Join(mixins, "kept", "notes"), []byte("x"), 0o600)
 
 	b := &backup.Backup{
 		Subscriptions: []state.Subscription{{Name: "new", URL: "https://new.example/"}}, Active: "new",
 		APISecret: "s", Contents: map[string][]byte{"new": []byte("proxies: []\n")},
+		Mixins: []config.Mixin{{Name: "new/10-filter.yaml", Data: []byte("b: 2\n")}},
 	}
 	if err := i.write(b); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]bool{"10-old.yaml": false, ".10-old.yaml.swp": true, "README": true} {
-		if _, err := os.Stat(filepath.Join(mixins, name)); (err == nil) != want {
+	// 备份中没有的订阅 mixin 被删除，目录中有别的文件时保留目录；备份中的写入各自的目录。
+	for name, want := range map[string]bool{"10-old.yaml": false, ".10-old.yaml.swp": true, "README": true,
+		"old": false, "kept/10-f.yaml": false, "kept/notes": true, "new/10-filter.yaml": true} {
+		if _, err := os.Stat(filepath.Join(mixins, filepath.FromSlash(name))); (err == nil) != want {
 			t.Errorf("%s exists = %v, want %v", name, err == nil, want)
 		}
+	}
+	if all, err := config.LoadAllMixins(mixins); err != nil || len(all) != 1 || all[0].Name != "new/10-filter.yaml" {
+		t.Errorf("mixins after restore = %+v, %v", all, err)
 	}
 	got, err := state.Load(i.Layout.StateFile())
 	if err != nil {

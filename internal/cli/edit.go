@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -21,6 +20,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
+	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/templates"
 )
 
@@ -150,10 +150,13 @@ func (a *app) newConfigEditCommand() *cobra.Command {
 		Use:   "edit [name]",
 		Short: "Edit a mixin file, check it, then apply",
 		Long: "Edit a mixin file in /etc/tunlr/mixin.d with $VISUAL, $EDITOR, or else vim, nano or vi.\n" +
+			"A name like home/10-filter is a mixin of subscription home (mixin.d/home/), applied only\n" +
+			"while home is active, after the shared files.\n" +
 			"A new file starts from a commented example that explains the syntax. After you save,\n" +
 			"the configuration is composed and checked with mihomo -t. A mistake takes you back to\n" +
 			"the editor, and nothing is saved until the check passes. Then the diff is shown and the\n" +
-			"configuration is applied after confirmation. Without a name, choose a file or create a\n" +
+			"configuration is applied after confirmation; a mixin of a subscription that is not active\n" +
+			"is checked as if it were active, then saved. Without a name, choose a file or create a\n" +
 			"new one.",
 		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -175,46 +178,85 @@ func (a *app) newConfigEditCommand() *cobra.Command {
 	}
 }
 
-// chooseMixin 让用户选择已有的 mixin 文件，或输入新文件的名称。输入名称时列出已有文件的
-// 应用顺序，方便选择数字前缀。
+// chooseMixin 让用户选择已有的 mixin 文件（共用的和各订阅的），或输入新文件的名称：共用的，
+// 或启用订阅的。输入名称时列出同一目录中已有文件的应用顺序，方便选择数字前缀。
 func (a *app) chooseMixin(ctx context.Context) (string, error) {
-	mixins, err := config.LoadMixins(a.layout.MixinDir())
+	mixins, err := config.LoadAllMixins(a.layout.MixinDir())
 	if err != nil {
 		return "", err
+	}
+	active := ""
+	if st, err := state.Load(a.layout.StateFile()); err == nil {
+		active = st.Active
 	}
 	names := make([]string, 0, len(mixins))
 	for _, m := range mixins {
 		names = append(names, m.Name)
 	}
-	if len(names) > 0 {
-		i, err := a.prompt.Choose(ctx, "Which mixin file?", append(slices.Clone(names), "New file..."), 0)
+	options := append(slices.Clone(names), "New file...")
+	if active != "" {
+		options = append(options, "New file for subscription "+active+"...")
+	}
+	sub := ""
+	if len(options) > 1 {
+		i, err := a.prompt.Choose(ctx, "Which mixin file?", options, 0)
 		if err != nil {
 			return "", err
 		}
 		if i < len(names) {
 			return names[i], nil
 		}
+		if i == len(names)+1 {
+			sub = active
+		}
 	}
+	var order []string
+	for _, n := range names {
+		if s, f := splitMixin(n); s == sub {
+			order = append(order, f)
+		}
+	}
+	title := "Name of the new mixin file (e.g. 20-rules)"
 	desc := "Files are applied in name order and later files win; start the name with a number to place it."
-	if len(names) > 0 {
-		desc += "\nCurrent order: " + strings.Join(names, " → ")
+	if sub != "" {
+		title = "Name of the new mixin file for subscription " + sub + " (e.g. 10-filter)"
+		desc = "Applied only while " + sub + " is active, after the shared files; " + strings.ToLower(desc[:1]) + desc[1:]
 	}
-	name, err := a.prompt.Input(ctx, "Name of the new mixin file (e.g. 20-rules)", desc, func(s string) error {
-		_, err := config.MixinFileName(s)
+	if len(order) > 0 {
+		desc += "\nCurrent order: " + strings.Join(order, " → ")
+	}
+	full := func(s string) string {
+		if sub != "" {
+			return sub + "/" + s
+		}
+		return s
+	}
+	name, err := a.prompt.Input(ctx, title, desc, func(s string) error {
+		if strings.Contains(s, "/") {
+			return errors.New("give a file name only")
+		}
+		_, err := config.MixinFileName(full(s))
 		return err
 	})
 	if err != nil {
 		return "", err
 	}
-	return config.MixinFileName(name)
+	return config.MixinFileName(full(name))
+}
+
+// splitMixin 把 mixin 的名称拆成订阅名（共用的为空）和文件名。
+func splitMixin(name string) (sub, file string) {
+	if sub, file, ok := strings.Cut(name, "/"); ok {
+		return sub, file
+	}
+	return "", name
 }
 
 // editMixin 在临时副本上编辑 mixin 文件 name，检查通过后才写回，然后发布。
 // 有错的编辑因此不会出现在 mixin.d 中，定时任务也不会读到。
 func (a *app) editMixin(cmd *cobra.Command, name string) error {
 	ctx := cmd.Context()
-	dir := a.layout.MixinDir()
-	path := filepath.Join(dir, name)
+	path := config.MixinPath(a.layout.MixinDir(), name)
 	original, err := os.ReadFile(path)
 	existed := err == nil
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -225,7 +267,7 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 		start = templates.Mixin
 	}
 
-	tmp, err := os.CreateTemp("", "tunlr-"+strings.TrimSuffix(name, ".yaml")+"-*.yaml")
+	tmp, err := os.CreateTemp("", "tunlr-"+strings.ReplaceAll(strings.TrimSuffix(name, ".yaml"), "/", "-")+"-*.yaml")
 	if err != nil {
 		return err
 	}
@@ -268,6 +310,17 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 			choices = []string{choiceEdit, choiceDiscard}
 		case err != nil:
 			return err
+		case plan.Inactive:
+			// 没有启用的订阅的 mixin：按它被启用时检查，diff 是两个订阅之间的，不显示。
+			switch {
+			case plan.Check == nil || errors.Is(plan.Check, mihomo.ErrNotInstalled):
+			case errors.Is(plan.Check, core.ErrCheckFailed):
+				fmt.Fprintf(a.stdout, "\nChecked as if %s were active: %v\n\n", plan.Subscription, plan.Check)
+				choices = []string{choiceEdit, choiceDiscard}
+			default:
+				fmt.Fprintf(a.stdout, "\nChecked as if %s were active: %v\n\n", plan.Subscription, plan.Check)
+				choices = []string{choiceEdit, choiceSave, choiceDiscard}
+			}
 		case errors.Is(plan.Check, core.ErrCheckFailed):
 			a.printPlan(newPlanView(plan, false))
 			fmt.Fprintln(a.stdout)
@@ -291,6 +344,10 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 				if err := a.saveMixin(edited, original, existed, &keep, tmp.Name()); err != nil {
 					return err
 				}
+				if plan != nil && plan.Inactive {
+					fmt.Fprintf(a.stdout, "Saved %s; not checked. It applies while %s is active.\n", path, plan.Subscription)
+					return nil
+				}
 				fmt.Fprintf(a.stdout, "Saved %s; not applied. Run tunlr config apply once the check can complete.\n", path)
 				return nil
 			}
@@ -300,12 +357,18 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 		}
 
 		if a.opts.DryRun {
-			a.printPlan(newPlanView(plan, false))
+			if !plan.Inactive {
+				a.printPlan(newPlanView(plan, false))
+			}
 			fmt.Fprintln(a.stdout, "\nDry run: the mixin was not saved.")
 			return nil
 		}
 		if err := a.saveMixin(edited, original, existed, &keep, tmp.Name()); err != nil {
 			return err
+		}
+		if plan.Inactive {
+			fmt.Fprintf(a.stdout, "Saved %s. It applies while %s is active (tunlr sub use %s).\n", path, plan.Subscription, plan.Subscription)
+			return nil
 		}
 		fmt.Fprintf(a.stdout, "Saved %s.\n\n", path)
 		err = a.publish(cmd, plan, "Apply this configuration?")

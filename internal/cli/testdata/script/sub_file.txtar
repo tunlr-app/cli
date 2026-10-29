@@ -1,0 +1,93 @@
+# 本地文件：记住路径，默认不自动更新，User-Agent 只用于地址
+exitcode 2 tunlr sub add home airport.yaml --user-agent x/1.0
+stderr '--user-agent applies only to a subscription URL'
+exitcode 2 tunlr sub add home missing.yaml
+stderr 'no such file: .*missing\.yaml \(a URL must start with http:// or https://\)'
+exitcode 1 tunlr sub add home nodes.txt
+stderr 'not a YAML mapping; a full configuration with proxies, proxy-groups and rules is expected'
+! stderr user-agent
+
+# --include、--exclude 写入订阅 mixin 中的节点筛选；正则有错时什么都不保存
+exitcode 2 tunlr sub add home airport.yaml --include '('
+stderr 'invalid regular expression'
+! exists root/var/lib/tunlr/subscriptions/home.yaml
+exec tunlr sub add home airport.yaml --include 香港 --include '(?i)hk' --exclude 倍率
+stdout '^Added subscription "home": 4 proxies, 2 groups, 2 rules; read again by tunlr sub update\.$'
+stdout 'Its proxy filter is in .*home.10-filter\.yaml \(tunlr config edit home/10-filter\)'
+grep 'filter: 香港`\(\?i\)hk' root/etc/tunlr/mixin.d/home/10-filter.yaml
+grep 'exclude-filter: 倍率' root/etc/tunlr/mixin.d/home/10-filter.yaml
+exec tunlr sub
+stdout '^\*\s+home\s+4\s+\S+ \S+\s+never\s+-\s+-\s+\S*airport\.yaml$'
+exec tunlr sub --json
+stdout '"source": ".*airport\.yaml"'
+! stdout '"url"'
+
+# 预览：筛选掉的节点和变空的组，配置中没有 tunlr 命名空间
+exec tunlr config plan --full
+stdout '^Mixins \(in order\): home/10-filter\.yaml$'
+stdout '^Proxy filter: kept 2 of 4 proxies; removed empty groups: 日本$'
+! stdout '日本 01'
+! stdout '香港 02 倍率'
+! stdout 'proxy-filter'
+exec tunlr config plan --json
+stdout '"proxy_filter": \{'
+stdout '"kept": 2'
+
+# tunlr config 按订阅分组列出 mixin
+exec tunlr config
+stdout '^Mixins of subscription home \(active, applied after the shared files\):$'
+stdout '^  10-filter\.yaml$'
+
+# 改了文件，sub update 重读
+cp airport2.yaml airport.yaml
+exec tunlr sub update home
+stdout '^ok      home: 1 proxies'
+
+# 标准输入：不自动更新，全部更新时跳过，--source - 再读一次
+stdin airport2.yaml
+exec tunlr sub add piped -
+stdout 'not updated automatically \(it was read from standard input\)'
+exitcode 2 tunlr update set sub piped 1d
+stderr 'cannot be updated automatically'
+exec tunlr sub update
+stdout '^ok      home'
+! stdout piped
+exitcode 2 tunlr sub update piped
+stderr 'give it again with: tunlr sub update piped --source -'
+stdin airport.yaml
+exec tunlr sub update piped --source -
+stdout '^ok      piped: 1 proxies'
+exec tunlr sub
+stdout '^\s+piped\s+1\s+\S+ \S+\s+never\s+-\s+-\s+stdin$'
+
+# 换成文件
+exec tunlr sub update piped --source airport.yaml
+exec tunlr sub --json
+stdout '"path": ".*airport\.yaml"'
+
+# 删除订阅时一并删除它的 mixin
+exec tunlr sub use piped
+exec tunlr sub remove home --yes
+! exists root/etc/tunlr/mixin.d/home
+
+-- airport.yaml --
+proxies:
+  - {name: 香港 01, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: 香港 02 倍率2, type: ss, server: b.example.net, port: 2, cipher: aes-128-gcm, password: p}
+  - {name: HK 03, type: ss, server: c.example.net, port: 3, cipher: aes-128-gcm, password: p}
+  - {name: 日本 01, type: ss, server: d.example.net, port: 4, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: 节点选择, type: select, proxies: [香港 01, 香港 02 倍率2, HK 03, 日本, DIRECT]}
+  - {name: 日本, type: select, proxies: [日本 01]}
+rules:
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - MATCH,节点选择
+-- nodes.txt --
+c3M6Ly9ZV1Z6TFRJMU5pMW5ZMjA2QGV4YW1wbGUubmV0OjQ0Mw==
+-- airport2.yaml --
+proxies:
+  - {name: 香港 01, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: 节点选择, type: select, proxies: [香港 01, DIRECT]}
+rules:
+  - MATCH,节点选择

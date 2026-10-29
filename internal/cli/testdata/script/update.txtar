@@ -32,7 +32,7 @@ exec tunlr update set sub main default
 ! grep '"update": "6h"' root/var/lib/tunlr/state.json
 exec tunlr update set sub spare 1d
 exec tunlr update set sub spare off
-stdout 'no longer fetched automatically'
+stdout 'no longer updated automatically'
 exitcode 2 tunlr update set sub main 2w
 stderr 'invalid update period "2w"'
 exitcode 2 tunlr update set sub main

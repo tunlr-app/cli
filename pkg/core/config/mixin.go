@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/dlclark/regexp2"
 	"go.yaml.in/yaml/v3"
 
 	"github.com/tunlr-app/cli/pkg/core"
@@ -29,7 +30,10 @@ import (
 //	                           同时从所有策略组的 proxies 中移除
 //
 // name 写成 /正则/ 时匹配所有符合的项。同一层中按 替换 → 删除 → 修改 → 插入 的顺序执行，
-// 与键在文件中的顺序无关。顶层以 x- 开头的键不写入配置，用来放 YAML 锚点。
+// 与键在文件中的顺序无关。顶层以 x- 开头的键不写入配置，用来放 YAML 锚点；顶层的 tunlr
+// 是 tunlr 自己的命名空间（如节点筛选 tunlr.proxy-filter），也不写入配置。
+//
+// Name 中带一级目录（如 home/10-filter.yaml）的是订阅 mixin，位于 mixin.d/<订阅名>/。
 type Mixin struct {
 	// Name 是文件名，如 20-home.yaml，用于提示和报错。
 	Name string
@@ -85,17 +89,74 @@ const mixinExt = ".yaml"
 
 var mixinName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
-// MixinFileName 把用户给出的名称（可带或不带 .yaml）转换为 mixin 文件名。
+// MixinFileName 把用户给出的名称（可带或不带 .yaml）转换为 mixin 文件名。名称写成 <订阅名>/<文件名>
+// 时是订阅 mixin，结果也带着订阅名（如 home/10-filter.yaml）；订阅名的规则与订阅相同。
 func MixinFileName(name string) (string, error) {
-	stem := strings.TrimSuffix(name, mixinExt)
-	if !mixinName.MatchString(stem) {
-		return "", fmt.Errorf("%w: invalid mixin name %q: use letters, digits, '.', '_' and '-' (e.g. 20-rules)", core.ErrInvalidArgument, name)
+	sub, file := splitMixinName(name)
+	stem := strings.TrimSuffix(file, mixinExt)
+	if !mixinName.MatchString(stem) || (strings.Contains(name, "/") && !mixinName.MatchString(sub)) {
+		return "", fmt.Errorf("%w: invalid mixin name %q: use letters, digits, '.', '_' and '-' (e.g. 20-rules, or home/10-filter for subscription home)",
+			core.ErrInvalidArgument, name)
+	}
+	if sub != "" {
+		return sub + "/" + stem + mixinExt, nil
 	}
 	return stem + mixinExt, nil
 }
 
+// ValidMixinDir 报告 name 能否作为订阅 mixin 的目录名（与订阅名的规则相同）。
+func ValidMixinDir(name string) bool { return mixinName.MatchString(name) }
+
+// MixinPath 返回名为 name（MixinFileName 的结果）的 mixin 在 dir（mixin.d）中的路径。
+func MixinPath(dir, name string) string {
+	return filepath.Join(dir, filepath.FromSlash(name))
+}
+
+// LoadMixinsFor 读取共用的 mixin 和订阅 sub 的 mixin（mixin.d/<sub>/，名称带上 "<sub>/"），
+// 按应用的顺序：先是共用的，再是订阅的，各自按文件名排序。sub 为空时只读取共用的。
+func LoadMixinsFor(dir, sub string) ([]Mixin, error) {
+	mixins, err := LoadMixins(dir)
+	if err != nil || sub == "" {
+		return mixins, err
+	}
+	own, err := LoadMixins(filepath.Join(dir, sub))
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range own {
+		mixins = append(mixins, Mixin{Name: sub + "/" + m.Name, Data: m.Data})
+	}
+	return mixins, nil
+}
+
+// LoadAllMixins 读取共用的 mixin 和所有订阅的 mixin（不论订阅是否存在），共用的在前，订阅的按订阅名排序。
+// 用于列出、备份。
+func LoadAllMixins(dir string) ([]Mixin, error) {
+	mixins, err := LoadMixins(dir)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !ValidMixinDir(e.Name()) {
+			continue
+		}
+		own, err := LoadMixins(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range own {
+			mixins = append(mixins, Mixin{Name: e.Name() + "/" + m.Name, Data: m.Data})
+		}
+	}
+	return mixins, nil
+}
+
 // LoadMixins 读取目录中的 mixin 文件，按文件名排序。只读取扩展名为 .yaml 的文件；
-// 以点开头的文件（如编辑器的临时文件）和子目录被忽略，子目录预留给将来按订阅区分的 mixin。
+// 以点开头的文件（如编辑器的临时文件）和子目录被忽略（订阅 mixin 见 LoadMixinsFor）。
 // 目录不存在时返回空。
 func LoadMixins(dir string) ([]Mixin, error) {
 	entries, err := os.ReadDir(dir)
@@ -123,27 +184,37 @@ func LoadMixins(dir string) ([]Mixin, error) {
 var numberPrefix = regexp.MustCompile(`^[0-9]+`)
 
 // orderWarnings 提醒数字前缀位数不同导致的意外顺序：文件名逐字符排序，
-// 9-a.yaml 排在 10-b.yaml 之后。mixins 已按文件名排序。
+// 9-a.yaml 排在 10-b.yaml 之后。mixins 在同一目录内已按文件名排序，只比较同一目录中的文件。
 func orderWarnings(mixins []Mixin) []Warning {
 	var ws []Warning
 	for i, b := range mixins {
-		pb := numberPrefix.FindString(b.Name)
+		dirB, fileB := splitMixinName(b.Name)
+		pb := numberPrefix.FindString(fileB)
 		if pb == "" {
 			continue
 		}
 		for _, a := range mixins[:i] {
-			pa := numberPrefix.FindString(a.Name)
-			if pa == "" || compareNumbers(pa, pb) <= 0 {
+			dirA, fileA := splitMixinName(a.Name)
+			pa := numberPrefix.FindString(fileA)
+			if dirA != dirB || pa == "" || compareNumbers(pa, pb) <= 0 {
 				continue
 			}
 			pad := strings.Repeat("0", max(len(pa)-len(pb), 0))
 			ws = append(ws, Warning{File: b.Name, Message: fmt.Sprintf(
 				"applied after %s because names sort character by character; to apply it before, rename it to %s",
-				a.Name, pad+b.Name)})
+				a.Name, pad+fileB)})
 			break
 		}
 	}
 	return ws
+}
+
+// splitMixinName 把 mixin 的名称拆成订阅名（共用的为空）和文件名。
+func splitMixinName(name string) (sub, file string) {
+	if sub, file, ok := strings.Cut(name, "/"); ok {
+		return sub, file
+	}
+	return "", name
 }
 
 // compareNumbers 比较两个十进制数字串的数值，不受长度限制。
@@ -162,7 +233,7 @@ var ErrMixinChanged = errors.New("the mixin file was changed by someone else whi
 // 文件此后被改动过时返回 ErrMixinChanged，不覆盖别人的修改。
 // mixin 可能含有节点密码，目录为 0700，文件为 0600。
 func SaveMixin(dir string, m Mixin, previous []byte, existed bool) error {
-	path := filepath.Join(dir, m.Name)
+	path := MixinPath(dir, m.Name)
 	cur, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -175,6 +246,9 @@ func SaveMixin(dir string, m Mixin, previous []byte, existed bool) error {
 		return ErrMixinChanged
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	return fsutil.WriteFile(path, m.Data, 0o600)
@@ -439,34 +513,34 @@ func (m *mixer) delete(dst, k *yaml.Node, key string, items *yaml.Node, path str
 		}
 	}
 	if path == "" && (key == "proxies" || key == "proxy-groups") && len(removed) > 0 {
-		m.removeFromGroups(removed)
+		names := make(map[string]bool, len(removed))
+		for _, n := range removed {
+			names[n] = true
+		}
+		removeFromGroups(m.root, names)
 	}
 	return nil
 }
 
 // removeFromGroups 把已删除的节点或策略组从所有策略组的 proxies 中移除。
-func (m *mixer) removeFromGroups(names []string) {
-	j := valueIndex(m.root, "proxy-groups")
-	if j < 0 || m.root.Content[j].Kind != yaml.SequenceNode {
+func removeFromGroups(root *yaml.Node, names map[string]bool) {
+	j := valueIndex(root, "proxy-groups")
+	if j < 0 || root.Content[j].Kind != yaml.SequenceNode {
 		return
 	}
-	for _, g := range m.root.Content[j].Content {
-		if g.Kind != yaml.MappingNode {
-			continue
-		}
-		if pi := valueIndex(g, "proxies"); pi >= 0 && g.Content[pi].Kind == yaml.SequenceNode {
-			list := g.Content[pi]
+	for _, g := range root.Content[j].Content {
+		if list := groupProxies(g); list != nil {
 			list.Content = slices.DeleteFunc(list.Content, func(n *yaml.Node) bool {
-				return n.Kind == yaml.ScalarNode && slices.Contains(names, n.Value)
+				return n.Kind == yaml.ScalarNode && names[n.Value]
 			})
 		}
 	}
 }
 
-// matcher 匹配名称：普通字符串精确匹配，/正则/ 按正则匹配。
+// matcher 匹配名称：普通字符串精确匹配，/正则/ 按正则匹配（与 mihomo 相同，见 compileRegexp）。
 type matcher struct {
 	text string
-	re   *regexp.Regexp
+	re   *regexp2.Regexp
 }
 
 func (m *mixer) matcher(op string, n *yaml.Node) (matcher, error) {
@@ -475,7 +549,7 @@ func (m *mixer) matcher(op string, n *yaml.Node) (matcher, error) {
 	}
 	s := n.Value
 	if len(s) >= 2 && strings.HasPrefix(s, "/") && strings.HasSuffix(s, "/") {
-		re, err := regexp.Compile(s[1 : len(s)-1])
+		re, err := compileRegexp(s[1 : len(s)-1])
 		if err != nil {
 			return matcher{}, m.errorf(n.Line, "%s: invalid regular expression %s: %v", op, s, err)
 		}
@@ -486,7 +560,7 @@ func (m *mixer) matcher(op string, n *yaml.Node) (matcher, error) {
 
 func (mt matcher) match(name string) bool {
 	if mt.re != nil {
-		return mt.re.MatchString(name)
+		return matchRegexp(mt.re, name)
 	}
 	return name == mt.text
 }

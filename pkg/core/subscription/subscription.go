@@ -7,11 +7,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/tunlr-app/cli/pkg/core"
@@ -74,22 +77,36 @@ type UpdateOptions struct {
 	// UserAgent 非空时改用它作为这些订阅的 User-Agent，指向空字符串表示恢复默认。
 	// 只有抓取成功时才保存，用错的 User-Agent 不会覆盖原来可用的设置。
 	UserAgent *string
+	// Source 非空时换用这个来源（见 ParseSource），只能用于一个订阅；同样只在读取成功时保存。
+	Source *string
+	// Stdin 是来源为标准输入时读取的内容。
+	Stdin io.Reader
 }
 
 // AddOptions 是新订阅的设置。
 type AddOptions struct {
-	// UserAgent 为空时使用默认值（见 userAgent）。
+	// UserAgent 为空时使用默认值（见 userAgent）。只用于地址。
 	UserAgent string
-	// Update 是自动更新的周期（见 settings.ParsePeriod），为空时为 state.DefaultUpdate。
+	// Update 是自动更新的周期（见 settings.ParsePeriod），为空时为默认值（见 state.Subscription.DefaultPeriod）。
 	Update string
+	// Stdin 是来源为标准输入（"-"）时读取的内容。
+	Stdin io.Reader
+	// Filter、Exclude 不为空时写入订阅 mixin 中的节点筛选（tunlr.proxy-filter 的 filter、exclude-filter，
+	// 多条用反引号分隔），文件为 mixin.d/<name>/10-filter.yaml。
+	Filter, Exclude string
 }
 
-// Add 抓取并保存一个新订阅。抓取或检查失败时什么都不保存。这是第一个订阅时自动启用它。
-func (m *Manager) Add(ctx context.Context, name, rawURL string, opts AddOptions) (*Fetched, error) {
+// Add 抓取（或读取）并保存一个新订阅，source 是地址、本地文件或 "-"（见 ParseSource）。
+// 抓取或检查失败时什么都不保存。这是第一个订阅时自动启用它。
+func (m *Manager) Add(ctx context.Context, name, source string, opts AddOptions) (*Fetched, error) {
 	if err := ValidateName(name); err != nil {
 		return nil, err
 	}
-	if err := ValidateURL(rawURL); err != nil {
+	src, err := ParseSource(source)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkSource(src, opts.UserAgent, opts.Update); err != nil {
 		return nil, err
 	}
 	if err := settings.ValidateUserAgent(opts.UserAgent); err != nil {
@@ -97,6 +114,19 @@ func (m *Manager) Add(ctx context.Context, name, rawURL string, opts AddOptions)
 	}
 	if err := validatePeriod(opts.Update); err != nil {
 		return nil, err
+	}
+	filterFile := ""
+	if opts.Filter != "" || opts.Exclude != "" {
+		for _, s := range []string{opts.Filter, opts.Exclude} {
+			if err := config.CheckPatterns(s); err != nil {
+				return nil, fmt.Errorf("%w: %v", core.ErrInvalidArgument, err)
+			}
+		}
+		filterFile = filepath.Join(m.Layout.SubscriptionMixinDir(name), config.FilterMixinFile)
+		if _, err := os.Stat(filterFile); err == nil {
+			return nil, fmt.Errorf("%w: %s already exists; edit it with: tunlr config edit %s/%s",
+				core.ErrInvalidArgument, filterFile, name, strings.TrimSuffix(config.FilterMixinFile, ".yaml"))
+		}
 	}
 	l, err := m.lock(ctx)
 	if err != nil {
@@ -111,8 +141,8 @@ func (m *Manager) Add(ctx context.Context, name, rawURL string, opts AddOptions)
 	if st.Find(name) != nil {
 		return nil, fmt.Errorf("%w: %s", ErrExists, name)
 	}
-	sub := state.Subscription{Name: name, URL: rawURL, UserAgent: opts.UserAgent, Update: opts.Update, AddedAt: m.now().UTC()}
-	sum, err := m.fetchAndStore(ctx, &sub)
+	sub := state.Subscription{Name: name, URL: src.URL, Path: src.Path, UserAgent: opts.UserAgent, Update: opts.Update, AddedAt: m.now().UTC()}
+	sum, err := m.fetchAndStore(ctx, &sub, opts.Stdin)
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +154,12 @@ func (m *Manager) Add(ctx context.Context, name, rawURL string, opts AddOptions)
 	}
 	if err := state.Save(m.Layout.StateFile(), st); err != nil {
 		return nil, err
+	}
+	if filterFile != "" {
+		mx := config.Mixin{Name: name + "/" + config.FilterMixinFile, Data: config.FilterMixin(name, opts.Filter, opts.Exclude)}
+		if err := config.SaveMixin(m.Layout.MixinDir(), mx, nil, false); err != nil {
+			return res, fmt.Errorf("subscription %s is added, but writing its proxy filter failed: %w", name, err)
+		}
 	}
 	return res, nil
 }
@@ -169,8 +205,22 @@ func (m *Manager) Set(ctx context.Context, name, period string) error {
 	if s == nil {
 		return fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
+	if err := checkSource(Source{URL: s.URL, Path: s.Path}, "", period); err != nil {
+		return err
+	}
 	s.Update = period
 	return state.Save(m.Layout.StateFile(), st)
+}
+
+// checkSource 检查来源与其他设置是否相容：User-Agent 只用于地址；从标准输入导入的不能自动更新。
+func checkSource(src Source, userAgent, period string) error {
+	if src.URL == "" && userAgent != "" {
+		return fmt.Errorf("%w: --user-agent applies only to a subscription URL", core.ErrInvalidArgument)
+	}
+	if src.Path == state.PathStdin && period != "" && period != settings.PeriodOff {
+		return fmt.Errorf("%w: a subscription imported from standard input cannot be updated automatically", core.ErrInvalidArgument)
+	}
+	return nil
 }
 
 // validatePeriod 检查订阅的自动更新周期，空字符串（默认值）也合法。
@@ -234,7 +284,14 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	if err := os.Remove(m.Layout.SubscriptionFile(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return nil
+	// 订阅 mixin 跟着订阅走。
+	return os.RemoveAll(m.Layout.SubscriptionMixinDir(name))
+}
+
+// MixinFiles 返回订阅 name 的 mixin 文件数（mixin.d/<name>/*.yaml），用于删除前的提示。
+func (m *Manager) MixinFiles(name string) (int, error) {
+	mixins, err := config.LoadMixins(m.Layout.SubscriptionMixinDir(name))
+	return len(mixins), err
 }
 
 // Update 重新抓取给定的订阅，names 为空时抓取全部。单个订阅失败时保留它上一次的内容并记录原因，
@@ -248,6 +305,17 @@ func (m *Manager) Update(ctx context.Context, names []string, opts UpdateOptions
 			return nil, err
 		}
 	}
+	var src *Source
+	if opts.Source != nil {
+		if len(names) != 1 {
+			return nil, fmt.Errorf("%w: --source changes one subscription; name it", core.ErrInvalidArgument)
+		}
+		s, err := ParseSource(*opts.Source)
+		if err != nil {
+			return nil, err
+		}
+		src = &s
+	}
 	l, err := m.lock(ctx)
 	if err != nil {
 		return nil, err
@@ -260,8 +328,11 @@ func (m *Manager) Update(ctx context.Context, names []string, opts UpdateOptions
 	}
 	var targets []*state.Subscription
 	if len(names) == 0 {
+		// 从标准输入导入的没有可以重读的来源，全部更新时跳过。
 		for i := range st.Subscriptions {
-			targets = append(targets, &st.Subscriptions[i])
+			if st.Subscriptions[i].Path != state.PathStdin {
+				targets = append(targets, &st.Subscriptions[i])
+			}
 		}
 	}
 	for _, name := range names {
@@ -269,19 +340,40 @@ func (m *Manager) Update(ctx context.Context, names []string, opts UpdateOptions
 		if s == nil {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 		}
+		cur := Source{URL: s.URL, Path: s.Path}
+		if src != nil {
+			cur = *src
+		}
+		if cur.URL == "" && opts.UserAgent != nil && *opts.UserAgent != "" {
+			return nil, fmt.Errorf("%w: --user-agent applies only to a subscription URL", core.ErrInvalidArgument)
+		}
+		if cur.Path == state.PathStdin && opts.Stdin == nil {
+			return nil, fmt.Errorf("%w: %s was %v; give it again with: tunlr sub update %s --source -", core.ErrInvalidArgument, s.Name, ErrNoSource, s.Name)
+		}
 		targets = append(targets, s)
 	}
 
 	results := make([]UpdateResult, 0, len(targets))
 	failed := 0
 	for _, s := range targets {
-		old := s.UserAgent
+		old := *s
 		if opts.UserAgent != nil {
 			s.UserAgent = *opts.UserAgent
 		}
-		sum, err := m.fetchAndStore(ctx, s)
+		if src != nil {
+			// 换成文件或标准输入时不再需要 User-Agent；标准输入不能自动更新，周期恢复默认（off）。
+			s.URL, s.Path = src.URL, src.Path
+			if src.URL == "" {
+				s.UserAgent = ""
+			}
+			if src.Path == state.PathStdin {
+				s.Update = ""
+			}
+		}
+		sum, err := m.fetchAndStore(ctx, s, opts.Stdin)
 		if err != nil {
-			s.UserAgent = old
+			// 只记下失败，来源、User-Agent 和周期都恢复原样。
+			s.URL, s.Path, s.UserAgent, s.Update = old.URL, old.Path, old.UserAgent, old.Update
 			failed++
 			s.LastError = err.Error()
 			s.LastErrorAt = m.now().UTC()
@@ -321,7 +413,7 @@ func (m *Manager) Use(ctx context.Context, name string) (*Fetched, error) {
 		res.Summary, err = config.InspectSubscription(data)
 	}
 	if err != nil {
-		if res.Summary, err = m.fetchAndStore(ctx, s); err != nil {
+		if res.Summary, err = m.fetchAndStore(ctx, s, nil); err != nil {
 			return nil, fmt.Errorf("not switching to %s: %w", name, err)
 		}
 	}
@@ -332,14 +424,28 @@ func (m *Manager) Use(ctx context.Context, name string) (*Fetched, error) {
 	return res, nil
 }
 
-// fetchAndStore 抓取订阅并检查内容，通过后原子写入内容文件，并更新 s 中的抓取信息。
-// 失败时不改动已保存的内容。
-func (m *Manager) fetchAndStore(ctx context.Context, s *state.Subscription) (config.SubscriptionSummary, error) {
-	data, info, err := m.fetch(ctx, s)
+// fetchAndStore 抓取（地址）或读取（本地文件、stdin）订阅并检查内容，通过后原子写入内容文件，
+// 并更新 s 中的抓取信息。失败时不改动已保存的内容。
+func (m *Manager) fetchAndStore(ctx context.Context, s *state.Subscription, stdin io.Reader) (config.SubscriptionSummary, error) {
+	var data []byte
+	var info *state.UserInfo
+	var err error
+	if s.URL != "" {
+		data, info, err = m.fetch(ctx, s)
+	} else {
+		data, err = read(s, stdin)
+	}
 	if err != nil {
 		return config.SubscriptionSummary{}, err
 	}
 	sum, err := config.InspectSubscription(data)
+	if errors.Is(err, config.ErrNotMapping) {
+		if s.URL != "" {
+			// 最常见的原因是机场没有识别出 User-Agent，返回了 base64 编码的节点列表。
+			return sum, fmt.Errorf("%w; the provider may have returned a plain node list, try a different --user-agent", err)
+		}
+		return sum, fmt.Errorf("%w; a full configuration with proxies, proxy-groups and rules is expected", err)
+	}
 	if err != nil {
 		return sum, err
 	}

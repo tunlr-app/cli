@@ -1,0 +1,56 @@
+订阅中的 proxy-providers 由内核筛选：tunlr.proxy-filter 的字段写进每个 provider。原来没有的直接写入；
+exclude-filter 用反引号、exclude-type 用 | 追加；filter 要两边都满足，用前瞻组合。有 provider 时不警告
+没有匹配到的正则（它可能匹配 provider 中的节点）。
+
+-- template.yaml --
+mixed-port: 7890
+-- subscription.yaml --
+proxies:
+  - {name: 香港 01, type: ss, server: hk.example.net, port: 1, cipher: aes-128-gcm, password: p}
+proxy-providers:
+  a:
+    type: http
+    url: https://a.example.net/sub
+    interval: 3600
+  b:
+    type: http
+    url: https://b.example.net/sub
+    filter: (?i)港`台
+    exclude-filter: 官网
+    exclude-type: http
+proxy-groups:
+  - {name: 节点选择, type: select, use: [a, b], proxies: [香港 01]}
+rules:
+  - MATCH,节点选择
+-- mixin.d/10-filter.yaml --
+tunlr:
+  proxy-filter:
+    filter: 香港|日本
+    exclude-filter: 倍率`剩余
+    exclude-type: vless
+-- want.yaml --
+mixed-port: 7890
+
+proxies:
+  - {name: 香港 01, type: ss, server: hk.example.net, port: 1, cipher: aes-128-gcm, password: p}
+
+proxy-providers:
+  a:
+    type: http
+    url: https://a.example.net/sub
+    interval: 3600
+    filter: 香港|日本
+    exclude-filter: 倍率`剩余
+    exclude-type: vless
+  b:
+    type: http
+    url: https://b.example.net/sub
+    filter: ^(?=.*?(?:(?:(?i)港)|(?:台)))(?=.*?(?:香港|日本))
+    exclude-filter: 官网`倍率`剩余
+    exclude-type: http|vless
+
+proxy-groups:
+  - {name: 节点选择, type: select, use: [a, b], proxies: [香港 01]}
+
+rules:
+  - MATCH,节点选择

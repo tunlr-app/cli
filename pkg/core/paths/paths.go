@@ -28,6 +28,12 @@ func (l Layout) SettingsFile() string { return l.join("etc", "tunlr", "settings.
 // MixinDir 存放用户的 mixin 文件（*.yaml），按文件名顺序叠加在订阅之上。
 func (l Layout) MixinDir() string { return l.join("etc", "tunlr", "mixin.d") }
 
+// SubscriptionMixinDir 存放订阅 name 自己的 mixin，只在它启用时应用，排在共用的之后。
+// name 须先经过校验，不能包含路径分隔符。
+func (l Layout) SubscriptionMixinDir(name string) string {
+	return l.join("etc", "tunlr", "mixin.d", name)
+}
+
 // DataDir 存放工具自己维护的状态，用户不需要编辑。
 func (l Layout) DataDir() string { return l.join("var", "lib", "tunlr") }
 

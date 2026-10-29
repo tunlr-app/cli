@@ -212,6 +212,46 @@ func TestComposeErrors(t *testing.T) {
 			want: "mixin 10-test.yaml:3: prepend-proxies: value must be a list",
 		},
 		{
+			name: "namespace not a mapping",
+			l:    mixinLayers("a: 1\n", "tunlr: x\n"),
+			want: "mixin 10-test.yaml:1: tunlr must be a mapping",
+		},
+		{
+			name: "namespace unknown key",
+			l:    mixinLayers("a: 1\n", "tunlr:\n  proxy-filters: {}\n"),
+			want: "mixin 10-test.yaml:2: tunlr.proxy-filters: unknown key (known: proxy-filter)",
+		},
+		{
+			name: "proxy filter unknown key",
+			l:    mixinLayers("a: 1\n", "tunlr:\n  proxy-filter:\n    include: x\n"),
+			want: "mixin 10-test.yaml:3: tunlr.proxy-filter.include: unknown key (known: filter, exclude-filter, exclude-type)",
+		},
+		{
+			name: "proxy filter not a string",
+			l:    mixinLayers("a: 1\n", "tunlr:\n  proxy-filter:\n    filter: [a, b]\n"),
+			want: "mixin 10-test.yaml:3: tunlr.proxy-filter.filter must be a string",
+		},
+		{
+			name: "proxy filter invalid regexp",
+			l:    mixinLayers("a: 1\n", "tunlr:\n  proxy-filter:\n    exclude-filter: a`(\n"),
+			want: `mixin 10-test.yaml:3: tunlr.proxy-filter.exclude-filter: invalid regular expression "("`,
+		},
+		{
+			name: "proxy filter removes everything",
+			l: Layers{Template: []byte("a: 1\n"), Subscription: []byte("proxies:\n  - {name: a, type: ss}\n"),
+				Mixins: []Mixin{{Name: "home/10-f.yaml", Data: []byte("tunlr:\n  proxy-filter:\n    filter: b\n")}}},
+			want: "mixin home/10-f.yaml: tunlr.proxy-filter removes all 1 proxies of the subscription",
+		},
+		{
+			name: "rules use an emptied group",
+			l: Layers{Template: []byte("a: 1\n"),
+				Subscription: []byte("proxies:\n  - {name: hk, type: ss}\n  - {name: us, type: ss}\n" +
+					"proxy-groups:\n  - {name: US, type: select, proxies: [us]}\n  - {name: all, type: select, proxies: [US, hk]}\n" +
+					"rules:\n  - DOMAIN,a.example,US\n  - MATCH,all\n"),
+				Mixins: []Mixin{{Name: "10-f.yaml", Data: []byte("tunlr:\n  proxy-filter:\n    exclude-filter: us\n")}}},
+			want: "mixin 10-f.yaml: tunlr.proxy-filter leaves no proxies in group US, but rules still use it: DOMAIN,a.example,US; loosen the filter",
+		},
+		{
 			name: "alias bomb",
 			l:    Layers{Template: []byte("a: 1\n"), Subscription: aliasBomb()},
 			want: "subscription: more than 1000000 nodes after expanding aliases",
@@ -224,6 +264,50 @@ func TestComposeErrors(t *testing.T) {
 				t.Fatalf("err = %v, want prefix %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// TestProxyFilterResult 检查筛选的统计，以及规则引用被删的组时，mixin 改掉这些规则或把组加回来就可以发布。
+func TestProxyFilterResult(t *testing.T) {
+	sub := "proxies:\n  - {name: hk, type: ss}\n  - {name: us, type: ss}\n" +
+		"proxy-groups:\n  - {name: US, type: select, proxies: [us]}\n  - {name: all, type: select, proxies: [US, hk]}\n" +
+		"rules:\n  - DOMAIN,a.example,US\n  - MATCH,all\n"
+	filter := Mixin{Name: "10-f.yaml", Data: []byte("tunlr:\n  proxy-filter:\n    exclude-filter: us\n")}
+	for _, fix := range []string{
+		"delete-rules:\n  - DOMAIN,a.example,US\n",
+		"append-proxy-groups:\n  - {name: US, type: select, proxies: [DIRECT]}\n",
+	} {
+		res, err := Compose(Layers{Template: []byte("a: 1\n"), Subscription: []byte(sub),
+			Mixins: []Mixin{filter, {Name: "20-fix.yaml", Data: []byte(fix)}}})
+		if err != nil {
+			t.Fatalf("%q: %v", fix, err)
+		}
+		want := ProxyFilterResult{Total: 2, Kept: 1, Groups: []string{"US"}}
+		if res.ProxyFilter == nil || !reflect.DeepEqual(*res.ProxyFilter, want) {
+			t.Errorf("ProxyFilter = %+v, want %+v", res.ProxyFilter, want)
+		}
+	}
+
+	// 没有订阅时不筛选；空字符串等于没有设置。
+	for _, l := range []Layers{
+		{Template: []byte("a: 1\n"), Mixins: []Mixin{filter}},
+		{Template: []byte("a: 1\n"), Subscription: []byte(sub), Mixins: []Mixin{{Name: "10-f.yaml", Data: []byte("tunlr:\n  proxy-filter:\n    filter: ''\n")}}},
+	} {
+		if res, err := Compose(l); err != nil || res.ProxyFilter != nil {
+			t.Errorf("ProxyFilter = %+v, %v; want nil", res.ProxyFilter, err)
+		}
+	}
+}
+
+// TestRegexpLikeMihomo 确认 mixin 的正则与 mihomo 一样支持前后查找（regexp2）。
+func TestRegexpLikeMihomo(t *testing.T) {
+	res, err := Compose(mixinLayers("proxies:\n  - {name: 香港 01}\n  - {name: 香港 IPLC}\n",
+		"delete-proxies:\n  - /^香港(?!.*IPLC)/\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "proxies:\n  - {name: 香港 IPLC}\n"; string(res.Config) != want {
+		t.Errorf("config:\n%s\nwant:\n%s", res.Config, want)
 	}
 }
 

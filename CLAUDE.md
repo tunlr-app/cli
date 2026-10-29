@@ -33,6 +33,7 @@
 | 交互与输出 | `huh`、`lipgloss`；需要时用 Bubble Tea 与 `bubbles` 写内联（非全屏）的界面 |
 | YAML | `go.yaml.in/yaml/v3`（不要用已归档的 `gopkg.in/yaml.v3`），基于 `yaml.Node` 合并以保留键顺序与注释 |
 | diff | 自己实现的锚定（patience）逐行 diff，不引入依赖 |
+| 正则（mixin、节点筛选） | `dlclark/regexp2`，与 mihomo 筛选节点所用的相同；工具内部的固定模式仍用标准库 `regexp` |
 | 内核 API | 标准库 `net/http`，经 Unix socket（`external-controller-unix`）连接 |
 | 并发互斥 | `gofrs/flock` |
 | nftables | `text/template` 生成脚本，`nft -f` 原子加载，查询也用 `nft` 命令；不用 `google/nftables`（理由见 `docs/DESIGN.md` 5.4） |

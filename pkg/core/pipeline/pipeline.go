@@ -119,6 +119,10 @@ type Plan struct {
 	Warnings []config.Warning
 	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键（仅 KindApply）。
 	Overrides []config.Override
+	// ProxyFilter 是节点筛选的结果，没有设置时为 nil（仅 KindApply）。
+	ProxyFilter *config.ProxyFilterResult
+	// Inactive 表示这是按没有启用的订阅合成的计划（见 PlanWithMixin），只用来检查，Apply 拒绝它。
+	Inactive bool
 	// Managed 是 tunlr 的交互功能生成的受管 mixin，按 Managed 函数的顺序排列（仅 KindApply）。
 	// 其中含 API secret，展示时只列出键。
 	Managed []config.Managed
@@ -150,9 +154,23 @@ func (p *Pipeline) Plan(ctx context.Context) (*Plan, error) {
 }
 
 // PlanWithMixin 同 Plan，但用 m 代替磁盘上的同名 mixin 文件（不存在时按文件名顺序加入），
-// 用于在保存编辑结果之前检查它。
+// 用于在保存编辑结果之前检查它。m 是没有启用的订阅的 mixin 时，按这个订阅被启用时的样子合成并校验，
+// Plan.Inactive 为真：这样的计划只用来检查，不能发布。订阅不存在时报 core.ErrInvalidArgument。
 func (p *Pipeline) PlanWithMixin(ctx context.Context, m config.Mixin) (*Plan, error) {
-	return p.plan(ctx, planOptions{edited: &m})
+	opts := planOptions{edited: &m}
+	if sub, _, ok := strings.Cut(m.Name, "/"); ok {
+		st, _, err := state.LoadOrNew(p.Layout.StateFile(), p.now())
+		if err != nil {
+			return nil, err
+		}
+		if st.Find(sub) == nil {
+			return nil, fmt.Errorf("%w: no subscription named %s (see tunlr sub)", core.ErrInvalidArgument, sub)
+		}
+		if sub != st.Active {
+			opts.subscription = sub
+		}
+	}
+	return p.plan(ctx, opts)
 }
 
 // PlanTun 同 Plan，但按透明代理开关为 on 时的样子合成，不看状态文件中的开关。
@@ -259,6 +277,8 @@ func switchesOf(st *state.State) switches {
 type planOptions struct {
 	// edited 不为 nil 时代替磁盘上的同名 mixin 文件。
 	edited *config.Mixin
+	// subscription 非空时代替状态文件中启用的订阅（检查没有启用的订阅的 mixin）。
+	subscription string
 	// tun 不为 nil 时代替状态文件中的透明代理开关。
 	tun *bool
 	// resetSecret 换用新生成的 API secret。
@@ -300,7 +320,10 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	if r := opts.restored; r != nil {
 		st.Active, st.APISecret, st.Devices, st.Filter = r.Active, r.APISecret, r.Devices, r.Filter
 	}
-	plan := &Plan{Kind: KindApply, Subscription: st.Active}
+	if opts.subscription != "" {
+		st.Active = opts.subscription
+	}
+	plan := &Plan{Kind: KindApply, Subscription: st.Active, Inactive: opts.subscription != ""}
 
 	secret := st.APISecret
 	if secret == "" || opts.resetSecret {
@@ -337,22 +360,15 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 			return nil, err
 		}
 	}
-	mixins, err := config.LoadMixins(p.Layout.MixinDir())
+	mixins, err := config.LoadMixinsFor(p.Layout.MixinDir(), st.Active)
 	if err != nil {
 		return nil, err
 	}
 	if opts.restored != nil {
-		mixins = opts.restored.Mixins
+		mixins = mixinsFor(opts.restored.Mixins, st.Active)
 	}
 	if edited != nil {
-		i, found := slices.BinarySearchFunc(mixins, edited.Name, func(m config.Mixin, name string) int {
-			return strings.Compare(m.Name, name)
-		})
-		if found {
-			mixins[i] = *edited
-		} else {
-			mixins = slices.Insert(mixins, i, *edited)
-		}
+		mixins = withEdited(mixins, *edited)
 	}
 	for _, m := range mixins {
 		plan.Mixins = append(plan.Mixins, m.Name)
@@ -372,7 +388,7 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		return nil, err
 	}
 	plan.Config, plan.Dropped, plan.facts = res.Config, res.Dropped, res.Facts
-	plan.Warnings, plan.Overrides = res.Warnings, res.Overrides
+	plan.Warnings, plan.Overrides, plan.ProxyFilter = res.Warnings, res.Overrides, res.ProxyFilter
 	if opts.noValidate {
 		if plan.Current, err = p.readCurrent(); err != nil {
 			return nil, err
@@ -386,6 +402,39 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		return nil, err
 	}
 	return plan, nil
+}
+
+// mixinsFor 从全部 mixin（共用的和所有订阅的，见 config.LoadAllMixins）中取出订阅 sub 启用时应用的那些。
+func mixinsFor(all []config.Mixin, sub string) []config.Mixin {
+	var res []config.Mixin
+	for _, m := range all {
+		if s, _, ok := strings.Cut(m.Name, "/"); !ok || (sub != "" && s == sub) {
+			res = append(res, m)
+		}
+	}
+	return res
+}
+
+// withEdited 用 edited 代替 mixins 中的同名文件，没有时插入到它在应用顺序中的位置：
+// 共用的在前、订阅的在后，各自按名称排序。
+func withEdited(mixins []config.Mixin, edited config.Mixin) []config.Mixin {
+	key := func(name string) (bool, string) { return strings.Contains(name, "/"), name }
+	i, found := slices.BinarySearchFunc(mixins, edited.Name, func(m config.Mixin, name string) int {
+		as, an := key(m.Name)
+		bs, bn := key(name)
+		if as != bs {
+			if as {
+				return 1
+			}
+			return -1
+		}
+		return strings.Compare(an, bn)
+	})
+	if found {
+		mixins[i] = edited
+		return mixins
+	}
+	return slices.Insert(mixins, i, edited)
 }
 
 // PlanEnforce 准备只按状态文件重写生效配置中受管 mixin 独占的键，其余内容不变；还没有发布过时返回 nil。
@@ -513,6 +562,9 @@ type ApplyResult struct {
 // 然后记录为新的历史修订（与最新修订相同时沿用它）。内核加载失败时恢复原来的配置并让内核重新加载它，返回满足
 // errors.Is(err, core.ErrRolledBack) 的错误。没有变化时什么都不做，返回 nil。
 func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) {
+	if plan.Inactive {
+		return p.ApplyLocked(ctx, plan)
+	}
 	if plan.Check != nil {
 		return nil, plan.Check
 	}
@@ -538,6 +590,9 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) 
 // ApplyLocked 同 Apply，但调用方须持有文件锁，也不安装面板。用于与其他改动一起在锁内完成的发布，
 // 如透明代理开关。
 func (p *Pipeline) ApplyLocked(ctx context.Context, plan *Plan) (*ApplyResult, error) {
+	if plan.Inactive {
+		return nil, fmt.Errorf("the plan was composed for subscription %s, which is not active; it can only be checked", plan.Subscription)
+	}
 	if plan.Check != nil {
 		return nil, plan.Check
 	}

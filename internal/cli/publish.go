@@ -30,6 +30,8 @@ type planView struct {
 	Dropped      []string          `json:"dropped,omitempty"`
 	Mixins       []string          `json:"mixins,omitempty"`
 	Overrides    []config.Override `json:"overrides,omitempty"`
+	// ProxyFilter 是节点筛选（tunlr.proxy-filter）的结果，没有设置时省略。
+	ProxyFilter *config.ProxyFilterResult `json:"proxy_filter,omitempty"`
 	// Managed 是 tunlr 的交互功能生成的受管 mixin。
 	Managed    []managedView    `json:"managed,omitempty"`
 	Warnings   []config.Warning `json:"warnings,omitempty"`
@@ -84,7 +86,7 @@ func newPlanView(p *pipeline.Plan, full bool) planView {
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
 		Subscription: p.Subscription, Dropped: p.Dropped, Mixins: p.Mixins,
 		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, Proxies: p.Proxies, Diff: hideSecretInDiff(p.Diff),
-		DiffSections: p.DiffSections,
+		DiffSections: p.DiffSections, ProxyFilter: p.ProxyFilter,
 	}
 	if p.Managed != nil {
 		v.Managed = newManagedViews(p.Managed)
@@ -106,6 +108,21 @@ func newPlanView(p *pipeline.Plan, full bool) planView {
 		v.Check = checkView{"error", []string{p.Check.Error()}}
 	}
 	return v
+}
+
+// describeProxyFilter 概括节点筛选的结果，如 "kept 20 of 43 proxies; removed empty groups: 美国; filtered by mihomo in providers: a"。
+func describeProxyFilter(f *config.ProxyFilterResult) string {
+	var parts []string
+	if f.Total > 0 || len(f.Providers) == 0 {
+		parts = append(parts, fmt.Sprintf("kept %d of %d proxies", f.Kept, f.Total))
+	}
+	if len(f.Groups) > 0 {
+		parts = append(parts, "removed empty groups: "+strings.Join(f.Groups, ", "))
+	}
+	if len(f.Providers) > 0 {
+		parts = append(parts, "filtered by mihomo in providers: "+strings.Join(f.Providers, ", "))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // printPlan 以文本输出计划：来源、差异（或完整配置）、校验结果。在终端里超过一屏时交给分页器。
@@ -132,6 +149,9 @@ func (a *app) writePlan(w io.Writer, v planView) {
 	}
 	for _, o := range v.Overrides {
 		fmt.Fprintf(w, "  %s: %s overrides %s\n", o.Path, o.File, o.Previous)
+	}
+	if f := v.ProxyFilter; f != nil {
+		fmt.Fprintf(w, "Proxy filter: %s\n", describeProxyFilter(f))
 	}
 	if len(v.Managed) > 0 {
 		var names []string
