@@ -136,6 +136,9 @@ func (c *Client) Get(ctx context.Context, asset *Asset) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if asset.Size <= 0 {
+		return nil, fmt.Errorf("download %s: unexpected asset size %d", asset.Name, asset.Size)
+	}
 	data, err := c.get(ctx, asset.Name, MirrorURL(c.Mirror, asset.URL), asset.Size)
 	if err != nil {
 		return nil, fmt.Errorf("download %s: %w", asset.Name, err)
@@ -143,6 +146,16 @@ func (c *Client) Get(ctx context.Context, asset *Asset) ([]byte, error) {
 	sum := sha256.Sum256(data)
 	if got := hex.EncodeToString(sum[:]); got != want {
 		return nil, fmt.Errorf("download %s: %w (want %s, got %s)", asset.Name, ErrChecksumMismatch, want, got)
+	}
+	return data, nil
+}
+
+// GetUnverified 下载 url 的内容，不做任何校验，name 用于进度和错误信息。只用于没有官方校验值的来源，
+// 例如配置中自定义的 geo 数据地址；地址原样使用，不经镜像。
+func (c *Client) GetUnverified(ctx context.Context, name, url string) ([]byte, error) {
+	data, err := c.get(ctx, name, url, 0)
+	if err != nil {
+		return nil, fmt.Errorf("download %s: %w", name, err)
 	}
 	return data, nil
 }
@@ -196,9 +209,14 @@ func (c *Client) Release(ctx context.Context, repo, tag string) (*Release, error
 	return rel, nil
 }
 
+// get 下载 url 的内容。size 是预期的大小，为 0 时不知道大小，只限制在 maxAssetSize 以内。
 func (c *Client) get(ctx context.Context, name, url string, size int64) ([]byte, error) {
-	if size <= 0 || size > maxAssetSize {
+	if size < 0 || size > maxAssetSize {
 		return nil, fmt.Errorf("unexpected asset size %d", size)
+	}
+	limit := size
+	if size == 0 {
+		limit = maxAssetSize
 	}
 	ctx, cancel := context.WithTimeout(ctx, assetTimeout)
 	defer cancel()
@@ -215,15 +233,18 @@ func (c *Client) get(ctx context.Context, name, url string, size int64) ([]byte,
 		return nil, fmt.Errorf("HTTP %s", resp.Status)
 	}
 	var body io.Reader = resp.Body
-	if fn, ok := ctx.Value(progressKey{}).(ProgressFunc); ok && fn != nil {
+	if fn, ok := ctx.Value(progressKey{}).(ProgressFunc); ok && fn != nil && size > 0 {
 		fn(name, 0, size)
 		body = &progressReader{r: body, name: name, total: size, fn: fn}
 	}
-	data, err := io.ReadAll(io.LimitReader(body, size+1))
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(data)) != size {
+	switch {
+	case size == 0 && int64(len(data)) > limit:
+		return nil, fmt.Errorf("larger than %d bytes", limit)
+	case size > 0 && int64(len(data)) != size:
 		return nil, fmt.Errorf("got %d bytes, want %d", len(data), size)
 	}
 	return data, nil

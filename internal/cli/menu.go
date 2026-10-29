@@ -637,9 +637,7 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 		if len(d.subs) > 0 {
 			items = append(items, menuItem{label: "Change how often a subscription is fetched", args: []string{"update", "set", "sub"}})
 		}
-		items = append(items,
-			menuItem{label: "Change the geo data update", args: []string{"update", "set", "geo"}},
-			menuItem{label: "Update everything now", args: []string{"update", "run"}})
+		items = append(items, menuItem{label: "Update everything now", args: []string{"update", "run"}})
 	default:
 		return "", nil
 	}
@@ -742,17 +740,13 @@ func (a *app) describeRevision(s *setup.Status) string {
 	return fmt.Sprintf("revision %d", s.Revision.Number) + note
 }
 
-// describeUpdates 是定时更新分类右侧的状态，如 "2 subscriptions · geo weekly by tunlr"；最近一次
-// 失败的标红。
+// describeUpdates 是定时更新分类右侧的状态，如 "2 subscriptions · geo weekly"；最近一次失败的标红。
 func (a *app) describeUpdates(scheds []setup.Schedule) string {
 	subs, failed := 0, 0
 	geo := ""
 	for _, s := range scheds {
 		if s.Task == setup.TaskGeo {
 			geo = "geo " + settings.DescribePeriod(s.Period)
-			if s.Period != settings.PeriodOff {
-				geo += " by " + s.Updater
-			}
 			if s.Last != nil && s.Last.Status == setup.StepFailed {
 				geo = a.style.bad(geo + " (failed)")
 			}

@@ -246,12 +246,8 @@ func (i *Installer) InitSteps(ctx context.Context, opts InitOptions) ([]string, 
 		steps = append(steps, "Install mihomo "+v+", verified against the official sha256")
 	}
 	sd := i.systemd()
-	set, err := settings.Load(i.Layout.SettingsFile())
-	if err != nil {
-		return nil, err
-	}
-	steps = append(steps, fmt.Sprintf("Install and enable %s and %s (geo data %s; subscriptions %s unless set otherwise)",
-		service.CoreUnit, service.UpdateTimer, DescribeGeoUpdate(set), settings.DescribePeriod(state.DefaultUpdate)))
+	steps = append(steps, fmt.Sprintf("Install and enable %s and %s (subscriptions %s unless set otherwise; geo data checked after mihomo updates it)",
+		service.CoreUnit, service.UpdateTimer, settings.DescribePeriod(state.DefaultUpdate)))
 
 	st, err := state.Load(i.Layout.StateFile())
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {

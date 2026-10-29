@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,7 +19,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/fsutil"
 )
 
-// geo 数据来自 MetaCubeX/meta-rules-dat 的 latest 发布，与 mihomo 默认的 geox-url 一致。
+// 内核默认的 geo 数据来自 MetaCubeX/meta-rules-dat 的 latest 发布（配置中没有写 geox-url 时）。
 const (
 	geoRepo = "MetaCubeX/meta-rules-dat"
 	geoTag  = "latest"
@@ -30,38 +31,59 @@ type GeoFile struct {
 	Name string
 	// Aliases 是内核同样接受的其他文件名。
 	Aliases []string
-	// Asset 是 meta-rules-dat 发布中对应的资产名。
+	// Key 是它在 geox-url 中的键。
+	Key string
+	// Asset 是 meta-rules-dat 发布中对应的资产名，用于内核的默认地址。
 	Asset string
 }
 
 // 文件名取自 mihomo 的 constant/path.go。
 var (
-	GeoMMDB  = GeoFile{Name: "geoip.metadb", Aliases: []string{"Country.mmdb", "geoip.db"}, Asset: "geoip.metadb"}
-	GeoIPDat = GeoFile{Name: "GeoIP.dat", Asset: "geoip.dat"}
-	GeoSite  = GeoFile{Name: "GeoSite.dat", Asset: "geosite.dat"}
-	GeoASN   = GeoFile{Name: "ASN.mmdb", Asset: "GeoLite2-ASN.mmdb"}
+	GeoMMDB  = GeoFile{Name: "geoip.metadb", Aliases: []string{"Country.mmdb", "geoip.db"}, Key: "mmdb", Asset: "geoip.metadb"}
+	GeoIPDat = GeoFile{Name: "GeoIP.dat", Key: "geoip", Asset: "geoip.dat"}
+	GeoSite  = GeoFile{Name: "GeoSite.dat", Key: "geosite", Asset: "geosite.dat"}
+	GeoASN   = GeoFile{Name: "ASN.mmdb", Key: "asn", Asset: "GeoLite2-ASN.mmdb"}
 
 	// AllGeoFiles 是内核使用的全部 geo 文件。
 	AllGeoFiles = []GeoFile{GeoMMDB, GeoIPDat, GeoSite, GeoASN}
 )
 
-// URL 返回 f 在 GitHub 上的官方下载地址，与 mihomo 默认的 geox-url 相同。
+// URL 返回 f 的默认下载地址，与 mihomo 默认的 geox-url 相同。
 func (f GeoFile) URL() string {
 	return "https://github.com/" + geoRepo + "/releases/download/" + geoTag + "/" + f.Asset
 }
 
-// GeoxURL 返回配置中 geox-url 的各项（geoip、mmdb、asn、geosite），地址加上 mirror 前缀，
-// 让内核自己定时更新 geo 数据时也经过镜像。mirror 为空时返回 nil，使用配置模板中的官方地址。
-func GeoxURL(mirror string) map[string]string {
-	if mirror == "" {
-		return nil
+// GeoSource 是一个 geo 文件的下载来源。
+type GeoSource struct {
+	// URL 是配置中的地址（可能已经加上了镜像前缀），没有写时为默认地址。
+	URL string
+	// Repo、Tag、Asset 是去掉镜像前缀后，地址所指的 GitHub release 资产（Tag 为空表示最新的正式发布）；
+	// 不是 GitHub release 资产时 Repo 为空。
+	Repo, Tag, Asset string
+}
+
+// Verifiable 报告来源能否按 GitHub 提供的 sha256 校验：只有 GitHub release 的资产有官方校验值。
+func (s GeoSource) Verifiable() bool { return s.Repo != "" }
+
+// releaseAsset 匹配 GitHub release 资产的下载地址：releases/download/<tag>/<名称> 或
+// releases/latest/download/<名称>。
+var releaseAsset = regexp.MustCompile(`^https://github\.com/([^/]+/[^/]+)/releases/(?:download/([^/]+)|latest/download)/([^/?#]+)$`)
+
+// Source 返回 f 在 geox-url 为 urls 时的来源。经 GitHub 镜像的地址（镜像前缀后接完整的 github.com 地址，
+// 不论是 tunlr 设置的镜像还是订阅自己写的）去掉前缀后再判断。
+func (f GeoFile) Source(urls map[string]string) GeoSource {
+	s := GeoSource{URL: urls[f.Key]}
+	if s.URL == "" {
+		s.URL = f.URL()
 	}
-	return map[string]string{
-		"geoip":   download.MirrorURL(mirror, GeoIPDat.URL()),
-		"mmdb":    download.MirrorURL(mirror, GeoMMDB.URL()),
-		"asn":     download.MirrorURL(mirror, GeoASN.URL()),
-		"geosite": download.MirrorURL(mirror, GeoSite.URL()),
+	raw := s.URL
+	if i := strings.Index(raw, "/https://github.com/"); i >= 0 {
+		raw = raw[i+1:]
 	}
+	if m := releaseAsset.FindStringSubmatch(raw); m != nil {
+		s.Repo, s.Tag, s.Asset = m[1], m[2], m[3]
+	}
+	return s
 }
 
 // GeoFilesFor 返回满足 needs 所需的 geo 文件。
@@ -83,9 +105,10 @@ func GeoFilesFor(needs config.GeoNeeds) []GeoFile {
 	return files
 }
 
-// EnsureGeo 确保 home 中有 files 列出的 geo 文件，缺失的经 d 下载并按官方 sha256 校验，
-// 属主设为 owner（内核要能原地更新它们），返回新下载的文件名。已有的文件不在这里更新，见 VerifyGeo。
-func EnsureGeo(ctx context.Context, d *download.Client, home string, files []GeoFile, owner *fsutil.Owner) ([]string, error) {
+// EnsureGeo 确保 home 中有 files 列出的 geo 文件，缺失的按 geox-url（urls，见 GeoFile.Source）经 d
+// 下载：来源是 GitHub release 资产的按官方 sha256 校验，其他来源原样下载、不校验。属主设为 owner
+// （内核要能原地更新它们），返回新下载的文件名。已有的文件不在这里更新，见 VerifyGeo。
+func EnsureGeo(ctx context.Context, d *download.Client, home string, files []GeoFile, urls map[string]string, owner *fsutil.Owner) ([]string, error) {
 	var downloaded []string
 	for _, f := range files {
 		if p, err := findGeo(home, f); err != nil {
@@ -96,7 +119,13 @@ func EnsureGeo(ctx context.Context, d *download.Client, home string, files []Geo
 		if err := EnsureHome(home, owner); err != nil {
 			return downloaded, err
 		}
-		data, err := d.Fetch(ctx, geoRepo, geoTag, f.Asset)
+		var data []byte
+		var err error
+		if src := f.Source(urls); src.Verifiable() {
+			data, err = d.Fetch(ctx, src.Repo, src.Tag, src.Asset)
+		} else {
+			data, err = d.GetUnverified(ctx, f.Name, src.URL)
+		}
 		if err != nil {
 			return downloaded, fmt.Errorf("prepare %s: %w", f.Name, err)
 		}
@@ -108,36 +137,55 @@ func EnsureGeo(ctx context.Context, d *download.Client, home string, files []Geo
 	return downloaded, nil
 }
 
-// VerifyGeo 按 meta-rules-dat 最新发布的官方 sha256 核对 home 中已有的 files。不一致的下载校验过的
-// 文件替换（经镜像下载校验不通过时改为直连），返回被替换的文件名。替换用 rename，运行中的内核
-// 仍使用原来的文件，重启后才加载新文件：内核的 geo 数据只能由它自己的更新器重新加载。
-func VerifyGeo(ctx context.Context, d *download.Client, home string, files []GeoFile, owner *fsutil.Owner) ([]string, error) {
-	rel, err := d.Release(ctx, geoRepo, geoTag)
-	if err != nil {
-		return nil, err
-	}
-	var replaced []string
+// GeoCheck 是 VerifyGeo 的结果。
+type GeoCheck struct {
+	// Verified 是与官方 sha256 一致的文件，Replaced 是不一致、已换成校验过的文件的，Unverified 是
+	// 来源不是 GitHub release 资产、无从校验的。都是工作目录中的文件名。
+	Verified, Replaced, Unverified []string
+}
+
+// VerifyGeo 按 geox-url（urls）所指的 GitHub release 资产的官方 sha256 核对 home 中已有的 files。
+// 不一致的下载校验过的文件替换（经镜像下载校验不通过时改为直连）。替换用 rename，运行中的内核仍使用
+// 原来的文件，重启后才加载新文件：内核的 geo 数据只能由它自己的更新器重新加载。来源不是 GitHub
+// release 资产的不核对，原样保留。
+func VerifyGeo(ctx context.Context, d *download.Client, home string, files []GeoFile, urls map[string]string, owner *fsutil.Owner) (*GeoCheck, error) {
+	res := &GeoCheck{}
+	releases := map[string]*download.Release{}
 	for _, f := range files {
 		path, err := findGeo(home, f)
 		if err != nil {
-			return replaced, err
+			return res, err
 		}
 		if path == "" {
 			continue
 		}
-		asset, err := rel.Asset(f.Asset)
+		name := filepath.Base(path)
+		src := f.Source(urls)
+		if !src.Verifiable() {
+			res.Unverified = append(res.Unverified, name)
+			continue
+		}
+		rel := releases[src.Repo+"@"+src.Tag]
+		if rel == nil {
+			if rel, err = d.Release(ctx, src.Repo, src.Tag); err != nil {
+				return res, err
+			}
+			releases[src.Repo+"@"+src.Tag] = rel
+		}
+		asset, err := rel.Asset(src.Asset)
 		if err != nil {
-			return replaced, err
+			return res, err
 		}
 		want, err := asset.SHA256()
 		if err != nil {
-			return replaced, err
+			return res, err
 		}
 		have, err := FileChecksum(path)
 		if err != nil {
-			return replaced, err
+			return res, err
 		}
 		if have == want {
+			res.Verified = append(res.Verified, name)
 			continue
 		}
 		data, err := d.Get(ctx, asset)
@@ -147,14 +195,14 @@ func VerifyGeo(ctx context.Context, d *download.Client, home string, files []Geo
 			data, err = direct.Get(ctx, asset)
 		}
 		if err != nil {
-			return replaced, fmt.Errorf("replace %s: %w", filepath.Base(path), err)
+			return res, fmt.Errorf("replace %s: %w", name, err)
 		}
 		if err := fsutil.WriteFileOwned(path, data, 0o644, owner); err != nil {
-			return replaced, err
+			return res, err
 		}
-		replaced = append(replaced, filepath.Base(path))
+		res.Replaced = append(res.Replaced, name)
 	}
-	return replaced, nil
+	return res, nil
 }
 
 // EnsureHome 创建内核的工作目录，属主设为 owner，权限收紧到 0750：其中有内核的 API socket

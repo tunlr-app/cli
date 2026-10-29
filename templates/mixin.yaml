@@ -4,9 +4,9 @@
 # 可以按用途分文件，用数字前缀排序，例如 10-dns.yaml、20-nodes.yaml、50-rules.yaml。
 # 文件名逐字符比较，前缀请用相同的位数：9-a.yaml 会排在 10-b.yaml 之后。
 # mixin.d/<订阅名>/ 下的文件只在那个订阅启用时应用，排在共用的文件之后。
-# tunlr 的命令管理的键（TUN 开关、API 的监听地址和 secret、geo 数据的自动更新等）这里不能写，
-# 写了会被拒绝并提示改用哪个命令；tunlr config 列出它们。经 GitHub 镜像的下载地址和直连
-# 规则只是默认值，在所有文件之前应用，可以在这里覆盖。
+# tunlr 的命令管理的键（TUN 开关、API 的监听地址和 secret 等）这里不能写，写了会被拒绝并提示
+# 改用哪个命令；tunlr config 列出它们。面板经 GitHub 镜像的下载地址和直连规则只是默认值，在所有
+# 文件之前应用，可以在这里覆盖；geox-url 中 https://github.com/ 开头的地址总是经镜像下载。
 # 用 tunlr config edit 编辑会在保存时自动检查；直接改文件的，用 tunlr config plan 预览、tunlr config apply 发布。
 #
 # 顶层只有两段：

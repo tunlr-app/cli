@@ -114,7 +114,7 @@ func (i *Installer) Restore(ctx context.Context, b *backup.Backup, plan *pipelin
 	if err != nil {
 		return res, err
 	}
-	// 订阅的周期和 geo 设置可能变了。
+	// 订阅的周期和配置中 geo 数据的自动更新可能变了。
 	if err := i.SyncTimers(ctx); err != nil {
 		return res, fmt.Errorf("the backup is restored, but updating the timers failed: %w", err)
 	}

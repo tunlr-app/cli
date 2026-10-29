@@ -692,7 +692,6 @@ func TestManagedConflicts(t *testing.T) {
 		{"mihomo:\n  secret: mine\n", "mixin 10-a.yaml:2: secret is managed by tunlr:panel (change it with: tunlr panel lan on/off, tunlr panel reset-secret)"},
 		{"mihomo:\n  x: 1\n  external-controller: 0.0.0.0:9091\n", "mixin 10-a.yaml:3: external-controller is managed by tunlr:panel"},
 		{"mihomo:\n  tun:\n    stack: system\n    enable: true\n", "mixin 10-a.yaml:4: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off)"},
-		{"mihomo:\n  geo-update-interval: 6\n", "mixin 10-a.yaml:2: geo-update-interval is managed by tunlr:geo (change it with: tunlr update set geo)"},
 		{"mihomo:\n  external-controller-unix: x.sock\n", "mixin 10-a.yaml:2: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
 	} {
 		writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), tt.mixin)
@@ -722,7 +721,7 @@ func TestManagedConflicts(t *testing.T) {
 	}
 
 	ms, err := p.Managed()
-	if err != nil || len(ms) != 6 || ms[5].Name != ManagedMirror || !ms[5].Default || ms[1].Keys()[0] != "tun.enable" {
+	if err != nil || len(ms) != 5 || ms[4].Name != ManagedMirror || !ms[4].Default || ms[1].Keys()[0] != "tun.enable" {
 		t.Errorf("Managed = %+v, %v", ms, err)
 	}
 }
@@ -808,7 +807,7 @@ func TestMirrorDefaults(t *testing.T) {
 	}
 }
 
-// TestTemplateURLs 确认镜像改写的面板和 geo 数据地址与模板中的一致。
+// TestTemplateURLs 确认模板中面板和 geo 数据的地址与内核的默认地址一致。
 func TestTemplateURLs(t *testing.T) {
 	if !bytes.Contains(templates.Config, []byte("\nexternal-ui-url: "+mihomo.ZashboardURL+"\n")) {
 		t.Errorf("template external-ui-url differs from %s", mihomo.ZashboardURL)
@@ -818,9 +817,7 @@ func TestTemplateURLs(t *testing.T) {
 			t.Errorf("template geox-url lacks %s", f.URL())
 		}
 	}
-	if len(mihomo.GeoxURL("https://m.example/")) != 4 {
-		t.Error("GeoxURL does not cover the four geo files in the template")
-	}
+
 }
 
 // TestMirrorRules 验证配置了 GitHub 镜像时，镜像主机的直连规则插在订阅规则前面，用户可以在 mixin 中去掉。
@@ -917,4 +914,29 @@ func fakeRelease(t *testing.T, repo, name string, data []byte) *download.Client 
 	}))
 	t.Cleanup(srv.Close)
 	return &download.Client{APIBase: srv.URL}
+}
+
+// TestSubscriptionDNS 验证采用订阅的 dns：listen 仍是模板的，开启 TUN 时强制 enable，指向本机没有的网卡的
+// DNS 服务器给出警告。
+func TestSubscriptionDNS(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	ctx := context.Background()
+	useSubscription(t, p.Layout, "main", subscriptionV1+"dns:\n  enable: false\n  listen: 0.0.0.0:53\n  nameserver: [dhcp://tunlr-test-none0]\n")
+	plan := mustPlan(t, p)
+	if cfg := string(plan.Config); !strings.Contains(cfg, "\ndns:\n  enable: false\n  listen: 127.0.0.1:1053\n  nameserver: ['dhcp://tunlr-test-none0']\n") {
+		t.Errorf("config:\n%s", cfg)
+	}
+	if len(plan.Warnings) != 0 {
+		t.Errorf("warnings with DNS off = %+v", plan.Warnings)
+	}
+	plan, err := p.PlanTun(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.Config), "\ndns:\n  enable: true\n  listen: 127.0.0.1:1053\n") {
+		t.Errorf("TUN did not turn DNS on:\n%s", plan.Config)
+	}
+	if len(plan.Warnings) != 1 || !strings.Contains(plan.Warnings[0].Message, "no network interface tunlr-test-none0") {
+		t.Errorf("warnings = %+v", plan.Warnings)
+	}
 }

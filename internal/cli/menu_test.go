@@ -153,7 +153,7 @@ var (
 		Updates: []setup.Schedule{
 			{Task: setup.TaskSubscription, Name: "home", Period: "1d"},
 			{Task: setup.TaskSubscription, Name: "spare", Period: "1d"},
-			{Task: setup.TaskGeo, Period: "7d", Updater: "tunlr"},
+			{Task: setup.TaskGeo, Period: "7d"},
 		},
 	}
 	stoppedStatus = &setup.Status{Installed: true, Service: &service.Status{ActiveState: "inactive"},
@@ -361,7 +361,7 @@ func TestMenuItems(t *testing.T) {
 		"":                 "tunlr: Show status|Subscriptions|Configuration|Scheduled updates|Settings|Backup|Transparent proxy|Proxy port|Panel|LAN devices|Filters|Kernel (mihomo)|Run diagnostics|Quit",
 		groupSubscriptions: "tunlr › Subscriptions · home · 2 saved: List subscriptions|Switch subscription|Update subscriptions|Add a subscription|Remove subscriptions|← Back",
 		groupConfiguration: "tunlr › Configuration · revision 7: Show the configuration, history and mixins|Preview changes|Preview and apply|Edit a mixin|Roll back to an earlier revision|← Back",
-		groupUpdates:       "tunlr › Scheduled updates · 2 subscriptions · geo weekly by tunlr: Show the schedule|Change how often a subscription is fetched|Change the geo data update|Update everything now|← Back",
+		groupUpdates:       "tunlr › Scheduled updates · 2 subscriptions · geo weekly: Show the schedule|Change how often a subscription is fetched|Update everything now|← Back",
 		groupSettings:      "tunlr › Settings: Show tool settings|Edit tool settings|← Back",
 		groupBackup:        "tunlr › Backup · 3 automatic backups: List automatic backups|Back up to a file|Restore an automatic backup (undo a restore)|Restore from a file|← Back",
 		groupTun:           "tunlr › Transparent proxy · on: Turn TUN off|Turn gateway mode on (LAN devices route through mihomo)|Show details|← Back",

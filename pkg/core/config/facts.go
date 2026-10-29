@@ -12,12 +12,15 @@ import (
 type Facts struct {
 	// Geo 是配置需要的 geo 数据，见 DetectGeo。
 	Geo GeoNeeds
+	// GeoUpdate 是内核自己更新 geo 数据的设置。
+	GeoUpdate GeoUpdate
 
 	restart map[string]any
 	proxies namedProxies
 	// proxiesOK 为 false 表示顶层 proxies 不是由映射组成的列表，无法比较节点。
 	proxiesOK bool
 	ui        struct{ dir, name, url string }
+	dns       dnsFacts
 }
 
 // Inspect 解析 cfg 并提取 Facts。内容为空时返回零值的 Facts。
@@ -75,9 +78,11 @@ func factsOf(root *yaml.Node) *Facts {
 			f.ui.name = str(v)
 		case "external-ui-url":
 			f.ui.url = str(v)
+		case "dns":
+			f.dns = dnsOf(v)
 		}
 	}
-	f.Geo = detectGeo(root)
+	f.Geo, f.GeoUpdate = detectGeo(root)
 	return f
 }
 

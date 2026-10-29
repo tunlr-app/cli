@@ -103,7 +103,7 @@ func (a *app) newConfigCommand() *cobra.Command {
 			"the mixin files in /etc/tunlr/mixin.d, checked with mihomo -t and published with apply.\n\n" +
 			"Without a subcommand, show the published revision and whether there are changes not yet\n" +
 			"published, the history rollback can go back to, your mixin files in the order they apply,\n" +
-			"and the mixins tunlr generates for its own settings (TUN, the panel, geo data updates).\n" +
+			"and the mixins tunlr generates for its own settings (TUN, the panel, the LAN proxy).\n" +
 			"Your mixins may not set, change or delete the keys tunlr manages; plan, apply and edit\n" +
 			"refuse such a mixin and name the command that changes the key instead. tunlr:mirror only\n" +
 			"gives defaults you can override.",

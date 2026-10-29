@@ -25,8 +25,8 @@ func (a *app) newSettingsCommand() *cobra.Command {
 		Use:   "settings",
 		Short: "Show tunlr's own settings; edit changes them",
 		Long: "tunlr's own settings live in /etc/tunlr/settings.yaml: the GitHub mirror, the default\n" +
-			"User-Agent for subscriptions, and how the geo data is updated. They are not part of the\n" +
-			"mihomo configuration (change that with tunlr config edit). tunlr settings edit opens the file in an\n" +
+			"User-Agent for subscriptions. They are not part of the mihomo configuration (change that,\n" +
+			"including how often mihomo updates the geo data, with tunlr config edit). tunlr settings edit opens the file in an\n" +
 			"editor, checks it, and applies the configuration when a change affects it.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -63,7 +63,7 @@ func (a *app) newSettingsEditCommand() *cobra.Command {
 		Long: "Edit /etc/tunlr/settings.yaml with $VISUAL, $EDITOR, or else vim, nano or vi. A new file\n" +
 			"starts from commented defaults that explain each setting. A mistake takes you back to the\n" +
 			"editor, and nothing is saved until the file is valid. When the change affects the\n" +
-			"configuration (the GitHub mirror, geo data updated by mihomo), the diff is shown and the\n" +
+			"configuration (the GitHub mirror), the diff is shown and the\n" +
 			"configuration is applied after confirmation.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {

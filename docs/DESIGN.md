@@ -48,7 +48,7 @@
 - **TUN 开关**：面板可以在运行时切换，但不会写回配置文件，也不处理系统前置条件。持久化的开关以工具为准；工具读取实际状态，并提供“把当前运行状态保存到配置”的操作。
 - **内核升级**：面板可以通过内核自带接口升级；工具负责兜底——保留已知可用版本，内核启动失败时自动回滚，并在定时任务中核对面板升级来的二进制（见第 7 节）。工具自己升级时会先做兼容性校验，没有断网窗口。
 - **重载配置**：面板重载读的是工具生成的文件，不冲突。
-- **geo 更新**：定时更新由工具的 `_update` 触发内核更新并核对结果（见第 7 节），面板手动刷新作为补充。
+- **geo 更新**：由内核按配置自己更新（面板手动刷新同样可以），工具的 `_update` 在更新后按官方 sha256 核对结果（见第 7 节）。
 - **订阅更新**：订阅是完整配置，由工具的 timer（`tunlr _update`）拉取并走完整的配置流水线；配置中的 rule-providers 等仍由内核按 `interval` 刷新。
 
 ### 3.4 明确不做
@@ -205,24 +205,29 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - `sub update <名称> --source <来源>` 换一个来源（地址、文件或 `-`），与 `--user-agent` 相同，只在读取成功时保存。换机场地址也不必再删了重加。
   - 本地文件和标准输入没有流量与到期信息，也没有 User-Agent（`--user-agent` 报用法错误）。内容的要求与地址相同。`sub` 的来源一栏显示路径或 `stdin`。
 - **分层合成，各层职责固定**（`pkg/core/config.Compose`）：
-  1. 模板：工具内置的系统部分，如端口、DNS、geo 更新与下载地址、面板、profile。
-  2. 订阅：**只取路由部分**，即 `proxies`、`proxy-groups`、`rules`、`proxy-providers`、`rule-providers`、`sub-rules`，其余键一律丢弃并在 `config plan` 中列出。订阅是不可信输入，不能让机场配置打开端口、改监听地址或设置 API。随后按 mixin 中的 `tunlr.proxy-filter` 筛选订阅的节点，见下文“节点筛选”。
+  1. 模板：工具内置的系统部分，如端口、DNS、geo 数据的自动更新与下载地址、面板、profile。
+  2. 订阅：**只取白名单中的键**（`config.subscriptionKeys`），其余键一律丢弃并在 `config plan` 中列出。订阅是不可信输入，不能让机场配置打开端口、改监听地址或设置 API。随后按 mixin 中的 `tunlr.proxy-filter` 筛选订阅的节点，见下文“节点筛选”。白名单：
+     - 路由：`proxies`、`proxy-groups`、`rules`、`proxy-providers`、`rule-providers`、`sub-rules`。
+     - DNS：`dns`、`hosts`、`sniffer`。机场的规则常与它的 DNS 配合（`nameserver-policy`、fake-ip 过滤、按 geosite 分流的上游），换成模板的 DNS 可能让规则失效，所以整段采用订阅的 `dns`，替换模板的。例外是 `dns.listen`：它决定 DNS 是否暴露在外（见下文“端口安全”），TUN 的 DNS 劫持也转到它，一律换回模板的 `127.0.0.1:1053`，在 `config plan` 中列为丢弃了 `dns.listen`。开启 TUN 时 `tunlr:tun` 独占 `dns.enable: true`：TUN 劫持 DNS，内核的 DNS 必须开着。
+     - geo 数据：`geox-url`、`geodata-mode`、`geodata-loader`、`geo-auto-update`、`geo-update-interval`。订阅的规则要用它指定来源的数据（如自己维护的 geosite 分类），见第 7 节“geo 数据更新”。
+     - 订阅的 DNS 是为桌面客户端写的，可能在服务器上不成立。合成后检查（`config.DNSWarnings`），作为警告列在 `config plan` 中、不阻止发布：开启 DNS 却没有 `nameserver`；`dhcp://<网卡>` 指向本机没有的网卡（如 macOS 的 `en0`）。要改用 mixin 覆盖 `dns` 下的键。
   3. 提供默认值的受管 mixin（`tunlr:mirror`），见下文“受管 mixin”。
   4. 用户的 mixin：先是共用的 `mixin.d/*.yaml`，再是启用订阅的 `mixin.d/<订阅名>/*.yaml`，见下文。
-  5. 独占键的受管 mixin（`tunlr:core`、`tunlr:tun`、`tunlr:geo`、`tunlr:panel`、`tunlr:proxy`），最后写入。
-- **受管 mixin：mixin 是统一的底座**。mihomo 由配置驱动，tunlr 的交互功能（TUN 开关、面板的局域网访问、geo 数据的更新方式等）说到底都是对配置的修改。每个功能的开关存在状态文件或工具设置中，它在配置中写成什么由一份受管 mixin 表达，与用户的 mixin 走同一套合并引擎（`pkg/core/config/managed.go`）。原来分开的“工具生成的调整”和“强制项”两条路径合并为它。
+  5. 独占键的受管 mixin（`tunlr:core`、`tunlr:tun`、`tunlr:panel`、`tunlr:proxy`），最后写入。
+  6. 设置了 `github-mirror` 时，`geox-url` 中 `https://github.com/` 开头的地址改为经镜像（`Layers.Mirror`），不论来自模板、订阅还是 mixin：这样订阅自定义的来源也能在国内服务器上下载，工具的核对（见第 7 节）去掉镜像前缀后仍认得出是哪个 GitHub release 资产。其他地址原样保留。
+- **受管 mixin：mixin 是统一的底座**。mihomo 由配置驱动，tunlr 的交互功能（TUN 开关、面板与代理端口的局域网访问等）说到底都是对配置的修改。每个功能的开关存在状态文件或工具设置中，它在配置中写成什么由一份受管 mixin 表达，与用户的 mixin 走同一套合并引擎（`pkg/core/config/managed.go`）。原来分开的“工具生成的调整”和“强制项”两条路径合并为它。
   - 两种受管 mixin：
 
     | 种类 | 成员 | 应用时机 | 用户的 mixin 动了它的键 |
     |---|---|---|---|
-    | 独占 | `tunlr:core`（`external-controller-unix`，工具经它访问 API）<br>`tunlr:tun`（`tun.enable` 等，见 8.3）<br>`tunlr:geo`（`geo-auto-update`、`geo-update-interval`，见第 7 节）<br>`tunlr:panel`（`external-controller`、`secret`）<br>`tunlr:proxy`（`allow-lan`、`lan-allowed-ips`，见第 10 节“代理端口的局域网访问”） | 用户的 mixin 之后 | 报错，不发布 |
-    | 默认值 | `tunlr:mirror`（`geox-url`；配置了 `github-mirror` 时另有 `external-ui-url` 和让镜像直连的规则） | 用户的 mixin 之前 | 允许，`config plan` 中记为“覆盖 tunlr:mirror” |
+    | 独占 | `tunlr:core`（`external-controller-unix`，工具经它访问 API）<br>`tunlr:tun`（`tun.enable` 等，见 8.3）<br>`tunlr:panel`（`external-controller`、`secret`）<br>`tunlr:proxy`（`allow-lan`、`lan-allowed-ips`，见第 10 节“代理端口的局域网访问”） | 用户的 mixin 之后 | 报错，不发布 |
+    | 默认值 | `tunlr:mirror`（配置了 `github-mirror` 时：`external-ui-url` 和让镜像直连的规则；`geox-url` 不在这里，见上面第 6 步） | 用户的 mixin 之前 | 允许，`config plan` 中记为“覆盖 tunlr:mirror” |
 
   - 冲突：用户的 mixin 在 `mihomo:` 下写了独占的键（即使值相同）、用 `null` 删除它，或把它的上级整个替换掉。报告为 mixin 错误（`*config.MixinError`，退出码 3），指出文件、行和改用的命令，例如 `mixin 20-x.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); remove it from the mixin`。同一映射中的其他键照常可改（如 `tun.stack`、`tun.route-exclude-address`）。
   - 为什么拒绝而不是像原来那样忽略并警告：被忽略的设置让人以为生效了，交互命令和手改的 mixin 各说各的；拒绝时用户立刻知道该用哪个命令。代价是工具升级新增独占的键后，已经写了它的 mixin 会让定时更新保持当前配置（与 mixin 出错相同），`doctor` 的 `install.mixins` 列出这种冲突。
   - `secret` 也是独占的，不支持自定义：换 secret 用 `tunlr panel reset-secret`。
   - 受管 mixin 只在内存中合成，不写入 `mixin.d`：写成文件会让用户以为可以编辑它，改了又被工具覆盖；设置变化时还要同步文件。`tunlr config` 列出用户的 mixin 文件和全部受管 mixin（独占的列出键和命令，默认值的列出内容，`secret` 的值不出现），`config plan` 列出受管 mixin 的名称和默认值的内容。
-  - 默认值放在订阅之后而不是紧接模板：插入规则需要订阅的 `rules` 已经就位；这一层的键模板中都有（`geox-url` 也写在模板里，地址与工具校验下载的 geo 数据一致），合并后位置不变，输出稳定。
+  - 默认值放在订阅之后而不是紧接模板：插入规则需要订阅的 `rules` 已经就位；这一层的键模板中都有，合并后位置不变，输出稳定。
   - 回滚和自动关闭透明代理不重新合成，只把独占的受管 mixin 按当前状态重新写入生效的配置（`config.Enforce`），包括面板的监听地址和 `secret`。
 - **mixin**（`pkg/core/config/mixin.go`）。参考了 clashctl（单个 mixin.yaml，嵌套的 `prepend`/`append`/`override`/`inject`）和 ShellCrash（按类别分文件、文本拼接、`-t` 失败时静默丢弃全部自定义）后的设计：
   - 场景：改通用设置；加自己的节点、策略组、规则、rule-providers、listeners；改订阅里已有的策略组和节点（塞入自己的节点、改 interval、加 dialer-proxy）；去掉机场的信息节点和不要的组或规则；按用途分文件、可以单独停用。
@@ -332,11 +337,11 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 打开编辑器前只说明 tunlr 自己的规则（保存退出后校验并显示差异、确认后才发布；不保存退出则不做改动），不讲编辑器本身的用法。
 - 合成前展开订阅中的 YAML 锚点与别名（被引用的锚点可能位于被丢弃的键里），并限制展开后的节点数，防止恶意订阅放大。
 - **校验前必须备好 geo 数据**。`mihomo -t` 会加载规则用到的 GeoIP/GeoSite 数据，缺失时现场从 GitHub 下载；在国内服务器上实测下载耗时 84 秒，超过 90 秒即判定校验失败，与配置本身无关。因此：
-  - 工具从配置判断需要哪些 geo 数据（规则、DNS 设置中出现 geoip、geosite、ip-asn 即视为需要；宁可多备一个文件，不能漏），缺失的下载到内核工作目录（下载方式见第 7 节的镜像与校验）。已有的文件不在这里更新，由定时任务 `_update` 负责（见第 7 节）。预先备好后实测校验耗时 49 毫秒。
+  - 工具从配置判断需要哪些 geo 数据（规则、DNS 设置中出现 geoip、geosite、ip-asn 即视为需要；宁可多备一个文件，不能漏），缺失的按生效的 `geox-url` 下载到内核工作目录：来源是 GitHub release 资产的按官方 sha256 校验（见第 7 节的镜像与校验），其他来源（订阅或 mixin 自定义的 CDN 等）原样下载、无从校验。已有的文件不在这里更新，由内核自己更新、`_update` 核对（见第 7 节）。预先备好后实测校验耗时 49 毫秒。
   - `-t` 在临时工作目录中运行，内核工作目录中的 geo 文件以符号链接提供：`-t` 可能写入缓存，直接用内核的工作目录会与运行中的内核冲突。
   - 校验失败时区分“配置错误”和“依赖下载失败”：mihomo 的错误消息含 `can't download` 时属于后者，不报告为配置问题（不映射到退出码 3）。
   - 实测 `-t` 不会抓取远程的 proxy-providers 和 rule-providers，它们暂时不可达不影响校验。
-  - 内核自己的 geo 定时更新（`geox-url`）同样受网络影响，其地址由工具按镜像设置写入 `tunlr:mirror`。用户在 mixin 中自己指定的地址优先，因此它只提供默认值，不独占。
+  - 内核自己的 geo 定时更新（`geox-url`）同样受网络影响：设置了镜像时，合成的最后把其中 github.com 的地址改为经镜像（见上文合成的第 6 步）。
 - **内核自己的下载**：
 
   | 下载 | 发起者 | 路径 | 校验 |
@@ -344,7 +349,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   | 内核、校验前补齐的 geo 数据、面板（首次） | tunlr | 直连或经镜像 | 官方 sha256 |
   | 订阅 | tunlr | 直连 | 无（机场内容无从校验） |
   | 面板手动更新、面板上手动更新 geo | 内核 | 按规则分流，地址经镜像 | 无 |
-  | geo 定时更新 | `_update` 触发内核下载 | 按规则分流，地址经镜像 | 事后由工具按官方 sha256 核对 |
+  | geo 自动更新（`geo-auto-update`）、`update run geo` | 内核 | 按规则分流，github.com 的地址经镜像 | 事后由 `_update` 按官方 sha256 核对（GitHub release 资产） |
   | 订阅中的 proxy-providers、rule-providers | 内核 | 按规则分流，或 provider 的 `proxy` 字段 | 无 |
   | 面板触发的内核升级 | 内核 | 按规则分流，直连 github.com | 无，事后由工具核对（见第 7 节） |
 
@@ -352,8 +357,8 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - **镜像直连规则**：配置了 `github-mirror` 时，工具在订阅规则前插入 `DOMAIN,<镜像域名>,DIRECT`（镜像是 IP 时用 `IP-CIDR`/`IP-CIDR6`）。镜像本来就是为直连准备的；实测选中不可用的节点时，加上这条规则后面板经镜像下载成功。它属于提供默认值的 `tunlr:mirror` 而不是独占的：用户有理由让镜像也走代理，可以用 `tunlr.rules.delete` 去掉。没有配置镜像时不加，直连 github.com 在国内很慢，交给规则决定。将来 TUN 阶段需要直连的主机（如订阅域名）也放在这一层。
   - **信任边界**：镜像可以篡改它转发的内容。工具的下载有官方 sha256 兜底，内核的下载没有。其中面板在浏览器中运行并持有 API secret，geo 数据决定分流，被篡改的后果都很严重，因此改由工具下载并校验：
     - 面板：apply 时若面板目录不存在，工具从 zashboard 最新发布下载 `dist.zip`，按官方 sha256 校验，解压（拒绝指向目录外的路径和非普通文件，限制解压后大小）后原子地放到位。实测内核启动时发现面板目录已存在就跳过下载。只处理 `external-ui-url` 仍是 zashboard 官方地址或其镜像地址的配置，用户在 mixin 中换了面板时交给内核。面板不是必需的：下载失败（时限 5 分钟）照常发布，由内核按 `external-ui-url` 自己下载；下载在加锁之前进行，不阻塞定时任务。
-    - geo 数据：校验前缺失的文件由工具校验下载；定时更新默认由 `_update` 触发内核下载后按官方 sha256 核对（见第 7 节“geo 数据更新”）。内核自己的 `geo-auto-update` 下载后不做任何校验，由工具设置决定开关（归 `tunlr:geo`，mixin 改不了），默认关闭。
-    - `external-ui-url`、`geox-url` 仍写成经镜像的地址，用于 `_update` 触发的更新和用户在面板上主动点“更新”。
+    - geo 数据：校验前缺失的文件由工具校验下载；之后由内核按配置自己更新，`_update` 在每次更新后按官方 sha256 核对，不一致的换成校验过的文件并重启内核（见第 7 节“geo 数据更新”）。来源不是 GitHub release 资产的无从校验，`update run geo` 的结果中注明。
+    - `external-ui-url`、`geox-url` 仍写成经镜像的地址，用于内核自己的更新和用户在面板上主动点“更新”。
   - 实测：zashboard 与 meta-rules-dat 的发布资产都带有 GitHub 提供的 sha256 digest。
 - **充分利用内核已有能力**，由工具写入模板默认开启：
   - `external-ui` / `external-ui-url`：面板的位置（`ui/zashboard`，挂在 `/ui`）和更新地址（首次由工具校验安装，之后可在面板上手动更新）
@@ -431,21 +436,23 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   | 类别 | 机制 | 可否关闭、改周期 |
   |---|---|---|
   | 护栏：保证不失联、不带病运行 | `tunlr-rescue.service`（启动失败后换回已知可用内核）、`tunlr-tun-guard`（开启 TUN 后的回滚定时器）、`tunlr-check.timer`（见 8.5）、面板升级的善后 | 不能。它们是“应用 → 确认，失败则回滚”的一部分 |
-  | 资源更新：内容会过期 | 订阅（更新后发布）、geo 数据 | 能，各自设周期，可以关闭 |
+  | 资源更新：内容会过期 | 订阅（更新后发布）；geo 数据（内核按配置自己更新，`_update` 事后核对） | 能：订阅各自设周期，geo 数据在配置中设（mixin），都可以关闭 |
   | 不做定时 | tunlr 自身的升级 | 只能手动执行，不进 timer |
-  - 资源更新只用一个 timer：`tunlr-update.timer` 每小时唤醒一次（`OnCalendar=hourly`、`RandomizedDelaySec=15min`），`_update` 读设置和状态文件，对每项资源判断“上次执行之后是否已过一个周期”，到期才执行，执行后把时间和结果记下来。没有到期的更新时什么都不做，也不输出，journal 中只留真正执行过的更新。与每种资源一个 timer 相比：改周期只改设置、不用重写 unit 和 `daemon-reload`；新增资源只加一个设置项；下次执行的时间由工具自己算，`status` 和菜单直接显示；各更新顺序执行、不会同时运行；关机错过的更新在开机后的第一次唤醒时补上，不需要 `Persistent=`。代价是不能指定在某个时刻执行，服务器上的更新不在乎几点，可以接受。
+  - 资源更新只用一个 timer：`tunlr-update.timer` 每小时唤醒一次（`OnCalendar=hourly`、`RandomizedDelaySec=15min`），`_update` 读状态文件，对每个订阅判断“上次执行之后是否已过一个周期”，对 geo 数据判断“内核更新之后是否核对过”，到期才执行，执行后把时间和结果记下来。没有到期的更新时什么都不做，也不输出，journal 中只留真正执行过的更新。与每种资源一个 timer 相比：改周期只改设置、不用重写 unit 和 `daemon-reload`；新增资源只加一个设置项；下次执行的时间由工具自己算，`status` 和菜单直接显示；各更新顺序执行、不会同时运行；关机错过的更新在开机后的第一次唤醒时补上，不需要 `Persistent=`。代价是不能指定在某个时刻执行，服务器上的更新不在乎几点，可以接受。
   - 周期的值为小时或天数（`6h`、`1d`、`7d`，1 小时到 365 天）或 `off`。用户通过命令或菜单修改，不需要编辑文件。
-    - **订阅**：周期是每个订阅自己的属性，存在状态文件中（`update`，默认 `1d`），添加时指定（`sub add --update`，交互时从列表选），之后用 `update set sub <name> <period>` 修改（与 geo 数据的 `update set geo` 并列：周期都归 `update` 管）。未启用的订阅也按自己的周期更新（切换过去时内容是新的，机场的流量和到期信息也是新的），只有启用的订阅更新成功后才发布配置。下次到期 = 上次抓取（成功或失败，取较晚者；从未抓取过时为添加时间）+ 周期；上次失败时最多 6 小时后再试，不必等满一个周期。
-    - **geo 数据**：设置在 `/etc/tunlr/settings.yaml`（`geo-update`，默认 `7d`，上游每周更新一次；`geo-updater`，`tunlr` 或 `mihomo`），用 `tunlr update set geo [period] --by tunlr|mihomo` 修改。更新方式见下面的“geo 数据更新”。
-    - 没有任何一项定时执行时停用 `tunlr-update.timer`（订阅的增删改和 geo 设置变化后都重新判断）。
-  - `tunlr update run [sub|geo]` 不看周期立即执行：`sub` 抓取全部订阅（包括设为 `off` 的），`geo` 走 tunlr 的校验路径（即使设置为由内核更新）；输出与定时执行相同。`tunlr update` 列出每个订阅和 geo 数据的周期、上次执行的时间和结果、下次到期的时间。`init` 按设置启用或停用 timer，不再无条件启用。
-  - 执行顺序：先逐个抓取到期的订阅（失败时保留上一次的内容，原因记在订阅上），启用的订阅抓取成功后按它和 mixin 合成并发布（同 `config apply --yes`；有变化才发布，检查不通过则保持当前配置）；再更新 geo 数据（结果记入状态文件）。执行了任何任务时最后做面板升级的善后（见上）：它只核对校验值，不单独设周期。
+    - **订阅**：周期是每个订阅自己的属性，存在状态文件中（`update`，默认 `1d`），添加时指定（`sub add --update`，交互时从列表选），之后用 `update set sub <name> <period>` 修改。未启用的订阅也按自己的周期更新（切换过去时内容是新的，机场的流量和到期信息也是新的），只有启用的订阅更新成功后才发布配置。下次到期 = 上次抓取（成功或失败，取较晚者；从未抓取过时为添加时间）+ 周期；上次失败时最多 6 小时后再试，不必等满一个周期。
+    - **geo 数据**：周期是配置的一部分（`geo-auto-update`、`geo-update-interval`，单位小时），模板中为 `true`、`168`（上游每周更新一次），订阅或 mixin 写了的以它们为准，`tunlr update` 中显示生效的值（`168` 显示为 `7d`）。见下面的“geo 数据更新”。
+    - `tunlr-update.timer` 安装后总是启用：即使没有订阅定时更新、配置中也关闭了 geo 数据的自动更新，面板仍可随时让内核更新 geo 数据或升级内核，之后都要核对；没有要做的事时它什么都不做。
+  - `tunlr update run [sub|geo]` 不看周期立即执行：`sub` 抓取全部订阅（包括设为 `off` 的），`geo` 先调用 `POST /configs/geo` 让内核立即更新（内核没有运行时只核对已有的文件），再核对；输出与定时执行相同。`tunlr update` 列出每个订阅和 geo 数据的周期、上次执行的时间和结果、下次到期的时间；geo 数据的“上次执行”是上次核对，“下次到期”是内核下一次更新的大致时间（最新的 geo 文件的修改时间 + 周期，由内核决定），表格下另有一行说明最新的 geo 文件的时间。
+  - 执行顺序：先逐个抓取到期的订阅（失败时保留上一次的内容，原因记在订阅上），启用的订阅抓取成功后按它和 mixin 合成并发布（同 `config apply --yes`；有变化才发布，检查不通过则保持当前配置）；再核对 geo 数据（结果记入状态文件）。执行了任何任务时最后做面板升级的善后（见上）：它只核对校验值，不单独设周期。
   - 任何一步失败都记录在日志中，继续后面的步骤，最后以非零退出码结束，让 systemd 记为失败。每一步的结果（ok、skipped、failed 和说明）输出到 journal。
 - **geo 数据更新**（读源码 `component/updater/update_geo.go` 并实测）：
   - 内核的 geo 数据只能由内核自己的更新器重新加载（`mmdb.ReloadIP` 等只在更新器中调用）；工具替换文件后要重启内核才生效。
   - `POST /configs/geo` 同步执行：内容与磁盘上的相同时直接返回 204，不写文件也不记日志（之前“没有结果”的原因）；单个文件的下载时限 90 秒，经 gh-proxy 实测一次 64 秒成功、一次 90 秒超时。
-  - 所以默认（`geo-updater: tunlr`）由 `_update` 先调用 `POST /configs/geo` 让内核经镜像更新，无需重启；成功后由工具查询 meta-rules-dat 最新发布的官方 sha256，核对工作目录中内核正在使用的 geo 文件。不一致时下载校验过的文件（经镜像校验不通过时改为直连）替换并重启内核；拿不到校验过的文件则记录错误。内核下载失败（如超时）时本次跳过，留给下一次。
-  - 也可以交给内核自己更新（`geo-updater: mihomo`）：配置中写入 `geo-auto-update: true` 和 `geo-update-interval`（周期换算成小时），不校验、不重启，`tunlr update` 中“上次执行”是最新 geo 文件的修改时间（内核不报告结果），“下次到期”由内核决定。这两个键归 `tunlr:geo`：由设置决定，mixin 改不了（关闭时不写间隔，但 mixin 同样不能写它）（否则 mixin 一开，tunlr 的校验更新和内核的更新会各做各的）。它们是重启键，所以 `update set geo --by` 在两种方式之间切换时要发布配置并重启内核：先保存设置，再像 `config apply` 一样展示 diff 并确认，不发布（回答否或检查不通过）则把设置改回去，让设置和配置保持一致。
+  - 内核自己的定时更新（`geo-auto-update`）只在启动时注册；启动时 GeoIP 文件的修改时间早于一个间隔就立即更新。它下载后不做任何校验。
+  - 设计（2026-10-29 讨论后决定）：geo 数据的来源和更新频率是配置的事，订阅可以指定自己的来源（规则依赖它），所以都交给配置和内核，工具不再用自己的设置覆盖它们。原来的 `geo-update`/`geo-updater` 设置、`update set geo --by`、独占的 `tunlr:geo` 全部删除，不做兼容。工具只做内核做不到的事——核对：
+    - `_update` 每小时比较最新的 geo 文件的修改时间与上次核对的时间，文件更新过才核对；上次核对失败的，6 小时后再试。
+    - 核对按生效的配置中的 `geox-url`：地址（去掉镜像前缀后）是 GitHub release 资产（`releases/download/<tag>/<名称>` 或 `releases/latest/download/<名称>`）的，从 GitHub API 取官方 sha256 比对工作目录中内核正在使用的文件；不一致时下载校验过的文件（经镜像校验不通过时改为直连）替换并重启内核（内核没有运行时不启动它）。其他来源无从校验，结果中注明 “from a custom source, not verified”。没有写 `geox-url` 的文件按内核的默认地址（meta-rules-dat 的 `latest`）。
 - **状态以实际为准**：版本、TUN 状态等一律通过 API 查询内核实际情况；工具自己的记录只作为“已知可用的历史”。
 - 注意：内核 API 并不稳定（例如曾有标注为 break 的 `/proxies` 行为变更），API 调用集中封装在 `pkg/core/mihomo` 的 client 中，并随 mihomo 发版做兼容性测试。
 
@@ -790,8 +797,7 @@ tunlr sub remove | update | use   删除、立即抓取（--source 换来源）�
 tunlr update              定时更新：每个订阅和 geo 数据的周期、上次执行、下次到期
 tunlr update run [sub|geo]   立即执行订阅、geo 数据的更新（不看周期；只抓某个订阅用 sub update）
 tunlr update set sub [name] [period]   修改一个订阅的自动更新周期（6h、1d、off、default）
-tunlr update set geo [period] --by tunlr|mihomo   设置 geo 数据的更新周期和方式（也可以 settings edit）
-tunlr settings            工具设置（settings.yaml：GitHub 镜像、订阅的 User-Agent、geo 数据更新）
+tunlr settings            工具设置（settings.yaml：GitHub 镜像、订阅的 User-Agent）
 tunlr settings edit       用 $EDITOR 编辑设置，校验通过才保存，涉及配置时随即发布
 tunlr backup              列出 backup restore 前留下的自动备份
 tunlr backup create [-o 文件|-]   备份设置、mixin、订阅与状态中可迁移的部分（含凭据，0600）
@@ -838,17 +844,17 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
   - `http_proxy`、`https_proxy` 为 `http://127.0.0.1:<mixed-port>`，`all_proxy` 为 `socks5h://…`（域名交给代理解析），大小写各一份（curl 不认大写的 `HTTP_PROXY`，有的工具只认大写）；`no_proxy` 为本机与私有地址段（不认 CIDR 的工具忽略网段）。只输出 POSIX 写法，第一行是说明用法的注释。`--unset` 输出 `unset`，不需要配置。
   - 端口取自生效的配置；没有发布过、没有 `mixed-port`、代理端口需要认证时退出码 3。生效的配置含节点密码和 API secret，普通用户读不到，此时提示 `eval "$(sudo tunlr proxy env)"`：`sudo` 只生成语句，变量仍设在用户自己的 shell 中，工具因此不必为它放开 root 的约束。
   - 不做 `--lan`（局域网地址见 `tunlr proxy`）；透明代理开启时不提示（变量用不上但无害）。
-- `config`：工具自己的设置（`/etc/tunlr/settings.yaml`：`github-mirror`、`user-agent`、`geo-update`、`geo-updater`），与 mihomo 配置（mixin）分开。
+- `config`：工具自己的设置（`/etc/tunlr/settings.yaml`：`github-mirror`、`user-agent`），与 mihomo 配置（mixin）分开。
   - `tunlr settings` 列出每项生效的值、是否为默认值和一句说明（何时生效），`--json` 中为 `file` 与 `settings`（`key`、`value`、`default`、`help`）。文件有错时报告错误。
-  - `settings edit` 同 `config edit` 的流程：在临时副本上编辑（文件不存在时从带说明、默认值全部注释掉的模板开始）→ 解析校验（未知的键、取值不合法），不通过时可以回到编辑器或放弃 → 保存（编辑期间文件被改过时不覆盖，保留副本并给出位置）→ 按新的 geo 设置启用或停用 timer → 合成配置，有变化（镜像、geo 数据改由内核更新）时 diff、确认、发布；还没有发布过时提示由 `config apply` 生效。不发布时设置仍保存，与 mixin 一致，`status` 的漂移会提示。`--dry-run` 只预览，不保存。需要终端，非交互时提示直接改文件再 `config apply`。
-  - 不做 `config set/unset <key>`：只有四项，编辑器配合模板中的说明足够；geo 两项另有 `update set geo`。四项不常改，命令越多越难记。
+  - `settings edit` 同 `config edit` 的流程：在临时副本上编辑（文件不存在时从带说明、默认值全部注释掉的模板开始）→ 解析校验（未知的键、取值不合法），不通过时可以回到编辑器或放弃 → 保存（编辑期间文件被改过时不覆盖，保留副本并给出位置）→ 合成配置，有变化（镜像）时 diff、确认、发布；还没有发布过时提示由 `config apply` 生效。不发布时设置仍保存，与 mixin 一致，`status` 的漂移会提示。`--dry-run` 只预览，不保存。需要终端，非交互时提示直接改文件再 `config apply`。
+  - 不做 `config set/unset <key>`：只有两项，编辑器配合模板中的说明足够；不常改，命令越多越难记。geo 数据的更新频率在 mihomo 配置中，用 mixin 改。
 - `backup`：与 `settings`、`config` 一致，不带子命令时只列出（自动备份），`create`、`restore` 才有动作。主要用于换服务器（VPS 重装、迁移），其次是同一台机器重装后恢复；只改配置时用 `config rollback`。
   - 不直接打包 `/etc/tunlr` 与 `/var/lib/tunlr`：状态文件中混有只对本机有意义的内容（实例 ID、已知可用的内核、TUN 的检测期限、网关开启前的转发设置），原样搬过去会出错。
   - 备份是一个 tar.gz（`pkg/core/backup`）：`backup.json`（格式版本、tunlr 版本、主机名、时间，以及状态中的订阅、启用的订阅、API secret、设备、过滤项和备份时开着的开关）、`settings.yaml`、`mixin.d/*.yaml` 与 `mixin.d/<订阅名>/*.yaml`、`subscriptions/<名称>.yaml`（最近一次抓取的内容，新机器暂时抓不到订阅也能立即发布）。不含内核、geo 数据、面板和配置历史（还原后要回滚的是还原前的配置，在本机历史中）。文件 0600，输出提示它含订阅地址与 API secret；不加密：要么引入依赖，要么自己实现，用户把文件放在哪里工具也管不了。
   - `backup create` 默认写到当前目录的 `tunlr-backup-<主机名>-<时间>.tar.gz`，已存在时不覆盖；`-o -` 写到标准输出，迁移可以一条命令完成：`ssh old tunlr backup create -o - | ssh new tunlr backup restore - --yes`（标准输入被占用，只能 `--yes`）。
   - `backup restore` 要求这台机器已经 `init`（有状态文件）。读取时检查格式版本（比当前新则拒绝）、文件名（只认上面几类，mixin 与订阅名称照常校验）、设置文件、订阅地址，以及启用的订阅有内容；错误信息不含订阅地址。
   - 设置文件、`mixin.d` 中的 `.yaml`（含订阅 mixin 的目录）与订阅内容整体替换（不合并，结果可以预料；原来的内容在自动备份中），状态只替换订阅、启用的订阅、API secret、设备和过滤项；实例 ID、内核、开关、定时任务的记录保持本机的。设备按地址记录，换了局域网就匹配不到，照样还原，diff 中可见。
-  - 先按还原后的样子合成并校验（`pipeline.PlanRestore`，不写入任何东西），显示 diff，确认后在锁内：把当前内容自动备份到 `/var/lib/tunlr/backups`（保留 3 份）→ 写入 → 发布 → 按新的订阅周期与 geo 设置同步 timer。全有或全无：发布失败时写回自动备份的内容，配置由流水线回滚，退出码 4；拒绝或预览时什么都不写。这一点与 `config edit`、`settings edit` 不同：还原只做一半，状态难以看明白。
+  - 先按还原后的样子合成并校验（`pipeline.PlanRestore`，不写入任何东西），显示 diff，确认后在锁内：把当前内容自动备份到 `/var/lib/tunlr/backups`（保留 3 份）→ 写入 → 发布 → 同步 timer。全有或全无：发布失败时写回自动备份的内容，配置由流水线回滚，退出码 4；拒绝或预览时什么都不写。这一点与 `config edit`、`settings edit` 不同：还原只做一半，状态难以看明白。
   - 开关不自动打开：网卡、局域网、是否有公网地址都跟着机器，TUN 还有失联的风险。还原后比较备份与本机，备份时开着、这里关着的（网关的网卡在这里不存在时改用默认路由所在的网卡）在交互模式下列成多选、默认全选，选中的依次走 `tun gateway on`（或 `tun on`）、`proxy lan on`、`panel lan on` 的流程，同 `init`；非交互或 `--yes` 时只列出命令，`--json` 中为 `commands`。
   - 自动备份就是“撤销还原”的入口：`tunlr backup` 按时间列出（订阅、mixin 数和路径，`--json` 中为列表），`backup restore` 不给文件时在交互模式下从中选择；非交互时必须给出文件。
   - 主菜单有“Backup”分类：列出自动备份、备份到文件、还原自动备份（有自动备份时）、从文件还原（输入路径）。
@@ -865,11 +871,10 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
 | `core upgrade`、`core rollback` | Replace mihomo vX with vY? | 先查询目标版本（确认的是哪个就装哪个），已是该版本时不问；`rollback` 时给出将换回的已知可用版本 |
 | `sub remove` | Remove the subscription …? | 列出来源（地址缩写），删除后只能用完整地址重新添加；有订阅 mixin 时说明一并删除几个文件 |
 | `uninstall` | Uninstall tunlr …? | |
-| `update set geo --by`（切换到或离开 mihomo） | Apply this configuration? | 同 `config apply`：diff 之后确认，内核会重启；回答否则设置改回去 |
 | `config edit`、`settings edit` 放弃修改 | Discard your edits? | 在“What now?”选择放弃或按 Esc 时再问一次，回答否回到选项 |
 | `panel reset-secret` | Replace the API secret? | 同 `config apply`：diff（secret 隐去）之后确认；内核会重启，已打开的面板要用新链接重新连接 |
 
-- 不确认的：`core start`、`sub add`、`sub update`、不带 `--apply` 的 `sub use`、`update run`、不改配置的 `update set`、只读命令和下划线开头的内部命令。它们要么只是新增、可以撤回，要么由 systemd 调用、不能提问；`update run` 做的就是定时任务会自动做的事。
+- 不确认的：`core start`、`sub add`、`sub update`、不带 `--apply` 的 `sub use`、`update run`、`update set`、只读命令和下划线开头的内部命令。它们要么只是新增、可以撤回，要么由 systemd 调用、不能提问；`update run` 做的就是定时任务会自动做的事。
 - `--yes` 跳过确认。非交互模式下没有 `--yes` 时在开始工作前报用法错误（退出码 2）。`config apply` 等支持 `--dry-run` 的命令可以只预览；其余命令带 `--dry-run` 报用法错误，不把它当作已确认。
 - 回答否或按 Esc 时输出一行（如 `Not stopped.`），退出码 0，主菜单的结果为 `– Cancelled`。已经做了一部分时（如 `config edit` 已保存 mixin、`settings edit` 已保存设置、`sub use` 已切换订阅）不发布不算取消。
 
@@ -893,7 +898,7 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
   |---|---|---|---|
   | Subscriptions | `sub` | 启用的订阅 · 共几个 | 列出、切换、更新、添加、删除 |
   | Configuration | `config` | 当前修订号（有没发布的改动、无法合成、在 tunlr 之外改过时标出） | 查看配置、历史与 mixin，预览，预览并发布，编辑 mixin，回滚 |
-  | Scheduled updates | `update` | 订阅个数 · geo 数据的周期与方式（失败的标红） | 查看、改一个订阅的周期、改 geo 数据的更新、立即全部更新 |
+  | Scheduled updates | `update` | 订阅个数 · geo 数据的周期（失败的标红） | 查看、改一个订阅的周期、立即全部更新 |
   | Settings | `settings` | （无） | 查看、编辑工具设置 |
   | Backup | `backup` | 自动备份的份数 | 列出自动备份、备份到文件、还原自动备份（有时）、从文件还原 |
   | Transparent proxy | `tun` | 开 / 关 / 检查中，网关模式 | 开启或关闭 TUN、开启或关闭网关模式、查看详情 |

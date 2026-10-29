@@ -82,7 +82,7 @@ func (v *Validator) Validate(ctx context.Context, cfg []byte, geo *config.GeoNee
 			}
 		}
 		if geo != nil {
-			if _, err := EnsureGeo(ctx, v.Download, v.HomeDir, GeoFilesFor(*geo), v.RunAs); err != nil {
+			if _, err := EnsureGeo(ctx, v.Download, v.HomeDir, GeoFilesFor(*geo), geo.URLs, v.RunAs); err != nil {
 				return err
 			}
 		}

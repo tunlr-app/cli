@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
@@ -392,15 +393,20 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		plan.Mixins = append(plan.Mixins, m.Name)
 	}
 	plan.Managed = managed(secret, sw, set)
-	res, err := config.Compose(config.Layers{
+	layers := config.Layers{
 		Template:     templates.Config,
 		Subscription: sub,
 		Managed:      plan.Managed,
 		Mixins:       mixins,
-	})
+	}
+	if mirror := set.GitHubMirror; mirror != "" {
+		layers.Mirror = func(url string) string { return download.MirrorURL(mirror, url) }
+	}
+	res, err := config.Compose(layers)
 	if err != nil || opts.composeOnly {
 		return nil, err
 	}
+	res.Warnings = append(res.Warnings, config.DNSWarnings(res.Facts, hasInterface)...)
 	// 只在重新合成时检查端口安全；回滚和重写独占的键不经过这里，以免旧配置无法恢复。
 	if err := config.CheckExposure(res.Config); err != nil {
 		return nil, err
@@ -420,6 +426,12 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		return nil, err
 	}
 	return plan, nil
+}
+
+// hasInterface 报告本机是否有名为 name 的网卡，测试时替换。
+var hasInterface = func(name string) bool {
+	_, err := net.InterfaceByName(name)
+	return err == nil
 }
 
 // mixinsFor 从全部 mixin（共用的和所有订阅的，见 config.LoadAllMixins）中取出订阅 sub 启用时应用的那些。
@@ -890,7 +902,6 @@ func (p *Pipeline) now() time.Time {
 const (
 	ManagedCore   = "tunlr:core"
 	ManagedTun    = "tunlr:tun"
-	ManagedGeo    = "tunlr:geo"
 	ManagedPanel  = "tunlr:panel"
 	ManagedProxy  = "tunlr:proxy"
 	ManagedMirror = "tunlr:mirror"
@@ -901,21 +912,18 @@ const (
 //
 //	tunlr:core   内核的 Unix socket，工具经它调用 API
 //	tunlr:tun    透明代理：enable 取自开关，其余是固定值，工具补充的规则、清理和检测依赖它们；
-//	             面板临时打开 TUN 时也按这些值工作
-//	tunlr:geo    geo 数据的自动更新，只有一个旋钮：由内核自己更新时才写 geo-auto-update: true 和间隔，
-//	             否则关闭它，由 tunlr 按周期更新并校验；间隔在关闭时也归它管
+//	             面板临时打开 TUN 时也按这些值工作；开启时还要求 dns.enable: true，dns-hijack 靠它
 //	tunlr:panel  API 的监听地址（面板的局域网访问开关）和 secret
 //	tunlr:proxy  代理端口的局域网访问开关：开启时 allow-lan: true，lan-allowed-ips 限制为私有地址段
 //	             （config.LANAllowedIPs），内核拒绝其他来源；关闭时 allow-lan: false
 //
-// 提供默认值、用户可以覆盖的：tunlr:mirror，geo 数据的下载地址，配置了 GitHub 镜像时另有经镜像的面板
-// 下载地址和让镜像直连的规则（用 tunlr.rules.delete 去掉）；tunlr:filter，有过滤项时在规则最前插入的规则
-// （设为直连的设备、拒绝 QUIC、只代理常用端口，见 filterRules 和 DESIGN.md 8.13）。
+// 提供默认值、用户可以覆盖的：tunlr:mirror，配置了 GitHub 镜像时经镜像的面板下载地址和让镜像直连的
+// 规则（用 tunlr.rules.delete 去掉；geox-url 经镜像由 config.Layers.Mirror 处理）；tunlr:filter，有过滤项
+// 时在规则最前插入的规则（设为直连的设备、拒绝 QUIC、只代理常用端口，见 filterRules 和 DESIGN.md 8.13）。
 func managed(secret string, sw switches, set *settings.Settings) []config.Managed {
-	geoAuto, geoHours := set.GeoAutoUpdate()
-	geo := fmt.Sprintf("  geo-auto-update: %t\n", geoAuto)
-	if geoAuto {
-		geo += fmt.Sprintf("  geo-update-interval: %d\n", geoHours)
+	tunDNS := ""
+	if sw.tun {
+		tunDNS = "  dns:\n    enable: true\n"
 	}
 	controller := fmt.Sprintf("127.0.0.1:%d", APIPort)
 	if sw.panelLAN {
@@ -933,16 +941,11 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 	}{sw.proxyLAN, config.LANAllowedIPs}})
 
 	mirror := set.GitHubMirror
-	m := struct {
-		GeoxURL       map[string]string `yaml:"geox-url,omitempty"`
-		ExternalUIURL string            `yaml:"external-ui-url,omitempty"`
-	}{GeoxURL: mihomo.GeoxURL(mirror)}
-	if mirror != "" {
-		m.ExternalUIURL = download.MirrorURL(mirror, mihomo.ZashboardURL)
-	}
 	mirrorSection := section{Tunlr: prependRules(mirrorRules(mirror))}
-	if len(m.GeoxURL) > 0 || m.ExternalUIURL != "" {
-		mirrorSection.Mihomo = m
+	if mirror != "" {
+		mirrorSection.Mihomo = struct {
+			ExternalUIURL string `yaml:"external-ui-url"`
+		}{download.MirrorURL(mirror, mihomo.ZashboardURL)}
 	}
 	mirrorData := marshal(mirrorSection)
 
@@ -957,8 +960,7 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
     device: %s
     iproute2-table-index: %d
     iproute2-rule-index: %d
-`, sw.tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex)},
-		{Name: ManagedGeo, Command: "tunlr update set geo", Data: []byte("mihomo:\n" + geo), Owns: []string{"geo-auto-update", "geo-update-interval"}},
+%s`, sw.tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex, tunDNS)},
 		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel reset-secret", Data: panel},
 		{Name: ManagedProxy, Command: "tunlr proxy lan on/off", Data: proxy, Owns: []string{"allow-lan", "lan-allowed-ips"}},
 		{Name: ManagedMirror, Command: "tunlr settings edit", Default: true, Data: mirrorData},

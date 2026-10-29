@@ -35,30 +35,6 @@ type Settings struct {
 	// UserAgent 是抓取订阅时默认使用的 User-Agent，单个订阅设置了自己的 User-Agent 时以订阅为准。
 	// 为空时使用内置默认值。
 	UserAgent string `yaml:"user-agent,omitempty"`
-	// GeoUpdate 是自动更新 geo 数据的周期，如 "6h"、"1d"、"7d"，"off" 为不自动更新；为空时使用默认值。
-	// 见 ParsePeriod。订阅的更新周期是每个订阅自己的属性，在状态文件中。
-	GeoUpdate string `yaml:"geo-update,omitempty"`
-	// GeoUpdater 是谁来更新 geo 数据：GeoUpdaterTunlr 由 tunlr 按周期让内核下载后按官方 sha256 核对；
-	// GeoUpdaterMihomo 由内核自己按周期下载（geo-auto-update），不校验、不重启。为空时为 tunlr。
-	GeoUpdater string `yaml:"geo-updater,omitempty"`
-}
-
-// geo 数据更新的设置键和默认值。geo 数据上游每周更新一次，每天拉取没有意义。
-const (
-	KeyGeoUpdate      = "geo-update"
-	KeyGeoUpdater     = "geo-updater"
-	DefaultGeoUpdate  = "7d"
-	GeoUpdaterTunlr   = "tunlr"
-	GeoUpdaterMihomo  = "mihomo"
-	DefaultGeoUpdater = GeoUpdaterTunlr
-)
-
-// ValidateGeoUpdater 检查 geo 更新方式的设置值。
-func ValidateGeoUpdater(v string) error {
-	if v != GeoUpdaterTunlr && v != GeoUpdaterMihomo {
-		return fmt.Errorf("%w: geo-updater must be %s or %s", core.ErrInvalidArgument, GeoUpdaterTunlr, GeoUpdaterMihomo)
-	}
-	return nil
 }
 
 // PeriodOff 表示不定时更新。
@@ -100,21 +76,6 @@ func DescribePeriod(p string) string {
 		return "every " + p[:len(p)-1] + " hours"
 	}
 	return "every " + p[:len(p)-1] + " days"
-}
-
-// GeoPeriod 返回 geo 数据的更新周期设置，GeoUpdaterValue 返回更新方式（没有设置时为默认值）。
-func (s *Settings) GeoPeriod() string { return cmp.Or(s.GeoUpdate, DefaultGeoUpdate) }
-
-func (s *Settings) GeoUpdaterValue() string { return cmp.Or(s.GeoUpdater, DefaultGeoUpdater) }
-
-// GeoAutoUpdate 返回按设置写入配置的 geo-auto-update 和 geo-update-interval（小时）：由内核自己更新且
-// 没有关闭时打开，间隔为周期；否则关闭，间隔为 0 表示不写。
-func (s *Settings) GeoAutoUpdate() (on bool, intervalHours int) {
-	d, err := ParsePeriod(s.GeoPeriod())
-	if err != nil || d == 0 || s.GeoUpdaterValue() != GeoUpdaterMihomo {
-		return false, 0
-	}
-	return true, int(d / time.Hour)
 }
 
 // Load 读取设置文件。文件不存在时返回默认设置；未知的键视为错误，避免拼写错误被静默忽略。
@@ -199,10 +160,6 @@ func (s *Settings) Entries(defaultUA string) []Entry {
 			Help: "GitHub mirror for mihomo, geo data and the panel (checked against the official sha256); published with the configuration"},
 		{Key: "user-agent", Value: cmp.Or(s.UserAgent, defaultUA), Default: s.UserAgent == "",
 			Help: "User-Agent for fetching subscriptions without their own; used from the next fetch"},
-		{Key: KeyGeoUpdate, Value: s.GeoPeriod(), Default: s.GeoUpdate == "",
-			Help: "how often the geo data is updated: 6h, 1d, 7d ... or off"},
-		{Key: KeyGeoUpdater, Value: s.GeoUpdaterValue(), Default: s.GeoUpdater == "",
-			Help: "who updates the geo data: tunlr (verified) or mihomo (also: tunlr update set geo)"},
 	}
 }
 
@@ -223,12 +180,6 @@ func (s *Settings) validate() error {
 	}
 	if err := ValidateUserAgent(s.UserAgent); err != nil {
 		return fmt.Errorf("user-agent: %w", err)
-	}
-	if _, err := ParsePeriod(s.GeoPeriod()); err != nil {
-		return fmt.Errorf("%s: %w", KeyGeoUpdate, err)
-	}
-	if err := ValidateGeoUpdater(s.GeoUpdaterValue()); err != nil {
-		return err
 	}
 	return nil
 }

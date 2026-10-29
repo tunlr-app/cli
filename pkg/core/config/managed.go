@@ -8,7 +8,7 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// Managed 是 tunlr 的一个交互功能生成的受管 mixin：功能（tun on/off、panel lan、update set geo 等）的
+// Managed 是 tunlr 的一个交互功能生成的受管 mixin：功能（tun on/off、panel lan、proxy lan 等）的
 // 开关存在状态文件或工具设置中，它在配置中写成什么由这份 mixin 表达，与用户的 mixin 用同一套合并引擎。
 // 受管 mixin 只在内存中合成，不写入 mixin.d。
 type Managed struct {
@@ -21,7 +21,7 @@ type Managed struct {
 	Default bool `json:"default"`
 	// Data 是 mixin 的内容。
 	Data []byte `json:"-"`
-	// Owns 是 Data 之外另行独占的键（点分路径），例如自动更新关闭时不写的 geo-update-interval。
+	// Owns 是 Data 之外另行独占的键（点分路径），例如开关关闭时不写的键。
 	Owns []string `json:"owns,omitempty"`
 }
 

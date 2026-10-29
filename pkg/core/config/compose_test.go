@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -351,7 +352,7 @@ func TestRegexpLikeMihomo(t *testing.T) {
 func TestComposeConflicts(t *testing.T) {
 	managed := []Managed{
 		{Name: "tunlr:tun", Command: "tunlr tun on/off", Data: []byte("mihomo:\n  tun:\n    enable: true\n    device: tunlr0\n")},
-		{Name: "tunlr:geo", Command: "tunlr update set geo", Data: []byte("mihomo:\n  geo-auto-update: false\n"), Owns: []string{"geo-update-interval"}},
+		{Name: "tunlr:demo", Command: "tunlr demo set", Data: []byte("mihomo:\n  demo-mode: false\n"), Owns: []string{"demo-interval"}},
 		{Name: "tunlr:core", Data: []byte("mihomo:\n  external-controller-unix: api.sock\n")},
 		{Name: "tunlr:mirror", Default: true, Data: []byte("tunlr:\n  rules:\n    prepend: [DOMAIN,m.example,DIRECT]\nmihomo:\n  external-ui-url: https://m.example/ui.zip\n")},
 	}
@@ -363,9 +364,9 @@ func TestComposeConflicts(t *testing.T) {
 		{"null", "mihomo:\n  x: 1\n  tun:\n    device: null\n", "mixin 10-test.yaml:4: tun.device is managed by tunlr:tun"},
 		{"replace parent", "mihomo:\n  tun: off\n", "mixin 10-test.yaml:2: tun.enable, tun.device are managed by tunlr:tun"},
 		{"delete parent", "mihomo:\n  a: 1\n  tun: null\n", "mixin 10-test.yaml:3: tun.enable, tun.device are managed by tunlr:tun"},
-		{"owned but unset", "mihomo:\n  geo-update-interval: 1\n", "mixin 10-test.yaml:2: geo-update-interval is managed by tunlr:geo (change it with: tunlr update set geo)"},
+		{"owned but unset", "mihomo:\n  demo-interval: 1\n", "mixin 10-test.yaml:2: demo-interval is managed by tunlr:demo (change it with: tunlr demo set)"},
 		{"required", "mihomo:\n  external-controller-unix: x.sock\n", "mixin 10-test.yaml:2: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
-		{"several owners", "mihomo:\n  tun: {enable: false}\n  geo-auto-update: true\n", "mixin 10-test.yaml:2: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); geo-auto-update is managed by tunlr:geo"},
+		{"several owners", "mihomo:\n  tun: {enable: false}\n  demo-mode: true\n", "mixin 10-test.yaml:2: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); demo-mode is managed by tunlr:demo"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			l := mixinLayers(template, tt.mixin)
@@ -386,7 +387,7 @@ func TestComposeConflicts(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "tun:\n  enable: true\n  stack: system\n  device: tunlr0\n\nrules:\n  - MATCH,DIRECT\n\n" +
-		"external-ui-url: https://x.example/ui.zip\ngeo-auto-update: false\nexternal-controller-unix: api.sock\n"
+		"external-ui-url: https://x.example/ui.zip\ndemo-mode: false\nexternal-controller-unix: api.sock\n"
 	if string(res.Config) != want {
 		t.Errorf("config:\n%s\nwant:\n%s", res.Config, want)
 	}
@@ -396,7 +397,7 @@ func TestComposeConflicts(t *testing.T) {
 
 	// Enforce 只写入独占的键。
 	cfg, _, err := Enforce([]byte("tun:\n  enable: false\n"), managed)
-	if err != nil || string(cfg) != "tun:\n  enable: true\n  device: tunlr0\n\ngeo-auto-update: false\nexternal-controller-unix: api.sock\n" {
+	if err != nil || string(cfg) != "tun:\n  enable: true\n  device: tunlr0\n\ndemo-mode: false\nexternal-controller-unix: api.sock\n" {
 		t.Errorf("Enforce = %s, %v", cfg, err)
 	}
 }
@@ -432,5 +433,54 @@ func TestExternalUI(t *testing.T) {
 		if dir, url := f.ExternalUI(home); dir != tt.dir || url != tt.url {
 			t.Errorf("ExternalUI(%q) = %q, %q; want %q, %q", tt.cfg, dir, url, tt.dir, tt.url)
 		}
+	}
+}
+
+// TestComposeDNS 检查订阅的 dns 整段替换模板的，listen 仍用模板的；没有 enable 时 listen 放在最前。
+func TestComposeDNS(t *testing.T) {
+	template := "dns:\n  enable: true\n  listen: 127.0.0.1:1053\n  ipv6: true\n"
+	for _, tt := range []struct {
+		name, sub, want string
+		dropped         []string
+	}{
+		{"listen replaced", "dns:\n  listen: 0.0.0.0:53\n  enable: false\n  nameserver: [1.1.1.1]\n",
+			"dns:\n  enable: false\n  listen: 127.0.0.1:1053\n  nameserver: [1.1.1.1]\n", []string{"dns.listen"}},
+		{"no enable", "dns:\n  nameserver: [1.1.1.1]\n",
+			"dns:\n  listen: 127.0.0.1:1053\n  nameserver: [1.1.1.1]\n", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := Compose(Layers{Template: []byte(template), Subscription: []byte(tt.sub)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(res.Config) != tt.want {
+				t.Errorf("config:\n%s\nwant:\n%s", res.Config, tt.want)
+			}
+			if !slices.Equal(res.Dropped, tt.dropped) {
+				t.Errorf("dropped = %q, want %q", res.Dropped, tt.dropped)
+			}
+		})
+	}
+}
+
+// TestComposeMirrorGeoxURL 检查 geox-url 中 github.com 的地址不论来自哪一层都经镜像，其他地址不变。
+func TestComposeMirrorGeoxURL(t *testing.T) {
+	l := mixinLayers("geox-url:\n  geoip: https://github.com/a/b/releases/download/v1/geoip.dat\n",
+		"mihomo:\n  geox-url:\n    mmdb: https://github.com/c/d/releases/latest/download/geoip.metadb\n    asn: https://cdn.example/asn.mmdb\n")
+	l.Subscription = []byte("geox-url:\n  geosite: https://github.com/e/f/raw/main/geosite.dat\n")
+	l.Mirror = func(u string) string { return "https://m.example/" + u }
+	res, err := Compose(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "geox-url:\n" +
+		"  geosite: https://m.example/https://github.com/e/f/raw/main/geosite.dat\n" +
+		"  mmdb: https://m.example/https://github.com/c/d/releases/latest/download/geoip.metadb\n" +
+		"  asn: https://cdn.example/asn.mmdb\n"
+	if string(res.Config) != want {
+		t.Errorf("config:\n%s\nwant:\n%s", res.Config, want)
+	}
+	if res.Facts.Geo.URLs["mmdb"] != "https://m.example/https://github.com/c/d/releases/latest/download/geoip.metadb" {
+		t.Errorf("facts URLs = %v", res.Facts.Geo.URLs)
 	}
 }

@@ -150,12 +150,9 @@ func TestRollbackChooses(t *testing.T) {
 func TestUpdateSetChooses(t *testing.T) {
 	et := newEditTest(t)
 	addSubscriptions(t, et.a, "main", "main", "backup")
-	// 先选要设置的一项（订阅和 geo 数据都列出），再选周期。
-	et.prompt.picks = []string{"sub backup", "every 6 hours"}
+	// 先选订阅，再选周期。
+	et.prompt.picks = []string{"backup", "every 6 hours"}
 	et.run(0, "update", "set")
-	if opts := strings.Join(et.prompt.asked[0], "|"); !strings.Contains(opts, "sub main * (daily (1d))") || !strings.Contains(opts, "geo (by tunlr)") {
-		t.Errorf("options = %q", opts)
-	}
 	st, _ := state.Load(et.a.layout.StateFile())
 	if got := st.Subscriptions[1].Update; got != "6h" {
 		t.Errorf("backup update = %q\n%s", got, et.stdout)

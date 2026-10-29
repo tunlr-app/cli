@@ -72,26 +72,26 @@ func TestWrite(t *testing.T) {
 		return string(data)
 	}
 
-	if err := Write(path, []byte("geo-update: soon\n"), nil, false); !errors.Is(err, core.ErrInvalidArgument) {
+	if err := Write(path, []byte("github-mirror: soon\n"), nil, false); !errors.Is(err, core.ErrInvalidArgument) {
 		t.Fatalf("invalid: err = %v", err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("invalid content was written: %v", err)
 	}
 
-	v1 := []byte("geo-update: 1d\n")
+	v1 := []byte("user-agent: a\n")
 	if err := Write(path, v1, nil, false); err != nil || read() != string(v1) {
 		t.Fatalf("create: %v", err)
 	}
 	// 编辑时文件还不存在，此后被别人创建了。
-	if err := Write(path, []byte("geo-update: 2d\n"), nil, false); !errors.Is(err, ErrChanged) {
+	if err := Write(path, []byte("user-agent: b\n"), nil, false); !errors.Is(err, ErrChanged) {
 		t.Fatalf("created meanwhile: err = %v", err)
 	}
 	// 编辑期间文件内容变了。
-	if err := Write(path, []byte("geo-update: 2d\n"), []byte("other\n"), true); !errors.Is(err, ErrChanged) {
+	if err := Write(path, []byte("user-agent: b\n"), []byte("other\n"), true); !errors.Is(err, ErrChanged) {
 		t.Fatalf("changed meanwhile: err = %v", err)
 	}
-	v2 := []byte("geo-update: 2d\n")
+	v2 := []byte("user-agent: b\n")
 	if err := Write(path, v2, v1, true); err != nil || read() != string(v2) {
 		t.Fatalf("update: %v", err)
 	}
@@ -116,8 +116,6 @@ func TestEntries(t *testing.T) {
 	want := []Entry{
 		{Key: "github-mirror", Value: "", Default: true},
 		{Key: "user-agent", Value: "ua/1", Default: true},
-		{Key: KeyGeoUpdate, Value: DefaultGeoUpdate, Default: true},
-		{Key: KeyGeoUpdater, Value: DefaultGeoUpdater, Default: true},
 	}
 	check := func(got, want []Entry) {
 		t.Helper()
@@ -133,11 +131,9 @@ func TestEntries(t *testing.T) {
 	}
 	check(got, want)
 
-	set := &Settings{Version: Version, GitHubMirror: "https://m/", UserAgent: "x", GeoUpdate: "off", GeoUpdater: "mihomo"}
+	set := &Settings{Version: Version, GitHubMirror: "https://m/", UserAgent: "x"}
 	check(set.Entries("ua/1"), []Entry{
 		{Key: "github-mirror", Value: "https://m/"},
 		{Key: "user-agent", Value: "x"},
-		{Key: KeyGeoUpdate, Value: "off"},
-		{Key: KeyGeoUpdater, Value: "mihomo"},
 	})
 }

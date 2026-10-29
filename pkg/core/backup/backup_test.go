@@ -29,7 +29,7 @@ func sample() *Backup {
 		Devices:   []state.Device{{IP: "192.168.1.5", Name: "tv", Route: state.RouteDirect}},
 		Filter:    state.Filter{QUIC: true},
 		Switches:  Switches{Tun: true, Gateway: "ens3", PanelLAN: true},
-		Settings:  []byte("geo-update: 1d\n"),
+		Settings:  []byte("user-agent: x\n"),
 		Mixins: []config.Mixin{{Name: "10-a.yaml", Data: []byte("a: 1\n")}, {Name: "20-b.yaml", Data: []byte("b: 2\n")},
 			{Name: "main/10-filter.yaml", Data: []byte("c: 3\n")}},
 		Contents: map[string][]byte{"main": []byte("proxies: []\n")},

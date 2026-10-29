@@ -53,11 +53,9 @@ func TestSchedules(t *testing.T) {
 	if spare.Name != "spare" || spare.Active || spare.Period != settings.PeriodOff || !spare.Next.IsZero() {
 		t.Errorf("spare = %+v", spare)
 	}
-	if geo.Task != TaskGeo || geo.Period != "7d" || geo.Updater != settings.GeoUpdaterTunlr || geo.Last != nil || geo.Due(testNow) ||
-		!geo.Next.Equal(testNow.Add(-36*time.Hour+7*24*time.Hour)) {
+	if geo.Task != TaskGeo || geo.Period != "7d" || geo.Last != nil || !geo.Updated.IsZero() || !geo.Next.IsZero() || geo.Due(testNow) {
 		t.Errorf("geo = %+v", geo)
 	}
-
 	// 抓取失败后最多 6 小时再试。
 	st := tunSwitch(t, i)
 	st.Subscriptions[0].LastError, st.Subscriptions[0].LastErrorAt = "HTTP 500", testNow.Add(-time.Hour)
@@ -69,40 +67,77 @@ func TestSchedules(t *testing.T) {
 		t.Errorf("after a failure: %+v", s)
 	}
 
-	// 由内核自己更新 geo 数据时没有到期时间，最近一次更新是最新的 geo 文件的修改时间。
-	if err := i.SetGeoUpdate(context.Background(), "", settings.GeoUpdaterMihomo); err != nil {
-		t.Fatal(err)
-	}
-	if scheds, _ = i.Schedules(); scheds[2].Updater != settings.GeoUpdaterMihomo || !scheds[2].Next.IsZero() || scheds[2].Last != nil {
-		t.Errorf("mihomo updater: %+v", scheds[2])
-	}
-	geoFile := filepath.Join(i.Layout.CoreDir(), "geosite.dat")
-	if err := os.WriteFile(geoFile, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// geo 数据由内核更新：下次更新是最新的 geo 文件之后再过一个周期；文件比上次核对新时到期核对。
 	mtime := testNow.Add(-3 * 24 * time.Hour)
-	if err := os.Chtimes(geoFile, mtime, mtime); err != nil {
-		t.Fatal(err)
+	writeGeoFile(t, i, "geosite.dat", mtime)
+	geo = geoSchedule(t, i)
+	if !geo.Updated.Equal(mtime) || !geo.Next.Equal(mtime.Add(7*24*time.Hour)) || !geo.Due(testNow) {
+		t.Errorf("with a geo file: %+v", geo)
 	}
-	if scheds, _ = i.Schedules(); scheds[2].Last == nil || !scheds[2].Last.At.Equal(mtime) {
-		t.Errorf("mihomo updater with a geo file: %+v", scheds[2])
+	for _, tt := range []struct {
+		name string
+		run  state.UpdateRun
+		due  bool
+	}{
+		{"verified after the update", state.UpdateRun{At: testNow.Add(-24 * time.Hour), Status: StepOK}, false},
+		{"verified before the update", state.UpdateRun{At: mtime.Add(-time.Hour), Status: StepOK}, true},
+		{"failed recently", state.UpdateRun{At: testNow.Add(-time.Hour), Status: StepFailed}, false},
+		{"failed long ago", state.UpdateRun{At: testNow.Add(-7 * time.Hour), Status: StepFailed}, true},
+	} {
+		st := tunSwitch(t, i)
+		st.Updates = map[string]state.UpdateRun{TaskGeo: tt.run}
+		if err := state.Save(i.Layout.StateFile(), st); err != nil {
+			t.Fatal(err)
+		}
+		if geo := geoSchedule(t, i); geo.Due(testNow) != tt.due || geo.Last == nil {
+			t.Errorf("%s: %+v", tt.name, geo)
+		}
 	}
 
-	// 关闭后没有到期时间，也就不会到期；非法的值不保存。
-	if err := i.SetGeoUpdate(context.Background(), settings.PeriodOff, ""); err != nil {
-		t.Fatal(err)
+	// 周期取自发布的配置：关闭自动更新时为 off，没有下次更新。
+	writeCoreConfig(t, i, "geo-auto-update: false\n")
+	if geo := geoSchedule(t, i); geo.Period != settings.PeriodOff || !geo.Next.IsZero() {
+		t.Errorf("off: %+v", geo)
 	}
-	if scheds, _ = i.Schedules(); !scheds[2].Next.IsZero() || scheds[2].Due(testNow) || scheds[2].Updater != settings.GeoUpdaterTunlr {
-		t.Errorf("off: %+v", scheds[2])
-	}
-	if err := i.SetGeoUpdate(context.Background(), "2w", ""); err == nil {
-		t.Error("invalid period accepted")
-	}
-	if err := i.SetGeoUpdate(context.Background(), "", "clash"); err == nil {
-		t.Error("invalid updater accepted")
+	writeCoreConfig(t, i, "geo-auto-update: true\ngeo-update-interval: 6\n")
+	if geo := geoSchedule(t, i); geo.Period != "6h" || !geo.Next.Equal(mtime.Add(6*time.Hour)) {
+		t.Errorf("6 hours: %+v", geo)
 	}
 }
 
+func geoSchedule(t *testing.T, i *Installer) Schedule {
+	t.Helper()
+	scheds, err := i.Schedules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scheds[len(scheds)-1]
+}
+
+func writeGeoFile(t *testing.T, i *Installer, name string, mtime time.Time) {
+	t.Helper()
+	path := filepath.Join(i.Layout.CoreDir(), name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeCoreConfig 写入发布的配置（只用来读 geo 的设置）。
+func writeCoreConfig(t *testing.T, i *Installer, cfg string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(i.Layout.CoreConfig()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(i.Layout.CoreConfig(), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
 func TestUpdateRunsDueTasks(t *testing.T) {
 	ctx := context.Background()
 	i, _, _ := newTunInstaller(t)
@@ -126,6 +161,18 @@ func TestUpdateRunsDueTasks(t *testing.T) {
 	// 失败后 6 小时内不再试，再次唤醒时没有到期的任务，什么都不做。
 	if res, err = i.Update(ctx, UpdateOptions{}); err != nil || len(res.Tasks) != 0 || len(res.Steps) != 0 {
 		t.Errorf("second run: %+v, %v", res, err)
+	}
+
+	// 内核更新过 geo 数据后到期核对；来源不是 GitHub release 资产的不核对（也不访问网络）。
+	writeCoreConfig(t, i, "geox-url:\n  geosite: http://127.0.0.1:1/geosite.dat\n")
+	writeGeoFile(t, i, "GeoSite.dat", testNow.Add(-time.Hour))
+	res, err = i.Update(ctx, UpdateOptions{})
+	if err != nil || len(res.Tasks) != 1 || res.Tasks[0] != TaskGeo || stepNames(res) != "geo,kernel" ||
+		res.Steps[0].Status != StepOK || res.Steps[0].Message != "GeoSite.dat from a custom source, not verified" {
+		t.Fatalf("geo due: %+v, %v", res, err)
+	}
+	if res, err = i.Update(ctx, UpdateOptions{}); err != nil || len(res.Tasks) != 0 {
+		t.Errorf("geo verified twice: %+v, %v", res, err)
 	}
 
 	// 手动执行不看周期：订阅任务抓取全部订阅（包括不自动更新的），geo 任务记入状态文件。
@@ -154,7 +201,7 @@ func TestSyncTimers(t *testing.T) {
 	i, h, _ := newTunInstaller(t)
 	installedAt(t, i, testNow.Add(-36*time.Hour), testNow.Add(-25*time.Hour))
 	// 还没有安装 unit 时不碰 timer。
-	if err := i.SetGeoUpdate(ctx, settings.PeriodOff, ""); err != nil || len(h.calls) != 0 {
+	if err := i.SyncTimers(ctx); err != nil || len(h.calls) != 0 {
 		t.Fatalf("not installed: %v, %q", err, h.calls)
 	}
 	if err := os.MkdirAll(i.Layout.UnitDir(), 0o755); err != nil {
@@ -163,33 +210,25 @@ func TestSyncTimers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(i.Layout.UnitDir(), service.CoreUnit), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 已安装时修改设置随即同步 timer：geo 关闭但 home 仍每天更新，tunlr-update.timer 保持启用。
-	if err := i.SetGeoUpdate(ctx, settings.PeriodOff, ""); err != nil {
+	if err := i.SyncTimers(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if !h.called("systemctl enable --now "+service.UpdateTimer) || !h.called("systemctl disable --now "+service.CheckTimer) {
 		t.Errorf("calls = %q", h.calls)
 	}
-	// 全部订阅都不自动更新、geo 也关闭时停用。
+	// 全部订阅都不自动更新、配置中也关闭了 geo 数据的自动更新时，tunlr-update.timer 仍然启用：面板随时
+	// 可以让内核更新 geo 数据，之后要核对。
 	st := tunSwitch(t, i)
 	st.Subscriptions[0].Update = settings.PeriodOff
 	if err := state.Save(i.Layout.StateFile(), st); err != nil {
 		t.Fatal(err)
 	}
+
+	writeCoreConfig(t, i, "geo-auto-update: false\n")
 	h.calls = nil
-	if err := i.SyncTimers(ctx); err != nil || !h.called("systemctl disable --now "+service.UpdateTimer) {
+	if err := i.SyncTimers(ctx); err != nil || !h.called("systemctl enable --now "+service.UpdateTimer) {
 		t.Errorf("all off: %v, %q", err, h.calls)
 	}
-	// 由内核自己更新 geo 数据不需要 timer。
-	h.calls = nil
-	if err := i.SetGeoUpdate(ctx, "", settings.GeoUpdaterMihomo); err != nil || !h.called("systemctl disable --now "+service.UpdateTimer) {
-		t.Errorf("mihomo updater: %v, %q", err, h.calls)
-	}
-	h.calls = nil
-	if err := i.SetGeoUpdate(ctx, "", ""); err != nil || !h.called("systemctl enable --now "+service.UpdateTimer) {
-		t.Errorf("defaults: %v, %q", err, h.calls)
-	}
-
 	// 透明代理开启时启用检查。
 	st = tunSwitch(t, i)
 	st.SetTun(state.TunOn, time.Time{})

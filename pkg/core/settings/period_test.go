@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -37,59 +36,19 @@ func TestDescribePeriod(t *testing.T) {
 	}
 }
 
-func TestGeoUpdateSettings(t *testing.T) {
+func TestSetAfterDeletingEveryKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.yaml")
-	s, err := Load(path)
-	if err != nil || s.GeoPeriod() != DefaultGeoUpdate || s.GeoUpdaterValue() != GeoUpdaterTunlr {
-		t.Fatalf("defaults: %+v, %v", s, err)
-	}
-	if on, _ := s.GeoAutoUpdate(); on {
-		t.Error("geo-auto-update on by default")
-	}
-	if err := Set(path, KeyGeoUpdate, "12x"); !errors.Is(err, core.ErrInvalidArgument) {
-		t.Errorf("invalid period saved: %v", err)
-	}
-	if err := Set(path, KeyGeoUpdater, "clash"); !errors.Is(err, core.ErrInvalidArgument) {
-		t.Errorf("invalid updater saved: %v", err)
-	}
-	if err := Set(path, KeyGeoUpdate, "2d"); err != nil {
+	if err := Set(path, "user-agent", "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Set(path, KeyGeoUpdater, GeoUpdaterMihomo); err != nil {
+	if err := Set(path, "user-agent", ""); err != nil {
 		t.Fatal(err)
 	}
-	s, err = Load(path)
-	if err != nil {
+	// 删光键再写入时仍是一行一个键，不是 "{user-agent: y}"。
+	if err := Set(path, "user-agent", "y"); err != nil {
 		t.Fatal(err)
 	}
-	if on, hours := s.GeoAutoUpdate(); !on || hours != 48 {
-		t.Errorf("mihomo updater: on %v, %d hours", on, hours)
-	}
-	if err := Set(path, KeyGeoUpdate, "off"); err != nil {
-		t.Fatal(err)
-	}
-	if s, _ = Load(path); s == nil {
-		t.Fatal("load")
-	} else if on, _ := s.GeoAutoUpdate(); on {
-		t.Error("off with the mihomo updater still turns geo-auto-update on")
-	}
-	// 删光键再写入时仍是一行一个键，不是 "{geo-update: 2d}"。
-	if err := Set(path, KeyGeoUpdate, ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := Set(path, KeyGeoUpdater, ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := Set(path, KeyGeoUpdate, "2d"); err != nil {
-		t.Fatal(err)
-	}
-	if data, _ := os.ReadFile(path); !strings.Contains(string(data), "\ngeo-update: 2d\n") && !strings.HasPrefix(string(data), "geo-update: 2d\n") {
+	if data, _ := os.ReadFile(path); string(data) != "user-agent: y\n" {
 		t.Errorf("after deleting every key, the file is written as %q", data)
-	}
-	if err := os.WriteFile(path, []byte("geo-update: 2w\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(path); err == nil {
-		t.Error("a hand-written invalid period was accepted")
 	}
 }

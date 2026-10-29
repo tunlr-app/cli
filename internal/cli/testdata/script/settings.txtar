@@ -2,8 +2,7 @@
 exec tunlr settings
 stdout '^github-mirror +none \(direct\)$'
 stdout '^user-agent +clash\.meta mihomo tunlr/.* \(default\)$'
-stdout '^geo-update +7d \(default\)$'
-stdout '^geo-updater +tunlr \(default\)$'
+! stdout '^geo-'
 stdout 'tunlr settings edit changes it'
 exec tunlr settings --json
 stdout '"key": "github-mirror"'
@@ -15,8 +14,7 @@ mkdir root/etc/tunlr
 cp settings.yaml root/etc/tunlr/settings.yaml
 exec tunlr settings
 stdout '^github-mirror +https://gh-proxy\.com/$'
-stdout '^geo-update +1d$'
-stdout '^geo-updater +tunlr \(default\)$'
+stdout '^user-agent +clash\.meta$'
 exec tunlr settings --json
 stdout '"value": "https://gh-proxy.com/"'
 
@@ -31,6 +29,6 @@ stderr 'settings edit needs a terminal; edit .*settings\.yaml directly, then run
 
 -- settings.yaml --
 github-mirror: https://gh-proxy.com/
-geo-update: 1d
+user-agent: clash.meta
 -- bad.yaml --
 github_mirror: https://gh-proxy.com/

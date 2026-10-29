@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -197,5 +198,82 @@ func TestGeoFilesFor(t *testing.T) {
 		if got := names(GeoFilesFor(needs)); got != c.want {
 			t.Errorf("%q: got %s, want %s", c.cfg, got, c.want)
 		}
+	}
+}
+
+func TestGeoFileSource(t *testing.T) {
+	for _, tt := range []struct {
+		urls map[string]string
+		want GeoSource
+	}{
+		{nil, GeoSource{URL: GeoMMDB.URL(), Repo: geoRepo, Tag: geoTag, Asset: "geoip.metadb"}},
+		{map[string]string{"mmdb": "https://github.com/a/b/releases/latest/download/country.mmdb"},
+			GeoSource{URL: "https://github.com/a/b/releases/latest/download/country.mmdb", Repo: "a/b", Asset: "country.mmdb"}},
+		{map[string]string{"mmdb": "https://m.example/https://github.com/a/b/releases/download/v1/c.mmdb"},
+			GeoSource{URL: "https://m.example/https://github.com/a/b/releases/download/v1/c.mmdb", Repo: "a/b", Tag: "v1", Asset: "c.mmdb"}},
+		{map[string]string{"mmdb": "https://github.com/a/b/raw/main/c.mmdb"}, GeoSource{URL: "https://github.com/a/b/raw/main/c.mmdb"}},
+		{map[string]string{"mmdb": "https://ghfast.example/https://github.com/a/b/releases/download/v2/c.mmdb"},
+			GeoSource{URL: "https://ghfast.example/https://github.com/a/b/releases/download/v2/c.mmdb", Repo: "a/b", Tag: "v2", Asset: "c.mmdb"}},
+		{map[string]string{"mmdb": "https://cdn.example/c.mmdb"}, GeoSource{URL: "https://cdn.example/c.mmdb"}},
+	} {
+		if got := GeoMMDB.Source(tt.urls); got != tt.want {
+			t.Errorf("Source(%v) = %+v, want %+v", tt.urls, got, tt.want)
+		}
+	}
+}
+
+// TestVerifyGeo 验证核对 geo 文件：与官方 sha256 一致的保留，不一致的换成校验过的文件，来源不是 GitHub
+// release 资产的不核对；EnsureGeo 原样下载这样的来源。
+func TestVerifyGeo(t *testing.T) {
+	good := []byte("good mmdb")
+	sum := sha256.Sum256(good)
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/a/b/releases/latest":
+			json.NewEncoder(w).Encode(map[string]any{"assets": []download.Asset{{
+				Name: "c.mmdb", Size: int64(len(good)),
+				Digest: "sha256:" + hex.EncodeToString(sum[:]), URL: srv.URL + "/dl/c.mmdb",
+			}}})
+		case "/dl/c.mmdb":
+			w.Write(good)
+		case "/custom/geosite.dat":
+			w.Write([]byte("custom geosite"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	d := &download.Client{APIBase: srv.URL}
+	home := t.TempDir()
+	urls := map[string]string{
+		"mmdb":    "https://github.com/a/b/releases/latest/download/c.mmdb",
+		"geosite": srv.URL + "/custom/geosite.dat",
+	}
+	ctx := context.Background()
+	got, err := EnsureGeo(ctx, d, home, []GeoFile{GeoSite}, urls, nil)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("EnsureGeo = %v, %v", got, err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(home, "GeoSite.dat")); string(data) != "custom geosite" {
+		t.Fatalf("custom source downloaded as %q", data)
+	}
+	if err := os.WriteFile(filepath.Join(home, "Country.mmdb"), []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	check, err := VerifyGeo(ctx, d, home, AllGeoFiles, urls, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(check.Replaced, []string{"Country.mmdb"}) || len(check.Verified) != 0 || !slices.Equal(check.Unverified, []string{"GeoSite.dat"}) {
+		t.Fatalf("first check = %+v", check)
+	}
+	if data, _ := os.ReadFile(filepath.Join(home, "Country.mmdb")); string(data) != string(good) {
+		t.Fatalf("not replaced: %q", data)
+	}
+	check, err = VerifyGeo(ctx, d, home, AllGeoFiles, urls, nil)
+	if err != nil || !slices.Equal(check.Verified, []string{"Country.mmdb"}) || len(check.Replaced) != 0 {
+		t.Fatalf("second check = %+v, %v", check, err)
 	}
 }

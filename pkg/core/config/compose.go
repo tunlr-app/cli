@@ -5,19 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
 
-// routingKeys 是从订阅中采用的顶层键，即路由部分。订阅的其余键一律丢弃，
-// 避免机场配置打开端口、改监听地址或设置 API。
-var routingKeys = map[string]bool{
-	"proxies":         true,
-	"proxy-groups":    true,
-	"rules":           true,
-	"proxy-providers": true,
-	"rule-providers":  true,
-	"sub-rules":       true,
+// subscriptionKeys 是从订阅中采用的顶层键：路由，以及和规则配套的解析与数据（DNS、hosts、嗅探、
+// geo 数据的来源和自动更新）。其余的键（端口、监听地址、API、TUN、运行参数）一律丢弃，避免机场配置
+// 打开端口、改监听地址或设置 API；内核新增的键在评估之前也丢弃，用户在 config plan 中看得到。
+// 采用的键整个替换模板中的同名键，dns.listen 除外（见 Compose）。
+var subscriptionKeys = map[string]bool{
+	"proxies":             true,
+	"proxy-groups":        true,
+	"rules":               true,
+	"proxy-providers":     true,
+	"rule-providers":      true,
+	"sub-rules":           true,
+	"dns":                 true,
+	"hosts":               true,
+	"sniffer":             true,
+	"geox-url":            true,
+	"geodata-mode":        true,
+	"geodata-loader":      true,
+	"geo-auto-update":     true,
+	"geo-update-interval": true,
 }
 
 // maxNodes 限制展开锚点和别名后的 YAML 节点数，防止恶意订阅用别名放大。
@@ -30,13 +41,15 @@ var ErrNotMapping = errors.New("not a YAML mapping")
 type Layers struct {
 	// Template 是工具内置的基础配置（系统部分）。
 	Template []byte
-	// Subscription 是机场提供的完整配置，只采用其中的路由部分。
+	// Subscription 是机场提供的完整配置，只采用 subscriptionKeys 列出的部分。
 	Subscription []byte
 	// Managed 是 tunlr 的交互功能生成的受管 mixin，语义见 Managed：提供默认值的在用户的 mixin
 	// 之前应用，独占键的在之后应用。
 	Managed []Managed
 	// Mixins 是用户的 mixin 文件，按顺序逐个应用，语义见 Mixin。
 	Mixins []Mixin
+	// Mirror 不为 nil 时，合成的最后把 geox-url 中 github.com 的地址换成它返回的经镜像的地址。
+	Mirror func(url string) string
 }
 
 // Result 是合成的结果。
@@ -75,12 +88,21 @@ func Compose(l Layers) (*Result, error) {
 	}
 	m := &mixer{root: root, subKeys: map[string]bool{}, setBy: map[string]string{}}
 	if sub != nil {
+		// 订阅的 DNS 整段替换模板的，但监听地址仍用模板的：机场常写 0.0.0.0:53，在公网服务器上
+		// 就是开放的 DNS 解析器（见 CheckExposure）。
+		listen := lookup(root, []string{"dns", "listen"})
 		s := sub.Content[0]
 		for i := 0; i < len(s.Content); i += 2 {
 			k, v := s.Content[i].Value, s.Content[i+1]
-			if !routingKeys[k] {
+			if !subscriptionKeys[k] {
 				res.Dropped = append(res.Dropped, k)
 				continue
+			}
+			if k == "dns" && v.Kind == yaml.MappingNode {
+				var dropped bool
+				if v, dropped = withListen(v, listen); dropped {
+					res.Dropped = append(res.Dropped, "dns.listen")
+				}
 			}
 			// 用新的键节点，不带入订阅里附在键上的注释。
 			setValue(root, k, v)
@@ -166,6 +188,9 @@ func Compose(l Layers) (*Result, error) {
 			mergeMapping(root, mihomoOf(doc.Content[0]))
 		}
 	}
+	if l.Mirror != nil {
+		mirrorGeoxURL(root, l.Mirror)
+	}
 	res.Facts = factsOf(root)
 
 	out, err := encode(doc)
@@ -174,6 +199,43 @@ func Compose(l Layers) (*Result, error) {
 	}
 	res.Config = spaceSections(out)
 	return res, nil
+}
+
+// withListen 返回去掉了 listen 的 DNS 映射 dns 的拷贝（不改动 dns）；listen 不为 nil 时换成它，
+// 放在 enable 之后（没有 enable 时放在最前）。dropped 报告 dns 原来是否有 listen。
+func withListen(dns, listen *yaml.Node) (out *yaml.Node, dropped bool) {
+	c := *dns
+	c.Content = make([]*yaml.Node, 0, len(dns.Content)+2)
+	at := 0
+	for i := 0; i+1 < len(dns.Content); i += 2 {
+		switch dns.Content[i].Value {
+		case "listen":
+			dropped = true
+			continue
+		case "enable":
+			at = len(c.Content) + 2
+		}
+		c.Content = append(c.Content, dns.Content[i], dns.Content[i+1])
+	}
+	if listen != nil {
+		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "listen"}
+		c.Content = slices.Insert(c.Content, at, key, clone(listen))
+	}
+	return &c, dropped
+}
+
+// mirrorGeoxURL 把 geox-url 中指向 github.com 的地址换成 mirror 返回的经镜像的地址，不论它来自模板、
+// 订阅还是 mixin，与 tunlr 自己的 GitHub 下载一致。其他地址原样保留。
+func mirrorGeoxURL(root *yaml.Node, mirror func(string) string) {
+	m := lookup(root, []string{"geox-url"})
+	if m == nil || m.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 1; i < len(m.Content); i += 2 {
+		if v := m.Content[i]; v.Kind == yaml.ScalarNode && strings.HasPrefix(v.Value, "https://github.com/") {
+			m.Content[i] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: mirror(v.Value)}
+		}
+	}
 }
 
 // Enforce 把 managed 中独占键的受管 mixin 写入已经合成好的配置 cfg（例如回滚到的历史修订），

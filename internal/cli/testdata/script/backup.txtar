@@ -120,4 +120,4 @@ tunlr:
     prepend:
       - DOMAIN,other.example,DIRECT
 -- settings.yaml --
-geo-update: 1d
+user-agent: backup-test
