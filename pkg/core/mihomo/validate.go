@@ -29,6 +29,9 @@ type Validator struct {
 	Binary string
 	// HomeDir 是内核的工作目录。其中的 geo 文件提供给校验使用，缺失的会下载到这里。
 	HomeDir string
+	// Staged 不为空时，其中的 geo 文件（见 StageGeo）代替 HomeDir 中的同类文件提供给校验：配置改了它们的来源，
+	// 发布时才换进 HomeDir。
+	Staged string
 	// Download 用于下载缺失的 geo 文件；为空时不下载。
 	Download *download.Client
 	// RunAs 是运行 mihomo -t 的身份，也是下载到 HomeDir 的 geo 文件的属主。内核二进制可被内核用户改写，
@@ -98,7 +101,7 @@ func (v *Validator) test(ctx context.Context, cfg []byte) error {
 		return err
 	}
 	defer os.RemoveAll(tmp)
-	if err := linkGeo(v.HomeDir, tmp); err != nil {
+	if err := linkGeo(v.Staged, v.HomeDir, tmp); err != nil {
 		return err
 	}
 	cfgPath := filepath.Join(tmp, "config.yaml")
@@ -134,14 +137,19 @@ func (v *Validator) test(ctx context.Context, cfg []byte) error {
 	return parseTestOutput(string(out), ee.ExitCode())
 }
 
-// linkGeo 把 home 中的 geo 文件以符号链接放进 dst；文件系统不支持符号链接时复制。
-func linkGeo(home, dst string) error {
-	if home == "" {
-		return nil
-	}
+// linkGeo 把 home 中的 geo 文件以符号链接放进 dst，staged 中有的同类文件优先；文件系统不支持符号链接时复制。
+func linkGeo(staged, home, dst string) error {
 	for _, f := range AllGeoFiles {
-		p, err := findGeo(home, f)
-		if err != nil || p == "" {
+		var p string
+		for _, dir := range []string{staged, home} {
+			if dir == "" || p != "" {
+				continue
+			}
+			if found, err := findGeo(dir, f); err == nil {
+				p = found
+			}
+		}
+		if p == "" {
 			continue
 		}
 		abs, err := filepath.Abs(p)

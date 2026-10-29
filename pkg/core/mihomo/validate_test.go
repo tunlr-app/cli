@@ -277,3 +277,95 @@ func TestVerifyGeo(t *testing.T) {
 		t.Fatalf("second check = %+v, %v", check, err)
 	}
 }
+
+func TestGeoSourceSame(t *testing.T) {
+	gh := "https://github.com/a/b/releases/download/v1/geosite.dat"
+	for _, tt := range []struct {
+		a, b string
+		same bool
+	}{
+		{gh, gh, true},
+		{gh, "https://m.example/" + gh, true},
+		{gh, "https://github.com/a/b/releases/download/v2/geosite.dat", false},
+		{gh, "https://cdn.example/geosite.dat", false},
+		{"https://cdn.example/geosite.dat", "https://cdn.example/geosite.dat", true},
+		{"https://github.com/a/b/raw/main/geosite.dat", "https://m.example/https://github.com/a/b/raw/main/geosite.dat", true},
+	} {
+		a, b := GeoSite.Source(map[string]string{"geosite": tt.a}), GeoSite.Source(map[string]string{"geosite": tt.b})
+		if a.Same(b) != tt.same || b.Same(a) != tt.same {
+			t.Errorf("%s vs %s: same = %v", tt.a, tt.b, a.Same(b))
+		}
+	}
+}
+
+// TestStageGeo 验证来源变化的 geo 文件：只列出已有、来源变了的；暂存后发布时换进工作目录，可以换回；
+// 暂存的文件被改过时拒绝替换。
+func TestStageGeo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("new " + r.URL.Path))
+	}))
+	defer srv.Close()
+	home, stage := t.TempDir(), filepath.Join(t.TempDir(), "staged")
+	for name, data := range map[string]string{"geosite.dat": "old geosite", "Country.mmdb": "old mmdb"} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := map[string]string{"mmdb": "https://m.example/" + GeoMMDB.URL()}
+	new := map[string]string{"mmdb": GeoMMDB.URL(), "geosite": srv.URL + "/geosite.dat", "asn": srv.URL + "/asn.mmdb"}
+	changed, err := GeoSourceChanges(home, AllGeoFiles, old, new)
+	if err != nil || len(changed) != 1 || changed[0].Name != GeoSite.Name {
+		t.Fatalf("changes = %v, %v", changed, err)
+	}
+
+	sums, err := StageGeo(context.Background(), &download.Client{}, stage, changed, new, nil)
+	if err != nil || len(sums) != 1 {
+		t.Fatalf("StageGeo = %v, %v", sums, err)
+	}
+	undo, err := InstallStagedGeo(stage, home, sums)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 替换的是已有的文件（文件名不区分大小写），不另建一份。
+	if data, _ := os.ReadFile(filepath.Join(home, "geosite.dat")); string(data) != "new /geosite.dat" {
+		t.Fatalf("not replaced: %q", data)
+	}
+	if err := undo(); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(home, "geosite.dat")); string(data) != "old geosite" {
+		t.Fatalf("not put back: %q", data)
+	}
+
+	if sums, err = StageGeo(context.Background(), &download.Client{}, stage, changed, new, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stage, "GeoSite.dat"), []byte("other"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallStagedGeo(stage, home, sums); !errors.Is(err, ErrStagedGeoChanged) {
+		t.Fatalf("changed staging: %v", err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(home, "geosite.dat")); string(data) != "old geosite" {
+		t.Fatalf("replaced despite the change: %q", data)
+	}
+}
+
+func TestLinkGeoPrefersStaged(t *testing.T) {
+	home, staged, dst := t.TempDir(), t.TempDir(), t.TempDir()
+	for _, f := range []struct{ dir, name, data string }{
+		{home, "GeoSite.dat", "old"}, {home, "geoip.metadb", "mmdb"}, {staged, "GeoSite.dat", "new"},
+	} {
+		if err := os.WriteFile(filepath.Join(f.dir, f.name), []byte(f.data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := linkGeo(staged, home, dst); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"GeoSite.dat": "new", "geoip.metadb": "mmdb"} {
+		if data, err := os.ReadFile(filepath.Join(dst, name)); err != nil || string(data) != want {
+			t.Errorf("%s = %q, %v", name, data, err)
+		}
+	}
+}

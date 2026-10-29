@@ -6,11 +6,15 @@ package mihomo
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -76,14 +80,129 @@ func (f GeoFile) Source(urls map[string]string) GeoSource {
 	if s.URL == "" {
 		s.URL = f.URL()
 	}
-	raw := s.URL
-	if i := strings.Index(raw, "/https://github.com/"); i >= 0 {
-		raw = raw[i+1:]
-	}
-	if m := releaseAsset.FindStringSubmatch(raw); m != nil {
+	if m := releaseAsset.FindStringSubmatch(withoutMirror(s.URL)); m != nil {
 		s.Repo, s.Tag, s.Asset = m[1], m[2], m[3]
 	}
 	return s
+}
+
+// withoutMirror 去掉经 GitHub 镜像的地址的镜像前缀，其他地址原样返回。
+func withoutMirror(url string) string {
+	if i := strings.Index(url, "/https://github.com/"); i >= 0 {
+		return url[i+1:]
+	}
+	return url
+}
+
+// Same 报告 s 与 o 是否为同一份数据：同一个 GitHub release 资产，或去掉镜像前缀后地址相同。只换了镜像
+// 不算来源变化。
+func (s GeoSource) Same(o GeoSource) bool {
+	if s.Verifiable() || o.Verifiable() {
+		return s.Repo == o.Repo && s.Tag == o.Tag && s.Asset == o.Asset
+	}
+	return withoutMirror(s.URL) == withoutMirror(o.URL)
+}
+
+// GeoSourceChanges 返回 home 中已有的 files 里，geox-url 从 old 变为 new 后来源不同的文件。缺失的文件
+// 不在其中：它们本来就按 new 下载（见 EnsureGeo）。
+func GeoSourceChanges(home string, files []GeoFile, old, new map[string]string) ([]GeoFile, error) {
+	var changed []GeoFile
+	for _, f := range files {
+		if f.Source(old).Same(f.Source(new)) {
+			continue
+		}
+		if p, err := findGeo(home, f); err != nil {
+			return nil, err
+		} else if p != "" {
+			changed = append(changed, f)
+		}
+	}
+	return changed, nil
+}
+
+// fetchGeo 按 geox-url（urls）下载 f：来源是 GitHub release 资产的按官方 sha256 校验，其他来源原样下载。
+func fetchGeo(ctx context.Context, d *download.Client, f GeoFile, urls map[string]string) ([]byte, error) {
+	if src := f.Source(urls); src.Verifiable() {
+		return d.Fetch(ctx, src.Repo, src.Tag, src.Asset)
+	}
+	return d.GetUnverified(ctx, f.Name, f.Source(urls).URL)
+}
+
+// StageGeo 清空 dir，把 files 按 geox-url（urls）下载到其中（文件名为 GeoFile.Name，属主为 owner），
+// 返回各文件的 sha256。用于来源变化的 geo 文件：校验时代替工作目录中的旧文件（见 Validator.Staged），
+// 发布时换进工作目录（见 InstallStagedGeo）。
+func StageGeo(ctx context.Context, d *download.Client, dir string, files []GeoFile, urls map[string]string, owner *fsutil.Owner) (map[string]string, error) {
+	if err := os.RemoveAll(dir); err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	sums := map[string]string{}
+	for _, f := range files {
+		data, err := fetchGeo(ctx, d, f, urls)
+		if err != nil {
+			return nil, fmt.Errorf("download %s from its new source: %w", f.Name, err)
+		}
+		if err := fsutil.WriteFileOwned(filepath.Join(dir, f.Name), data, 0o644, owner); err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(data)
+		sums[f.Name] = hex.EncodeToString(sum[:])
+	}
+	return sums, nil
+}
+
+// ErrStagedGeoChanged 表示暂存的 geo 文件与计划时下载的不同（期间又生成了别的计划）。
+var ErrStagedGeoChanged = errors.New("the geo data downloaded for this plan has changed; plan again")
+
+// InstallStagedGeo 把 StageGeo 暂存在 dir 中的文件（sums 是计划时记下的 sha256）换进 home：替换已有的
+// 同类文件（文件名可能是别名，原样保留），原来的文件移到 dir 中。返回的 undo 把原来的文件换回去。
+// 先核对全部暂存文件，有不一致时什么都不动，返回 ErrStagedGeoChanged。
+func InstallStagedGeo(dir, home string, sums map[string]string) (undo func() error, err error) {
+	type move struct{ staged, target, old string }
+	var moves []move
+	for _, f := range AllGeoFiles {
+		want, ok := sums[f.Name]
+		if !ok {
+			continue
+		}
+		staged := filepath.Join(dir, f.Name)
+		if have, err := FileChecksum(staged); err != nil || have != want {
+			return nil, ErrStagedGeoChanged
+		}
+		target, err := findGeo(home, f)
+		if err != nil {
+			return nil, err
+		}
+		if target == "" {
+			target = filepath.Join(home, f.Name)
+		}
+		moves = append(moves, move{staged, target, staged + ".old"})
+	}
+	var done []move
+	undo = func() error {
+		var errs []error
+		for _, m := range slices.Backward(done) {
+			if err := os.Rename(m.old, m.target); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
+	}
+	for _, m := range moves {
+		if err := os.Rename(m.target, m.old); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, errors.Join(err, undo())
+		}
+		done = append(done, m)
+		if err := os.Rename(m.staged, m.target); err != nil {
+			return nil, errors.Join(err, undo())
+		}
+	}
+	return undo, nil
 }
 
 // GeoFilesFor 返回满足 needs 所需的 geo 文件。
@@ -119,13 +238,7 @@ func EnsureGeo(ctx context.Context, d *download.Client, home string, files []Geo
 		if err := EnsureHome(home, owner); err != nil {
 			return downloaded, err
 		}
-		var data []byte
-		var err error
-		if src := f.Source(urls); src.Verifiable() {
-			data, err = d.Fetch(ctx, src.Repo, src.Tag, src.Asset)
-		} else {
-			data, err = d.GetUnverified(ctx, f.Name, src.URL)
-		}
+		data, err := fetchGeo(ctx, d, f, urls)
 		if err != nil {
 			return downloaded, fmt.Errorf("prepare %s: %w", f.Name, err)
 		}

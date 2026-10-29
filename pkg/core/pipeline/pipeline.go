@@ -132,6 +132,9 @@ type Plan struct {
 	RollbackTo int
 	// Restart 是有变化、需要重启内核才能生效的顶层键；不为空时发布后重启内核而不是热重载。
 	Restart []string
+	// GeoReplaced 是来源变了（geox-url 改了，如切换到自带 geo 来源的订阅）的 geo 文件名：已按新来源下载到
+	// 暂存目录并用于校验，发布时换进内核的工作目录并重启内核。
+	GeoReplaced []string
 	// Proxies 汇总节点的变化，尚未发布过、没有变化或无法解析时为 nil。
 	Proxies *config.ProxyChanges
 	// Check 是校验结果，nil 表示通过；没有变化时不校验，也为 nil。
@@ -142,6 +145,8 @@ type Plan struct {
 	newSecret, oldSecret string
 	// facts 是从 Config 中提取的信息。
 	facts *config.Facts
+	// geoStaged 是暂存的 geo 文件的 sha256（文件名为键），见 GeoReplaced。
+	geoStaged map[string]string
 }
 
 // Changed 报告 Config 与生效的配置是否不同。
@@ -553,6 +558,7 @@ func (p *Pipeline) finish(ctx context.Context, plan *Plan) error {
 	if !plan.Changed() {
 		return nil
 	}
+	staged := ""
 	if current != nil {
 		plan.Diff, plan.DiffSections = config.Diff("current", "new", current, plan.Config)
 		// 无法解析的生效配置（facts 为 nil）交给 mihomo -t 报告。
@@ -561,13 +567,43 @@ func (p *Pipeline) finish(ctx context.Context, plan *Plan) error {
 		if c := config.DiffProxies(facts, plan.facts); c != nil && !c.Empty() {
 			plan.Proxies = c
 		}
+		if facts != nil {
+			var err error
+			if staged, err = p.stageGeo(ctx, plan, facts.Geo.URLs); err != nil {
+				// 下载新来源的数据失败与配置写法无关，同校验未能完成：保持当前配置。
+				plan.Check = err
+				return nil
+			}
+		}
 	}
-	v, err := p.validator()
+	v, err := p.validator(staged)
 	if err != nil {
 		return err
 	}
 	plan.Check = v.Validate(ctx, plan.Config, &plan.facts.Geo)
 	return nil
+}
+
+// stageGeo 找出工作目录中已有、但 geox-url 从 old 变为 plan 中的地址后来源不同的 geo 文件（只看配置用到的），
+// 按新来源下载到暂存目录，记入 plan，返回暂存目录；没有这样的文件时返回空串。不然内核会继续用旧来源的数据，
+// 直到它自己下一次更新：例如切换到用自定义 geosite 分类的订阅后，规则引用的分类在旧文件中没有。
+func (p *Pipeline) stageGeo(ctx context.Context, plan *Plan, old map[string]string) (string, error) {
+	changed, err := mihomo.GeoSourceChanges(p.Layout.CoreDir(), mihomo.GeoFilesFor(plan.facts.Geo), old, plan.facts.Geo.URLs)
+	if err != nil || len(changed) == 0 {
+		return "", err
+	}
+	set, err := settings.Load(p.Layout.SettingsFile())
+	if err != nil {
+		return "", err
+	}
+	dir := p.Layout.GeoStageDir()
+	if plan.geoStaged, err = mihomo.StageGeo(ctx, p.downloader(set), dir, changed, plan.facts.Geo.URLs, p.owner()); err != nil {
+		return "", err
+	}
+	for _, f := range changed {
+		plan.GeoReplaced = append(plan.GeoReplaced, f.Name)
+	}
+	return dir, nil
 }
 
 // ApplyResult 是一次发布的结果。
@@ -653,12 +689,27 @@ func (p *Pipeline) ApplyLocked(ctx context.Context, plan *Plan) (*ApplyResult, e
 		}
 	}
 
+	// 来源变了的 geo 文件换成计划时下载、校验用过的；内核的 geo 数据只能重启后重新加载。
+	restart, undoGeo := plan.Restart, func() error { return nil }
+	if len(plan.geoStaged) > 0 {
+		if undoGeo, err = mihomo.InstallStagedGeo(p.Layout.GeoStageDir(), p.Layout.CoreDir(), plan.geoStaged); err != nil {
+			return nil, err
+		}
+		restart = append(slices.Clone(restart), plan.GeoReplaced...)
+	}
 	if err := p.writeConfig(plan.Config); err != nil {
-		return nil, err
+		return nil, errors.Join(err, undoGeo())
 	}
 	result := &ApplyResult{}
-	if err := p.activate(ctx, plan.Restart, result); err != nil {
-		return nil, p.restore(ctx, current, plan.Restart, err)
+	if err := p.activate(ctx, restart, result); err != nil {
+		if uerr := undoGeo(); uerr != nil {
+			err = fmt.Errorf("%w; putting back the previous geo data failed: %v", err, uerr)
+		}
+		return nil, p.restore(ctx, current, restart, err)
+	}
+	if len(plan.geoStaged) > 0 {
+		// 暂存目录中只剩换下来的旧文件。
+		os.RemoveAll(p.Layout.GeoStageDir())
 	}
 
 	// 生效的配置被删除后（如卸载后重新 init）发布的与最新修订相同，不重复记录。
@@ -836,7 +887,7 @@ func (p *Pipeline) CheckCurrent(ctx context.Context) (exists bool, err error) {
 	if err != nil || current == nil {
 		return false, err
 	}
-	v, err := p.validator()
+	v, err := p.validator("")
 	if err != nil {
 		return true, err
 	}
@@ -854,7 +905,8 @@ func (p *Pipeline) readCurrent() ([]byte, error) {
 	return data, err
 }
 
-func (p *Pipeline) validator() (Validator, error) {
+// validator 返回校验用的 Validator；staged 不为空时，其中暂存的 geo 文件代替工作目录中的旧文件（见 stageGeo）。
+func (p *Pipeline) validator(staged string) (Validator, error) {
 	if p.Validator != nil {
 		return p.Validator, nil
 	}
@@ -865,6 +917,7 @@ func (p *Pipeline) validator() (Validator, error) {
 	return &mihomo.Validator{
 		Binary:   p.Layout.CoreBinary(),
 		HomeDir:  p.Layout.CoreDir(),
+		Staged:   staged,
 		Download: p.downloader(set),
 		RunAs:    p.owner(),
 	}, nil

@@ -72,6 +72,9 @@ func (l Layout) CoreBinary() string { return l.join("var", "lib", "tunlr", "bin"
 // CoreDir 是 mihomo 的工作目录（-d），存放生效的配置、geo 数据、面板和缓存。
 func (l Layout) CoreDir() string { return l.join("var", "lib", "tunlr", "core") }
 
+// GeoStageDir 暂存来源变化、待发布时换进 CoreDir 的 geo 文件。与 CoreDir 在同一个文件系统上，替换用 rename。
+func (l Layout) GeoStageDir() string { return l.join("var", "lib", "tunlr", "geo-staged") }
+
 // CoreConfig 是生效的 mihomo 配置文件。
 func (l Layout) CoreConfig() string { return l.join("var", "lib", "tunlr", "core", "config.yaml") }
 

@@ -38,6 +38,8 @@ type planView struct {
 	RollbackTo int              `json:"rollback_to,omitempty"`
 	// Restart 是需要重启内核才能生效的变化；不为空时发布后重启内核而不是热重载。
 	Restart []string `json:"restart,omitempty"`
+	// GeoReplaced 是来源变了、发布时换成按新来源下载的 geo 文件。
+	GeoReplaced []string `json:"geo_replaced,omitempty"`
 	// Proxies 汇总节点的变化，没有变化时省略。
 	Proxies *config.ProxyChanges `json:"proxies,omitempty"`
 	// Diff 总是完整的；DiffSections 按顶层键汇总它增删的行数。
@@ -85,7 +87,7 @@ func newPlanView(p *pipeline.Plan, full bool) planView {
 	v := planView{
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
 		Subscription: p.Subscription, Dropped: p.Dropped, Mixins: p.Mixins,
-		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, Proxies: p.Proxies, Diff: hideSecretInDiff(p.Diff),
+		Overrides: p.Overrides, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, GeoReplaced: p.GeoReplaced, Proxies: p.Proxies, Diff: hideSecretInDiff(p.Diff),
 		DiffSections: p.DiffSections, ProxyFilter: p.ProxyFilter,
 	}
 	if p.Managed != nil {
@@ -202,8 +204,15 @@ func (a *app) writePlan(w io.Writer, v planView) {
 		}
 		fmt.Fprintln(w)
 	}
-	if len(v.Restart) > 0 {
+	if len(v.GeoReplaced) > 0 {
+		fmt.Fprintf(w, "%s %s: geox-url points elsewhere now; downloaded from the new source for the check, put in place when published.\n",
+			a.style.warn("The geo data changes source:"), strings.Join(v.GeoReplaced, ", "))
+	}
+	switch {
+	case len(v.Restart) > 0:
 		fmt.Fprintf(w, "%s %s cannot change by reloading.\n", a.style.warn("mihomo will be restarted:"), strings.Join(v.Restart, ", "))
+	case len(v.GeoReplaced) > 0:
+		fmt.Fprintf(w, "%s mihomo loads new geo data only when it starts.\n", a.style.warn("mihomo will be restarted:"))
 	}
 
 	switch v.Check.Status {

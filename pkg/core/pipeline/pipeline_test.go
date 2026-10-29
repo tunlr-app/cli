@@ -940,3 +940,48 @@ func TestSubscriptionDNS(t *testing.T) {
 		t.Errorf("warnings = %+v", plan.Warnings)
 	}
 }
+
+// TestGeoSourceChange 验证 geox-url 改了（如切换到自带 geo 来源的订阅）时，已有的 geo 文件按新来源下载、
+// 用于校验，发布时才换进工作目录；内核加载失败时连同配置一起换回。
+func TestGeoSourceChange(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("from " + r.URL.Path))
+	}))
+	defer srv.Close()
+	p, _, r := newPipeline(t)
+	useSubscription(t, p.Layout, "main", "proxies:\n  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}\nrules:\n  - GEOSITE,cn,a\n  - MATCH,a\n")
+	mustApply(t, p, mustPlan(t, p))
+	geosite := filepath.Join(p.Layout.CoreDir(), "GeoSite.dat")
+	writeFile(t, geosite, "old")
+	read := func() string {
+		data, _ := os.ReadFile(geosite)
+		return string(data)
+	}
+
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-geo.yaml"), "mihomo:\n  geox-url:\n    geosite: "+srv.URL+"/a.dat\n")
+	plan := mustPlan(t, p)
+	if fmt.Sprint(plan.GeoReplaced) != "[GeoSite.dat]" || read() != "old" {
+		t.Fatalf("plan: replaced %v, file %q", plan.GeoReplaced, read())
+	}
+	res, err := p.Apply(context.Background(), plan)
+	if err != nil || read() != "from /a.dat" || !slices.Contains(res.RestartNeeded, "GeoSite.dat") {
+		t.Fatalf("apply: file %q, result %+v, %v", read(), res, err)
+	}
+	if _, err := os.Stat(p.Layout.GeoStageDir()); !os.IsNotExist(err) {
+		t.Errorf("staging left behind: %v", err)
+	}
+	// 发布后没有变化，不再下载。
+	if plan := mustPlan(t, p); plan.Changed() || plan.GeoReplaced != nil {
+		t.Errorf("unchanged: %+v", plan.GeoReplaced)
+	}
+
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-geo.yaml"), "mihomo:\n  geox-url:\n    geosite: "+srv.URL+"/b.dat\n")
+	plan = mustPlan(t, p)
+	r.fail = true
+	if _, err := p.Apply(context.Background(), plan); !errors.Is(err, core.ErrRolledBack) {
+		t.Fatalf("err = %v", err)
+	}
+	if read() != "from /a.dat" {
+		t.Errorf("geo data not put back: %q", read())
+	}
+}
