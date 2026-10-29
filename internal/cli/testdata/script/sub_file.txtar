@@ -17,9 +17,11 @@ stdout 'Its proxy filter is in .*home.10-filter\.yaml \(tunlr config edit home/1
 grep 'filter: 香港`\(\?i\)hk' root/etc/tunlr/mixin.d/home/10-filter.yaml
 grep 'exclude-filter: 倍率' root/etc/tunlr/mixin.d/home/10-filter.yaml
 exec tunlr sub
-stdout '^\*\s+home\s+4\s+\S+ \S+\s+never\s+-\s+-\s+\S*airport\.yaml$'
+stdout '^\*\s+home\s+4\s+\S+ \S+\s+never\s+-\s+-\s+10-filter\s+\S*airport\.yaml$'
+stdout '^MIXINS are the subscription''s own mixin files'
 exec tunlr sub --json
 stdout '"source": ".*airport\.yaml"'
+stdout '"mixins": \[\s*"10-filter\.yaml"'
 ! stdout '"url"'
 
 # 预览：筛选掉的节点和变空的组，配置中没有 tunlr 命名空间
@@ -58,7 +60,7 @@ stdin airport.yaml
 exec tunlr sub update piped --source -
 stdout '^ok      piped: 1 proxies'
 exec tunlr sub
-stdout '^\s+piped\s+1\s+\S+ \S+\s+never\s+-\s+-\s+stdin$'
+stdout '^\s+piped\s+1\s+\S+ \S+\s+never\s+-\s+-\s+-\s+stdin$'
 
 # 换成文件
 exec tunlr sub update piped --source airport.yaml

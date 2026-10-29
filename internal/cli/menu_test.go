@@ -280,13 +280,24 @@ func TestMenuAddSubscription(t *testing.T) {
 		t.Fatalf("submitted without the period: ran %q", mt.ran)
 	}
 	mt.keys("down", "enter")
-	if mt.commands() != "sub add home https://example.net/sub?token=secret --update 7d" {
+	if mt.m.adding == nil || len(mt.ran) != 0 {
+		t.Fatalf("submitted without the proxy filter: ran %q", mt.ran)
+	}
+	// 筛选：保留的写错时停在这一项；排除的留空。
+	mt.keys("(", "enter")
+	if mt.m.adding == nil || len(mt.ran) != 0 {
+		t.Fatalf("invalid regular expression accepted: ran %q", mt.ran)
+	}
+	mt.send(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	mt.keys("香港|HK", "enter", "enter")
+	if mt.commands() != "sub add home https://example.net/sub?token=secret --update 7d --include=香港|HK --exclude=" {
 		t.Fatalf("ran %q", mt.ran)
 	}
 	if mt.m.adding != nil || mt.hovered() != "Add a subscription" {
 		t.Errorf("after adding: hovered %q", mt.hovered())
 	}
-	if line := commandLine(mt.ran[0]); strings.Contains(line, "secret") || !strings.HasPrefix(line, "$ tunlr sub add home https://example.net/") {
+	if line := commandLine(mt.ran[0]); strings.Contains(line, "secret") || !strings.HasPrefix(line, "$ tunlr sub add home https://example.net/") ||
+		!strings.HasSuffix(line, " --update 7d '--include=香港|HK'") {
 		t.Errorf("command line = %q", line)
 	}
 }
@@ -483,11 +494,12 @@ func TestMenuHint(t *testing.T) {
 	}
 	// 先询问再执行的项显示参数的形式，表单中也显示。
 	mt.keys("down", "down", "enter", "down", "down", "down")
-	if got := last(); got != "$ tunlr sub add <name> <url> --update <period>" {
+	const addUsage = "$ tunlr sub add <name> <url> --update <period> --include <regexp> --exclude <regexp>"
+	if got := last(); got != addUsage {
 		t.Errorf("add: %q", got)
 	}
 	mt.keys("enter")
-	if got := last(); mt.m.adding == nil || got != "$ tunlr sub add <name> <url> --update <period>" {
+	if got := last(); mt.m.adding == nil || got != addUsage {
 		t.Errorf("form: %q", got)
 	}
 

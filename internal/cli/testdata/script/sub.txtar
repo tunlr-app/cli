@@ -19,8 +19,9 @@ grep '^custom/1\.0$' provider/.last-ua
 
 # 列表：启用标记、流量、到期时间；URL 缩写，不泄露令牌
 exec tunlr sub
-stdout '^\*\s+main\s+2\s+\S+ \S+\s+daily\s+1\.0 GiB / 100\.0 GiB\s+2027-01-01\s+http://127\.0\.0\.1:\d+/\.\.\.$'
+stdout '^\*\s+main\s+2\s+\S+ \S+\s+daily\s+1\.0 GiB / 100\.0 GiB\s+2027-01-01\s+-\s+http://127\.0\.0\.1:\d+/\.\.\.$'
 stdout '^\s+backup\s+2\s+'
+! stdout '^MIXINS are'
 ! stdout 'secret-token'
 exec tunlr sub --json
 stdout '"active": true'

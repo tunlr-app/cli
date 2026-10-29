@@ -69,6 +69,7 @@ func (u lanUsage) steps() []string {
 
 func (a *app) newInitCommand() *cobra.Command {
 	var mirror, sub, version string
+	var include, exclude []string
 	var usage lanUsage
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -77,10 +78,10 @@ func (a *app) newInitCommand() *cobra.Command {
 			"mihomo, install the latest mihomo release (checksum verified), install and enable\n" +
 			"tunlr-core.service and tunlr-update.timer (see: tunlr update), add a subscription,\n" +
 			"publish the configuration and start mihomo. Running it again repairs the installation.\n\n" +
-			"Interactively it asks for a GitHub mirror and a subscription (both optional), and what\n" +
-			"this server is for: only itself, a proxy for LAN devices (tunlr proxy lan on), or their\n" +
-			"gateway (tunlr tun gateway on); otherwise pass --mirror, --sub <name>=<url>, --lan-proxy,\n" +
-			"--gateway and --lan-panel.",
+			"Interactively it asks for a GitHub mirror and a subscription with its proxy filter (all\n" +
+			"optional), and what this server is for: only itself, a proxy for LAN devices (tunlr proxy\n" +
+			"lan on), or their gateway (tunlr tun gateway on); otherwise pass --mirror, --sub\n" +
+			"<name>=<url>, --include, --exclude, --lan-proxy, --gateway and --lan-panel.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -107,6 +108,10 @@ func (a *app) newInitCommand() *cobra.Command {
 					return usageErrorf("--sub must be <name>=<url>")
 				}
 				opts.SubName, opts.SubURL = name, url
+			}
+			opts.SubFilter, opts.SubExclude = strings.Join(include, "`"), strings.Join(exclude, "`")
+			if (opts.SubFilter != "" || opts.SubExclude != "") && sub == "" {
+				return usageErrorf("--include and --exclude filter the subscription given with --sub")
 			}
 			inst := a.installer()
 			if err := inst.CheckSupport(ctx); err != nil {
@@ -157,6 +162,8 @@ func (a *app) newInitCommand() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&mirror, "mirror", "", `GitHub download mirror prefix, e.g. "https://gh-proxy.com/" ("" for direct)`)
 	f.StringVar(&sub, "sub", "", "add a subscription, as <name>=<url>")
+	f.StringArrayVar(&include, "include", nil, "with --sub: keep only proxies whose names match this regular expression (repeatable)")
+	f.StringArrayVar(&exclude, "exclude", nil, "with --sub: drop proxies whose names match this regular expression (repeatable)")
 	f.StringVar(&version, "version", "", "mihomo version to install when none is installed (default: latest release)")
 	f.BoolVar(&usage.proxy, "lan-proxy", false, "then let LAN devices use the proxy port (tunlr proxy lan on)")
 	f.StringVar(&usage.gateway, "gateway", "", `then make this server the LAN gateway on this interface, or "auto" (tunlr tun gateway on; implies --lan-proxy)`)
@@ -346,6 +353,11 @@ func (a *app) askInit(cmd *cobra.Command, opts *setup.InitOptions) error {
 			return err
 		}
 		opts.SubName, opts.SubURL = "default", url
+		if !cmd.Flags().Changed("include") && !cmd.Flags().Changed("exclude") {
+			if opts.SubFilter, opts.SubExclude, err = a.askFilter(cmd, opts.SubName); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

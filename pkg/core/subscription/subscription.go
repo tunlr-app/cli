@@ -55,6 +55,8 @@ type Entry struct {
 	Active bool
 	// Summary 统计已保存的内容；内容缺失或无法解析时为零值。
 	Summary config.SubscriptionSummary
+	// Mixins 是订阅自己的 mixin 文件名（mixin.d/<名称>/*.yaml），按应用顺序；读取失败时为空。
+	Mixins []string
 }
 
 // Fetched 是一次成功抓取的结果。
@@ -180,6 +182,11 @@ func (m *Manager) List() ([]Entry, error) {
 			e.Summary = config.SubscriptionSummary(*c)
 		} else if data, err := os.ReadFile(m.Layout.SubscriptionFile(s.Name)); err == nil {
 			e.Summary, _ = config.InspectSubscription(data)
+		}
+		if mixins, err := config.LoadMixins(m.Layout.SubscriptionMixinDir(s.Name)); err == nil {
+			for _, mx := range mixins {
+				e.Mixins = append(e.Mixins, mx.Name)
+			}
 		}
 		entries = append(entries, e)
 	}

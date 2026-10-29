@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/doctor"
 	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/fsutil"
@@ -69,6 +71,8 @@ type InitOptions struct {
 	Mirror *string
 	// SubName、SubURL 给出时添加订阅；已有同名订阅时不再添加。
 	SubName, SubURL string
+	// SubFilter、SubExclude 是添加订阅时写入它的节点筛选（见 subscription.AddOptions）。
+	SubFilter, SubExclude string
 	// KernelVersion 是没有内核时安装的版本，为空时为最新正式发布。
 	KernelVersion string
 	// Progress 在每一步开始时调用，可为空。
@@ -107,6 +111,12 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 	progress("Checking the environment")
 	if err := i.CheckSupport(ctx); err != nil {
 		return nil, err
+	}
+	// 筛选写错时在动手之前拒绝，免得装好内核后才在添加订阅时失败。
+	for _, s := range []string{opts.SubFilter, opts.SubExclude} {
+		if err := config.CheckPatterns(s); err != nil {
+			return nil, fmt.Errorf("%w: %v", core.ErrInvalidArgument, err)
+		}
 	}
 	arch, err := mihomo.DetectArch()
 	if err != nil {
@@ -162,7 +172,7 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 		}
 		if st == nil || st.Find(opts.SubName) == nil {
 			progress("Adding the subscription " + opts.SubName)
-			if _, err := subs.Add(ctx, opts.SubName, opts.SubURL, subscription.AddOptions{}); err != nil {
+			if _, err := subs.Add(ctx, opts.SubName, opts.SubURL, subscription.AddOptions{Filter: opts.SubFilter, Exclude: opts.SubExclude}); err != nil {
 				return nil, err
 			}
 			res.SubscriptionAdded = opts.SubName

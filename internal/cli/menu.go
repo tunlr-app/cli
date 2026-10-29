@@ -529,8 +529,8 @@ func (a *app) menuItems(group string, d menuData) (string, []menuItem) {
 				menuItem{label: "Switch subscription", args: []string{"sub", "use"}},
 				menuItem{label: "Update subscriptions", args: []string{"sub", "update"}})
 		}
-		items = append(items, menuItem{label: "Add a subscription", ask: subscriptionFields(), usage: "sub add <name> <url> --update <period>",
-			build: func(v []string) []string { return []string{"sub", "add", v[0], v[1], "--update", v[2]} }})
+		items = append(items, menuItem{label: "Add a subscription", ask: subscriptionFields(),
+			usage: "sub add <name> <url> --update <period> --include <regexp> --exclude <regexp>", build: addSubscriptionArgs})
 		if len(d.subs) > 1 {
 			items = append(items, menuItem{label: "Remove subscriptions", args: []string{"sub", "remove"}})
 		}
@@ -809,14 +809,27 @@ func subscriptionFields() []inputField {
 			return err
 		}},
 		{title: "Update it how often?", description: "A file is read again on this schedule. Change later with tunlr update set sub.", options: periods, initial: state.DefaultUpdate},
+		filterFields()[0], filterFields()[1],
 	}
 }
 
-// commandLine 是给用户看的等价命令，订阅地址只给出缩写，不显示访问令牌。
+// addSubscriptionArgs 是菜单中添加订阅的命令。筛选留空时也写出 --include=、--exclude=，表示已经问过、不筛选，
+// sub add 不再问；给用户看的命令行中省略它们（见 commandLine）。
+func addSubscriptionArgs(v []string) []string {
+	return []string{"sub", "add", v[0], v[1], "--update", v[2], "--include=" + v[3], "--exclude=" + v[4]}
+}
+
+// commandLine 是给用户看的等价命令，订阅地址只给出缩写，不显示访问令牌；留空的筛选参数省略。
+// 含空白或 shell 特殊字符的参数加上单引号。
 func commandLine(args []string) string {
-	shown := slices.Clone(args)
+	shown := slices.DeleteFunc(slices.Clone(args), func(s string) bool { return s == "--include=" || s == "--exclude=" })
 	if len(shown) >= 4 && shown[0] == "sub" && shown[1] == "add" && strings.Contains(shown[3], "://") {
 		shown[3] = subscription.Redact(shown[3])
+	}
+	for i, s := range shown {
+		if strings.ContainsAny(s, " \t'\"`$|&;<>()*?!#~\\") {
+			shown[i] = "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+		}
 	}
 	return "$ tunlr " + strings.Join(shown, " ")
 }

@@ -34,6 +34,8 @@ type subscriptionView struct {
 	LastErrorAt time.Time                  `json:"last_error_at,omitzero"`
 	UserInfo    *state.UserInfo            `json:"userinfo,omitempty"`
 	Summary     config.SubscriptionSummary `json:"summary"`
+	// Mixins 是订阅自己的 mixin 文件（mixin.d/<名称>/），按应用顺序。
+	Mixins []string `json:"mixins"`
 }
 
 type fetchedView struct {
@@ -120,6 +122,12 @@ func (a *app) newSubAddCommand() *cobra.Command {
 			}
 			opts := subscription.AddOptions{UserAgent: userAgent, Update: period,
 				Filter: strings.Join(include, "`"), Exclude: strings.Join(exclude, "`")}
+			if !cmd.Flags().Changed("include") && !cmd.Flags().Changed("exclude") && a.interactive() {
+				if opts.Filter, opts.Exclude, err = a.askFilter(cmd, args[0]); err != nil {
+					_, err := a.cancelled(err)
+					return err
+				}
+			}
 			if stdin {
 				opts.Stdin = a.stdin
 			}
@@ -164,6 +172,36 @@ func (a *app) newSubAddCommand() *cobra.Command {
 	return cmd
 }
 
+// filterFields 是添加订阅时询问的节点筛选，两项都可以留空（留空表示不筛选）。菜单的表单、sub add 和 init
+// 在终端里都问这两项；对应的参数是 --include、--exclude。
+func filterFields() []inputField {
+	check := func(s string) error { return config.CheckPatterns(s) }
+	return []inputField{
+		{title: "Keep only proxies matching (optional)",
+			description: "A regular expression on proxy names, e.g. 香港|HK; separate several with `. Leave empty to keep all.",
+			validate:    check},
+		{title: "Drop proxies matching (optional)",
+			description: "e.g. 倍率|剩余流量|官网. Leave empty to drop none. Change both later with: tunlr config edit <name>/10-filter",
+			validate:    check},
+	}
+}
+
+// askFilter 在终端里询问订阅 name 的节点筛选（见 filterFields）。
+func (a *app) askFilter(cmd *cobra.Command, name string) (filter, exclude string, err error) {
+	fields := filterFields()
+	values := make([]string, len(fields))
+	for i, f := range fields {
+		title := f.title
+		if i == 0 {
+			title = fmt.Sprintf("Proxy filter for %q: %s", name, strings.ToLower(title[:1])+title[1:])
+		}
+		if values[i], err = a.prompt.Input(cmd.Context(), title, f.description, f.validate); err != nil {
+			return "", "", err
+		}
+	}
+	return values[0], values[1], nil
+}
+
 // describeFetching 是订阅自动更新周期的说法，如 "fetched again daily"；period 为空时是 source 的默认值。
 func describeFetching(period, source string) string {
 	file := !strings.Contains(source, "://")
@@ -206,7 +244,7 @@ func (a *app) listSubscriptions() error {
 		views = append(views, subscriptionView{
 			Name: e.Name, URL: url, Path: e.Path, Source: subscription.Describe(&e.Subscription), Active: e.Active, UserAgent: e.UserAgent,
 			Update: e.UpdatePeriod(), AddedAt: e.AddedAt, FetchedAt: e.FetchedAt, LastError: e.LastError, LastErrorAt: e.LastErrorAt,
-			UserInfo: e.UserInfo, Summary: e.Summary,
+			UserInfo: e.UserInfo, Summary: e.Summary, Mixins: append([]string{}, e.Mixins...),
 		})
 	}
 	return a.render(views, func() error {
@@ -215,7 +253,8 @@ func (a *app) listSubscriptions() error {
 			return err
 		}
 		tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "\tNAME\tPROXIES\tUPDATED\tEVERY\tUSAGE\tEXPIRES\tSOURCE")
+		fmt.Fprintln(tw, "\tNAME\tPROXIES\tUPDATED\tEVERY\tUSAGE\tEXPIRES\tMIXINS\tSOURCE")
+		withMixins := false
 		for _, v := range views {
 			mark := ""
 			if v.Active {
@@ -225,11 +264,32 @@ func (a *app) listSubscriptions() error {
 			if v.LastError != "" {
 				updated += " (last update failed)"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
-				mark, v.Name, v.Summary.Proxies, updated, settings.DescribePeriod(v.Update), formatUsage(v.UserInfo), formatExpire(v.UserInfo), v.Source)
+			mixins := "-"
+			if len(v.Mixins) > 0 {
+				withMixins = true
+				mixins = strings.Join(trimYAML(v.Mixins), ",")
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				mark, v.Name, v.Summary.Proxies, updated, settings.DescribePeriod(v.Update), formatUsage(v.UserInfo), formatExpire(v.UserInfo), mixins, v.Source)
 		}
-		return tw.Flush()
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		if withMixins {
+			_, err := fmt.Fprintln(a.stdout, "MIXINS are the subscription's own mixin files, applied only while it is active; edit one with: tunlr config edit <name>/<file>")
+			return err
+		}
+		return nil
 	})
+}
+
+// trimYAML 去掉 mixin 文件名的 .yaml，与 config edit 接受的写法相同。
+func trimYAML(names []string) []string {
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = strings.TrimSuffix(n, ".yaml")
+	}
+	return out
 }
 
 func (a *app) newSubRemoveCommand() *cobra.Command {

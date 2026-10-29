@@ -317,7 +317,7 @@ func TestEditChooseNewFile(t *testing.T) {
 	et.prompt.choices = []int{2}
 	et.prompt.inputs = []string{"30-new"}
 	et.run(0, "config", "edit", "--yes")
-	if strings.Join(et.prompt.asked[0], "|") != "10-a.yaml|20-b.yaml|New file..." {
+	if strings.Join(et.prompt.asked[0], "|") != "10-a.yaml|20-b.yaml|New shared file..." {
 		t.Errorf("choices = %v", et.prompt.asked)
 	}
 	if len(et.prompt.described) != 1 || !strings.Contains(et.prompt.described[0], "Current order: 10-a.yaml → 20-b.yaml") {
@@ -325,6 +325,55 @@ func TestEditChooseNewFile(t *testing.T) {
 	}
 	if got := et.mixin("30-new.yaml"); got != "mihomo:\n  mode: global\n" {
 		t.Errorf("saved = %q", got)
+	}
+}
+
+// TestEditChooseSubscriptionFile 验证不给名称时可以给任何一个订阅新建 mixin，启用的订阅排在前面；
+// 没有启用的订阅的 mixin 校验后保存，不发布。
+func TestEditChooseSubscriptionFile(t *testing.T) {
+	et := newEditTest(t, "tunlr:\n  proxy-filter:\n    exclude-filter: x\n")
+	addSubscriptions(t, et.a, "main", "backup", "main")
+	et.prompt.choices = []int{2}
+	et.prompt.inputs = []string{"10-filter"}
+	et.run(0, "config", "edit", "--yes")
+	want := "New shared file...|New file for subscription main (active)...|New file for subscription backup (applied after tunlr sub use backup)..."
+	if strings.Join(et.prompt.asked[0], "|") != want {
+		t.Errorf("choices = %q", et.prompt.asked[0])
+	}
+	if got := et.mixin("backup/10-filter.yaml"); got != "tunlr:\n  proxy-filter:\n    exclude-filter: x\n" {
+		t.Errorf("saved = %q", got)
+	}
+	if strings.Contains(et.stdout.String(), "Published revision") {
+		t.Errorf("published a mixin of an inactive subscription:\n%s", et.stdout)
+	}
+}
+
+// TestSubAddAsksFilter 验证在终端里添加订阅时询问节点筛选（留空的项不写），给了 --include 或 --exclude 时不问。
+func TestSubAddAsksFilter(t *testing.T) {
+	et := newEditTest(t)
+	file := filepath.Join(t.TempDir(), "airport.yaml")
+	sub := "proxies:\n  - {name: 香港 01, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}\n" +
+		"  - {name: 日本 01, type: ss, server: b.example.net, port: 1, cipher: aes-128-gcm, password: p}\nrules:\n  - MATCH,DIRECT\n"
+	if err := os.WriteFile(file, []byte(sub), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	et.prompt.choices = []int{0}
+	et.prompt.inputs = []string{"香港", ""}
+	et.run(0, "sub", "add", "home", file, "--yes")
+	if got := et.mixin("home/10-filter.yaml"); !strings.Contains(got, "filter: 香港") || strings.Contains(got, "exclude-filter:") {
+		t.Errorf("filter mixin = %q", got)
+	}
+
+	// 两项都留空时不写文件；给了参数时不问。
+	et.prompt.choices = []int{0}
+	et.prompt.inputs = []string{"", ""}
+	et.run(0, "sub", "add", "spare", file, "--yes")
+	if _, err := os.Stat(et.a.layout.SubscriptionMixinDir("spare")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("an empty filter was written")
+	}
+	et.run(0, "sub", "add", "third", file, "--update", "off", "--exclude", "日本")
+	if len(et.prompt.inputs) != 0 || !strings.Contains(et.mixin("third/10-filter.yaml"), "exclude-filter: 日本") {
+		t.Errorf("third: %q", et.mixin("third/10-filter.yaml"))
 	}
 }
 

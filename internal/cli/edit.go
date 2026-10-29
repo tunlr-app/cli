@@ -20,7 +20,6 @@ import (
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
-	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/templates"
 )
 
@@ -179,23 +178,38 @@ func (a *app) newConfigEditCommand() *cobra.Command {
 }
 
 // chooseMixin 让用户选择已有的 mixin 文件（共用的和各订阅的），或输入新文件的名称：共用的，
-// 或启用订阅的。输入名称时列出同一目录中已有文件的应用顺序，方便选择数字前缀。
+// 或某个订阅的（启用的在前）。输入名称时列出同一目录中已有文件的应用顺序，方便选择数字前缀。
 func (a *app) chooseMixin(ctx context.Context) (string, error) {
 	mixins, err := config.LoadAllMixins(a.layout.MixinDir())
 	if err != nil {
 		return "", err
 	}
+	entries, err := a.subscriptions().List()
+	if err != nil {
+		return "", err
+	}
+	// 新文件可以属于的订阅，启用的在前。
+	var subs []string
 	active := ""
-	if st, err := state.Load(a.layout.StateFile()); err == nil {
-		active = st.Active
+	for _, e := range entries {
+		if e.Active {
+			active = e.Name
+			subs = slices.Insert(subs, 0, e.Name)
+		} else {
+			subs = append(subs, e.Name)
+		}
 	}
 	names := make([]string, 0, len(mixins))
 	for _, m := range mixins {
 		names = append(names, m.Name)
 	}
-	options := append(slices.Clone(names), "New file...")
-	if active != "" {
-		options = append(options, "New file for subscription "+active+"...")
+	options := append(slices.Clone(names), "New shared file...")
+	for _, s := range subs {
+		note := " (applied after tunlr sub use " + s + ")"
+		if s == active {
+			note = " (active)"
+		}
+		options = append(options, "New file for subscription "+s+note+"...")
 	}
 	sub := ""
 	if len(options) > 1 {
@@ -206,8 +220,8 @@ func (a *app) chooseMixin(ctx context.Context) (string, error) {
 		if i < len(names) {
 			return names[i], nil
 		}
-		if i == len(names)+1 {
-			sub = active
+		if i > len(names) {
+			sub = subs[i-len(names)-1]
 		}
 	}
 	var order []string
