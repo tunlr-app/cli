@@ -317,7 +317,7 @@ func TestEditChooseNewFile(t *testing.T) {
 	et.prompt.choices = []int{2}
 	et.prompt.inputs = []string{"30-new"}
 	et.run(0, "config", "edit", "--yes")
-	if strings.Join(et.prompt.asked[0], "|") != "10-a.yaml|20-b.yaml|New shared file..." {
+	if strings.Join(et.prompt.asked[0], "|") != "10-a.yaml|20-b.yaml|New file for global (all subscriptions)..." {
 		t.Errorf("choices = %v", et.prompt.asked)
 	}
 	if len(et.prompt.described) != 1 || !strings.Contains(et.prompt.described[0], "Current order: 10-a.yaml → 20-b.yaml") {
@@ -336,7 +336,7 @@ func TestEditChooseSubscriptionFile(t *testing.T) {
 	et.prompt.choices = []int{2}
 	et.prompt.inputs = []string{"10-filter"}
 	et.run(0, "config", "edit", "--yes")
-	want := "New shared file...|New file for subscription main (active)...|New file for subscription backup (applied after tunlr sub use backup)..."
+	want := "New file for global (all subscriptions)...|New file for subscription main (active)...|New file for subscription backup (applied after tunlr sub use backup)..."
 	if strings.Join(et.prompt.asked[0], "|") != want {
 		t.Errorf("choices = %q", et.prompt.asked[0])
 	}

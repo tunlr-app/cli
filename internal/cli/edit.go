@@ -203,7 +203,7 @@ func (a *app) chooseMixin(ctx context.Context) (string, error) {
 	for _, m := range mixins {
 		names = append(names, m.Name)
 	}
-	options := append(slices.Clone(names), "New shared file...")
+	options := append(slices.Clone(names), "New file for global (all subscriptions)...")
 	for _, s := range subs {
 		note := " (applied after tunlr sub use " + s + ")"
 		if s == active {
