@@ -1,21 +1,24 @@
 透明代理：tun 段中由开关决定的键归 tunlr:tun，最后写入；其余键（stack、排除地址）mixin 可以设置。
 mixin 动了 tunlr:tun 的键时报错，见 TestComposeConflicts。
 -- managed/tunlr:core --
-external-controller-unix: api.sock
+mihomo:
+  external-controller-unix: api.sock
 -- managed/tunlr:tun --
-tun:
-  enable: true
-  auto-route: true
-  auto-redirect: true
-  strict-route: false
-  device: tunlr0
-  iproute2-table-index: 2022
-  iproute2-rule-index: 9000
+mihomo:
+  tun:
+    enable: true
+    auto-route: true
+    auto-redirect: true
+    strict-route: false
+    device: tunlr0
+    iproute2-table-index: 2022
+    iproute2-rule-index: 9000
 -- mixin.d/50-tun.yaml --
-tun:
-  stack: system
-  route-exclude-address:
-    - 203.0.113.0/24
+mihomo:
+  tun:
+    stack: system
+    route-exclude-address:
+      - 203.0.113.0/24
 -- want.yaml --
 # 本文件由 tunlr 生成，直接修改会在下次 apply 时被覆盖。
 # 自定义设置请写在 mixin 中（tunlr config edit）。

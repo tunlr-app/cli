@@ -162,54 +162,72 @@ func TestComposeErrors(t *testing.T) {
 			want: "mixin 10-test.yaml: not a YAML mapping",
 		},
 		{
-			name: "prepend to non-list",
-			l:    mixinLayers("dns:\n  enable: true\n", "x: 1\nprepend-dns:\n  - x\n"),
-			want: "mixin 10-test.yaml:2: prepend-dns: dns is not a list",
+			name: "unknown top-level key",
+			l:    mixinLayers("a: 1\n", "x-anchor: &a 1\nlog-level: info\n"),
+			want: "mixin 10-test.yaml:2: log-level: unknown top-level key; mihomo settings go under mihomo:, tunlr's operations under tunlr:",
 		},
 		{
-			name: "nested append to non-list",
-			l:    mixinLayers("dns:\n  enable: true\n", "dns:\n  append-enable: [x]\n"),
-			want: "mixin 10-test.yaml:2: append-enable: dns.enable is not a list",
+			name: "mihomo not a mapping",
+			l:    mixinLayers("a: 1\n", "mihomo: [a]\n"),
+			want: "mixin 10-test.yaml:1: mihomo must be a mapping",
 		},
 		{
-			name: "append non-list value",
-			l:    mixinLayers("rules: []\n", "append-rules: MATCH,DIRECT\n"),
-			want: "mixin 10-test.yaml:1: append-rules: value must be a list",
+			name: "list not a mapping of operations",
+			l:    mixinLayers("rules: []\n", "tunlr:\n  rules: [MATCH,DIRECT]\n"),
+			want: "mixin 10-test.yaml:2: tunlr.rules must be a mapping of operations (prepend, append, patch, delete)",
 		},
 		{
-			name: "operation without key",
-			l:    mixinLayers("a: 1\n", "delete-: [a]\n"),
-			want: "mixin 10-test.yaml:1: delete-: missing the key to operate on",
+			name: "unknown operation",
+			l:    mixinLayers("rules: []\n", "tunlr:\n  rules:\n    insert: [MATCH,DIRECT]\n"),
+			want: "mixin 10-test.yaml:3: tunlr.rules.insert: unknown operation (known: prepend, append, patch, delete)",
+		},
+		{
+			name: "operation value not a list",
+			l:    mixinLayers("rules: []\n", "tunlr:\n  rules:\n    append: MATCH,DIRECT\n"),
+			want: "mixin 10-test.yaml:3: tunlr.rules.append: value must be a list",
+		},
+		{
+			name: "sub-rules not a mapping",
+			l:    mixinLayers("rules: []\n", "tunlr:\n  sub-rules: [a]\n"),
+			want: "mixin 10-test.yaml:2: tunlr.sub-rules must be a mapping of rule set names",
+		},
+		{
+			name: "operation on a non-list",
+			l:    mixinLayers("rules: x\n", "tunlr:\n  rules:\n    prepend: [MATCH,DIRECT]\n"),
+			want: "mixin 10-test.yaml:3: tunlr.rules.prepend: rules is not a list",
 		},
 		{
 			name: "patch item without name",
-			l:    mixinLayers("proxies: []\n", "patch-proxies:\n  - udp: true\n"),
-			want: "mixin 10-test.yaml:2: patch-proxies: each item must be a mapping with a name",
-		},
-		{
-			name: "patch non-list",
-			l:    mixinLayers("dns:\n  enable: true\n", "patch-dns:\n  - name: x\n"),
-			want: "mixin 10-test.yaml:1: patch-dns: dns is not a list",
-		},
-		{
-			name: "delete scalar",
-			l:    mixinLayers("mode: rule\n", "delete-mode: [rule]\n"),
-			want: "mixin 10-test.yaml:1: delete-mode: mode is neither a list nor a mapping",
+			l:    mixinLayers("proxies: []\n", "tunlr:\n  proxies:\n    patch:\n      - udp: true\n"),
+			want: "mixin 10-test.yaml:4: tunlr.proxies.patch: each item must be a mapping with a name",
 		},
 		{
 			name: "invalid regexp",
-			l:    mixinLayers("proxies: []\n", "delete-proxies:\n  - /(/\n"),
-			want: "mixin 10-test.yaml:2: delete-proxies: invalid regular expression /(/:",
+			l:    mixinLayers("proxies: []\n", "tunlr:\n  proxies:\n    delete:\n      - /(/\n"),
+			want: "mixin 10-test.yaml:4: tunlr.proxies.delete: invalid regular expression /(/:",
 		},
 		{
 			name: "delete with mapping matcher",
-			l:    mixinLayers("proxies: []\n", "delete-proxies:\n  - {name: a}\n"),
-			want: "mixin 10-test.yaml:2: delete-proxies: expected a name or /regular expression/",
+			l:    mixinLayers("proxies: []\n", "tunlr:\n  proxies:\n    delete:\n      - {name: a}\n"),
+			want: "mixin 10-test.yaml:4: tunlr.proxies.delete: expected a name or /regular expression/",
 		},
 		{
 			name: "error inside patch",
-			l:    mixinLayers("proxy-groups:\n  - {name: g, proxies: [a]}\n", "patch-proxy-groups:\n  - name: g\n    prepend-proxies: a\n"),
-			want: "mixin 10-test.yaml:3: prepend-proxies: value must be a list",
+			l: mixinLayers("proxy-groups:\n  - {name: g, proxies: [a]}\n",
+				"tunlr:\n  proxy-groups:\n    patch:\n      - name: g\n        prepend-proxies: a\n"),
+			want: "mixin 10-test.yaml:5: prepend-proxies: value must be a list",
+		},
+		{
+			name: "operation without key inside patch",
+			l: mixinLayers("proxy-groups:\n  - {name: g, proxies: [a]}\n",
+				"tunlr:\n  proxy-groups:\n    patch:\n      - name: g\n        delete-: [a]\n"),
+			want: "mixin 10-test.yaml:5: delete-: missing the key to operate on",
+		},
+		{
+			name: "nested operation on a non-list inside patch",
+			l: mixinLayers("proxy-groups:\n  - {name: g, type: select}\n",
+				"tunlr:\n  proxy-groups:\n    patch:\n      - name: g\n        append-type: [x]\n"),
+			want: "mixin 10-test.yaml:5: append-type: proxy-groups[g].type is not a list",
 		},
 		{
 			name: "namespace not a mapping",
@@ -219,7 +237,7 @@ func TestComposeErrors(t *testing.T) {
 		{
 			name: "namespace unknown key",
 			l:    mixinLayers("a: 1\n", "tunlr:\n  proxy-filters: {}\n"),
-			want: "mixin 10-test.yaml:2: tunlr.proxy-filters: unknown key (known: proxy-filter)",
+			want: "mixin 10-test.yaml:2: tunlr.proxy-filters: unknown key (known: proxy-filter, proxies, proxy-groups, rules, sub-rules)",
 		},
 		{
 			name: "proxy filter unknown key",
@@ -274,8 +292,8 @@ func TestProxyFilterResult(t *testing.T) {
 		"rules:\n  - DOMAIN,a.example,US\n  - MATCH,all\n"
 	filter := Mixin{Name: "10-f.yaml", Data: []byte("tunlr:\n  proxy-filter:\n    exclude-filter: us\n")}
 	for _, fix := range []string{
-		"delete-rules:\n  - DOMAIN,a.example,US\n",
-		"append-proxy-groups:\n  - {name: US, type: select, proxies: [DIRECT]}\n",
+		"tunlr:\n  rules:\n    delete:\n      - DOMAIN,a.example,US\n",
+		"tunlr:\n  proxy-groups:\n    append:\n      - {name: US, type: select, proxies: [DIRECT]}\n",
 	} {
 		res, err := Compose(Layers{Template: []byte("a: 1\n"), Subscription: []byte(sub),
 			Mixins: []Mixin{filter, {Name: "20-fix.yaml", Data: []byte(fix)}}})
@@ -299,10 +317,27 @@ func TestProxyFilterResult(t *testing.T) {
 	}
 }
 
+// TestSubRulesOperations 检查 tunlr.sub-rules：没有 sub-rules 时只删除不会留下空的 sub-rules，插入时创建；
+// 追加在规则集末尾的 MATCH 之前。
+func TestSubRulesOperations(t *testing.T) {
+	res, err := Compose(mixinLayers("a: 1\n", "tunlr:\n  sub-rules:\n    x:\n      delete: [MATCH,DIRECT]\n"))
+	if err != nil || string(res.Config) != "a: 1\n" {
+		t.Errorf("delete only: %v\n%s", err, res.Config)
+	}
+	res, err = Compose(mixinLayers("a: 1\n", "tunlr:\n  sub-rules:\n    x:\n      append:\n        - DOMAIN,a.example,DIRECT\n"))
+	if want := "a: 1\n\nsub-rules:\n  x:\n    - DOMAIN,a.example,DIRECT\n"; err != nil || string(res.Config) != want {
+		t.Errorf("insert: %v\n%s\nwant:\n%s", err, res.Config, want)
+	}
+	res, err = Compose(mixinLayers("sub-rules:\n  x:\n    - MATCH,DIRECT\n", "tunlr:\n  sub-rules:\n    x:\n      append:\n        - DOMAIN,a.example,DIRECT\n"))
+	if want := "sub-rules:\n  x:\n    - DOMAIN,a.example,DIRECT\n    - MATCH,DIRECT\n"; err != nil || string(res.Config) != want {
+		t.Errorf("append before MATCH: %v\n%s\nwant:\n%s", err, res.Config, want)
+	}
+}
+
 // TestRegexpLikeMihomo 确认 mixin 的正则与 mihomo 一样支持前后查找（regexp2）。
 func TestRegexpLikeMihomo(t *testing.T) {
 	res, err := Compose(mixinLayers("proxies:\n  - {name: 香港 01}\n  - {name: 香港 IPLC}\n",
-		"delete-proxies:\n  - /^香港(?!.*IPLC)/\n"))
+		"tunlr:\n  proxies:\n    delete:\n      - /^香港(?!.*IPLC)/\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,22 +350,22 @@ func TestRegexpLikeMihomo(t *testing.T) {
 // 经上级替换或删除；同一映射中的其他键和提供默认值的受管 mixin 的键可以改。
 func TestComposeConflicts(t *testing.T) {
 	managed := []Managed{
-		{Name: "tunlr:tun", Command: "tunlr tun on/off", Data: []byte("tun:\n  enable: true\n  device: tunlr0\n")},
-		{Name: "tunlr:geo", Command: "tunlr update set geo", Data: []byte("geo-auto-update: false\n"), Owns: []string{"geo-update-interval"}},
-		{Name: "tunlr:core", Data: []byte("external-controller-unix: api.sock\n")},
-		{Name: "tunlr:mirror", Default: true, Data: []byte("prepend-rules: [DOMAIN,m.example,DIRECT]\nexternal-ui-url: https://m.example/ui.zip\n")},
+		{Name: "tunlr:tun", Command: "tunlr tun on/off", Data: []byte("mihomo:\n  tun:\n    enable: true\n    device: tunlr0\n")},
+		{Name: "tunlr:geo", Command: "tunlr update set geo", Data: []byte("mihomo:\n  geo-auto-update: false\n"), Owns: []string{"geo-update-interval"}},
+		{Name: "tunlr:core", Data: []byte("mihomo:\n  external-controller-unix: api.sock\n")},
+		{Name: "tunlr:mirror", Default: true, Data: []byte("tunlr:\n  rules:\n    prepend: [DOMAIN,m.example,DIRECT]\nmihomo:\n  external-ui-url: https://m.example/ui.zip\n")},
 	}
 	template := "tun:\n  enable: false\n  stack: mixed\nrules:\n  - MATCH,DIRECT\n"
 	for _, tt := range []struct {
 		name, mixin, want string
 	}{
-		{"same value", "tun:\n  enable: true\n", "mixin 10-test.yaml:2: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); remove it from the mixin"},
-		{"null", "x: 1\ntun:\n  device: null\n", "mixin 10-test.yaml:3: tun.device is managed by tunlr:tun"},
-		{"replace parent", "tun: off\n", "mixin 10-test.yaml:1: tun.enable, tun.device are managed by tunlr:tun"},
-		{"delete parent", "a: 1\ndelete-tun: [enable]\n", "mixin 10-test.yaml:2: tun.enable is managed by tunlr:tun"},
-		{"owned but unset", "geo-update-interval: 1\n", "mixin 10-test.yaml:1: geo-update-interval is managed by tunlr:geo (change it with: tunlr update set geo)"},
-		{"required", "external-controller-unix: x.sock\n", "mixin 10-test.yaml:1: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
-		{"several owners", "tun: {enable: false}\ngeo-auto-update: true\n", "mixin 10-test.yaml:1: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); geo-auto-update is managed by tunlr:geo"},
+		{"same value", "mihomo:\n  tun:\n    enable: true\n", "mixin 10-test.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); remove it from the mixin"},
+		{"null", "mihomo:\n  x: 1\n  tun:\n    device: null\n", "mixin 10-test.yaml:4: tun.device is managed by tunlr:tun"},
+		{"replace parent", "mihomo:\n  tun: off\n", "mixin 10-test.yaml:2: tun.enable, tun.device are managed by tunlr:tun"},
+		{"delete parent", "mihomo:\n  a: 1\n  tun: null\n", "mixin 10-test.yaml:3: tun.enable, tun.device are managed by tunlr:tun"},
+		{"owned but unset", "mihomo:\n  geo-update-interval: 1\n", "mixin 10-test.yaml:2: geo-update-interval is managed by tunlr:geo (change it with: tunlr update set geo)"},
+		{"required", "mihomo:\n  external-controller-unix: x.sock\n", "mixin 10-test.yaml:2: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
+		{"several owners", "mihomo:\n  tun: {enable: false}\n  geo-auto-update: true\n", "mixin 10-test.yaml:2: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); geo-auto-update is managed by tunlr:geo"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			l := mixinLayers(template, tt.mixin)
@@ -344,7 +379,7 @@ func TestComposeConflicts(t *testing.T) {
 	}
 
 	// 其他键可以改；默认值可以覆盖和删除。
-	l := mixinLayers(template, "tun:\n  stack: system\nexternal-ui-url: https://x.example/ui.zip\ndelete-rules: [DOMAIN,m.example,DIRECT]\n")
+	l := mixinLayers(template, "mihomo:\n  tun:\n    stack: system\n  external-ui-url: https://x.example/ui.zip\ntunlr:\n  rules:\n    delete: [DOMAIN,m.example,DIRECT]\n")
 	l.Managed = managed
 	res, err := Compose(l)
 	if err != nil {

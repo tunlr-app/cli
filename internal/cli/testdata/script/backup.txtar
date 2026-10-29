@@ -110,10 +110,14 @@ proxy-groups:
 rules:
   - MATCH,g
 -- home.yaml --
-prepend-rules:
-  - DOMAIN,home.example,DIRECT
+tunlr:
+  rules:
+    prepend:
+      - DOMAIN,home.example,DIRECT
 -- other.yaml --
-prepend-rules:
-  - DOMAIN,other.example,DIRECT
+tunlr:
+  rules:
+    prepend:
+      - DOMAIN,other.example,DIRECT
 -- settings.yaml --
 geo-update: 1d

@@ -203,12 +203,12 @@ func (et *editTest) mixin(name string) string {
 }
 
 func TestEditNewFileAndApply(t *testing.T) {
-	et := newEditTest(t, "log-level: debug\n")
+	et := newEditTest(t, "mihomo:\n  log-level: debug\n")
 	et.run(0, "config", "edit", "20-home", "--yes")
 	if len(et.seen) != 1 || et.seen[0] != string(templates.Mixin) {
 		t.Errorf("new file did not start from the example: %q", et.seen)
 	}
-	if got := et.mixin("20-home.yaml"); got != "log-level: debug\n" {
+	if got := et.mixin("20-home.yaml"); got != "mihomo:\n  log-level: debug\n" {
 		t.Errorf("saved = %q", got)
 	}
 	if fi, err := os.Stat(filepath.Join(et.a.layout.MixinDir(), "20-home.yaml")); err == nil && runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
@@ -228,7 +228,7 @@ func TestEditNewFileAndApply(t *testing.T) {
 
 // TestEditFixMistake 验证有错的编辑不会保存：回到编辑器改正后才写入。
 func TestEditFixMistake(t *testing.T) {
-	et := newEditTest(t, "prepend-rules: x\n", "prepend-rules:\n  - DOMAIN,a.example,DIRECT\n")
+	et := newEditTest(t, "tunlr:\n  rules:\n    prepend: x\n", "tunlr:\n  rules:\n    prepend:\n      - DOMAIN,a.example,DIRECT\n")
 	et.prompt.choices = []int{0}
 	et.during = func() {
 		if _, err := os.Stat(filepath.Join(et.a.layout.MixinDir(), "50-rules.yaml")); len(et.seen) == 2 && err == nil {
@@ -236,20 +236,20 @@ func TestEditFixMistake(t *testing.T) {
 		}
 	}
 	et.run(0, "config", "edit", "50-rules.yaml", "--yes")
-	if !strings.Contains(et.stdout.String(), "mixin 50-rules.yaml:1: prepend-rules: value must be a list") {
+	if !strings.Contains(et.stdout.String(), "mixin 50-rules.yaml:3: tunlr.rules.prepend: value must be a list") {
 		t.Errorf("output:\n%s", et.stdout)
 	}
-	if et.seen[1] != "prepend-rules: x\n" {
+	if et.seen[1] != "tunlr:\n  rules:\n    prepend: x\n" {
 		t.Errorf("second edit did not reopen the mistake: %q", et.seen[1])
 	}
-	if got := et.mixin("50-rules.yaml"); got != "prepend-rules:\n  - DOMAIN,a.example,DIRECT\n" {
+	if got := et.mixin("50-rules.yaml"); got != "tunlr:\n  rules:\n    prepend:\n      - DOMAIN,a.example,DIRECT\n" {
 		t.Errorf("saved = %q", got)
 	}
 }
 
 func TestEditCheckFailedDiscard(t *testing.T) {
-	et := newEditTest(t, "prepend-rules:\n  - MATCH,NOPE\n")
-	writeMixin(t, et.a.layout, "50-rules.yaml", "log-level: info\n")
+	et := newEditTest(t, "tunlr:\n  rules:\n    prepend:\n      - MATCH,NOPE\n")
+	writeMixin(t, et.a.layout, "50-rules.yaml", "mihomo:\n  log-level: info\n")
 	// 先按 Esc，在确认时反悔，回到选项；再选放弃并确认。
 	et.prompt.choices = []int{-1, 1}
 	et.prompt.confirms = []bool{false, true}
@@ -260,7 +260,7 @@ func TestEditCheckFailedDiscard(t *testing.T) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
 	}
-	if got := et.mixin("50-rules.yaml"); got != "log-level: info\n" {
+	if got := et.mixin("50-rules.yaml"); got != "mihomo:\n  log-level: info\n" {
 		t.Errorf("file changed: %q", got)
 	}
 	if len(et.prompt.asked) != 2 || strings.Join(et.prompt.asked[0], "|") != choiceEdit+"|"+choiceDiscard {
@@ -276,7 +276,7 @@ func TestEditCheckFailedDiscard(t *testing.T) {
 
 // TestEditCheckIncomplete 验证校验未能完成时可以选择只保存、不发布。
 func TestEditCheckIncomplete(t *testing.T) {
-	et := newEditTest(t, "prepend-rules:\n  - GEOSITE,GEO-DOWN,DIRECT\n")
+	et := newEditTest(t, "tunlr:\n  rules:\n    prepend:\n      - GEOSITE,GEO-DOWN,DIRECT\n")
 	et.prompt.choices = []int{1}
 	et.run(0, "config", "edit", "50-rules")
 	if !strings.Contains(et.stdout.String(), "not applied") || !strings.Contains(et.mixin("50-rules.yaml"), "GEO-DOWN") {
@@ -299,7 +299,7 @@ func TestEditNoChanges(t *testing.T) {
 }
 
 func TestEditDryRun(t *testing.T) {
-	et := newEditTest(t, "log-level: debug\n")
+	et := newEditTest(t, "mihomo:\n  log-level: debug\n")
 	et.run(0, "config", "edit", "20-home", "--dry-run")
 	if !strings.Contains(et.stdout.String(), "Dry run: the mixin was not saved.") {
 		t.Errorf("output:\n%s", et.stdout)
@@ -311,9 +311,9 @@ func TestEditDryRun(t *testing.T) {
 
 // TestEditChooseNewFile 验证不给名称时可以选择新建文件并输入名称。
 func TestEditChooseNewFile(t *testing.T) {
-	et := newEditTest(t, "mode: global\n")
-	writeMixin(t, et.a.layout, "10-a.yaml", "log-level: info\n")
-	writeMixin(t, et.a.layout, "20-b.yaml", "log-level: info\n")
+	et := newEditTest(t, "mihomo:\n  mode: global\n")
+	writeMixin(t, et.a.layout, "10-a.yaml", "mihomo:\n  log-level: info\n")
+	writeMixin(t, et.a.layout, "20-b.yaml", "mihomo:\n  log-level: info\n")
 	et.prompt.choices = []int{2}
 	et.prompt.inputs = []string{"30-new"}
 	et.run(0, "config", "edit", "--yes")
@@ -323,24 +323,24 @@ func TestEditChooseNewFile(t *testing.T) {
 	if len(et.prompt.described) != 1 || !strings.Contains(et.prompt.described[0], "Current order: 10-a.yaml → 20-b.yaml") {
 		t.Errorf("name prompt description = %q", et.prompt.described)
 	}
-	if got := et.mixin("30-new.yaml"); got != "mode: global\n" {
+	if got := et.mixin("30-new.yaml"); got != "mihomo:\n  mode: global\n" {
 		t.Errorf("saved = %q", got)
 	}
 }
 
 // TestEditConcurrentChange 验证文件在编辑期间被改动时不覆盖，编辑结果保留在临时文件中。
 func TestEditConcurrentChange(t *testing.T) {
-	et := newEditTest(t, "log-level: debug\n")
-	writeMixin(t, et.a.layout, "20-home.yaml", "log-level: info\n")
-	et.during = func() { writeMixin(t, et.a.layout, "20-home.yaml", "log-level: error\n") }
+	et := newEditTest(t, "mihomo:\n  log-level: debug\n")
+	writeMixin(t, et.a.layout, "20-home.yaml", "mihomo:\n  log-level: info\n")
+	et.during = func() { writeMixin(t, et.a.layout, "20-home.yaml", "mihomo:\n  log-level: error\n") }
 	et.run(1, "config", "edit", "20-home", "--yes")
 	out := et.stdout.String()
-	if !strings.Contains(out, "changed by someone else") || et.mixin("20-home.yaml") != "log-level: error\n" {
+	if !strings.Contains(out, "changed by someone else") || et.mixin("20-home.yaml") != "mihomo:\n  log-level: error\n" {
 		t.Fatalf("output:\n%s", out)
 	}
 	_, kept, _ := strings.Cut(out, "your version is kept in ")
 	kept = strings.TrimSpace(kept)
-	if data, err := os.ReadFile(kept); err != nil || string(data) != "log-level: debug\n" {
+	if data, err := os.ReadFile(kept); err != nil || string(data) != "mihomo:\n  log-level: debug\n" {
 		t.Errorf("kept copy %q: %q %v", kept, data, err)
 	}
 	os.Remove(kept)

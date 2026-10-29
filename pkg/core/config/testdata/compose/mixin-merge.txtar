@@ -26,27 +26,29 @@ hosts:
 # 这段注释不应出现在配置中。
 x-dns: &dns
   - 1.1.1.1
-mixed-port: 7891 # 行尾注释同样去掉
-dns:
-  ipv6: false
-  prepend-nameserver: *dns
-  fallback-filter:
-    geoip-code: US
-    geoip: null
-profile: null
-tun:
-  stack: system
-sniffer:
-  enable: true
-  sniff:
-    HTTP:
-      ports: [80]
-      override-destination: null
-  append-skip-domain:
-    - Mijia Cloud
+mihomo:
+  mixed-port: 7891 # 行尾注释同样去掉
+  dns:
+    ipv6: false
+    nameserver: *dns
+    fallback-filter:
+      geoip-code: US
+      geoip: null
+  profile: null
+  tun:
+    stack: system
+  sniffer:
+    enable: true
+    sniff:
+      HTTP:
+        ports: [80]
+        override-destination: null
+    skip-domain:
+      - Mijia Cloud
 -- managed/tunlr:tun --
-tun:
-  enable: true
+mihomo:
+  tun:
+    enable: true
 -- want.yaml --
 # 键上的注释应保留。
 mixed-port: 7891
@@ -57,8 +59,6 @@ dns:
   ipv6: false
   nameserver:
     - 1.1.1.1
-    - 223.5.5.5
-    - 119.29.29.29
   fallback-filter:
     geoip-code: US
 

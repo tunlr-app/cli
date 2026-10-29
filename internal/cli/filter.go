@@ -33,7 +33,7 @@ func (a *app) newFilterCommand() *cobra.Command {
 			"  quic     UDP port 443 is rejected, so browsers use TCP instead of QUIC (which many proxies\n" +
 			"           carry poorly); sites that go direct fall back to TCP too\n" +
 			"  ports    only connections to common ports are proxied; others (BT, P2P, games) go direct\n" +
-			"All are off by default. A mixin can override the rules or remove them with delete-rules.",
+			"All are off by default. A mixin can override the rules or remove them with tunlr.rules.delete.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.showFilter() },
 	}

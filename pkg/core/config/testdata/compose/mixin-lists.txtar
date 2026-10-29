@@ -18,21 +18,27 @@ sub-rules:
     - DST-PORT,443,REJECT
     - MATCH,g
 -- mixin.d/10-test.yaml --
-append-rules:
-  - GEOIP,LAN,DIRECT
-  - MATCH,DIRECT
-prepend-rules:
-  - DOMAIN-SUFFIX,first.example,DIRECT
-delete-rules:
-  - /^MATCH,/
-sub-rules:
-  append-udp:
-    - DST-PORT,53,DIRECT
-  prepend-tcp:
-    - MATCH,DIRECT
-append-listeners:
-  - {name: in, type: socks, port: 10808}
-prepend-proxy-groups:
+tunlr:
+  rules:
+    append:
+      - GEOIP,LAN,DIRECT
+      - MATCH,DIRECT
+    prepend:
+      - DOMAIN-SUFFIX,first.example,DIRECT
+    delete:
+      - /^MATCH,/
+  sub-rules:
+    udp:
+      append:
+        - DST-PORT,53,DIRECT
+    tcp:
+      prepend:
+        - MATCH,DIRECT
+  proxy-groups:
+    prepend:
+mihomo:
+  listeners:
+    - {name: in, type: socks, port: 10808}
 -- want.yaml --
 mixed-port: 7890
 

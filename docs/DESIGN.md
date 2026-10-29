@@ -186,7 +186,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 - **可以保存多个订阅，同一时间只启用一个**。订阅本身就是一份完整的 YAML，不存在多份订阅的节点、策略组和规则互相合并的情况。下面的分层合成只是在启用的那份订阅之上叠加系统设置和用户覆盖。
   - 适用场景：有备用机场、或在几个机场之间切换。`sub use <name>` 切换启用的订阅，切换本身就是一次配置发布，同样经过校验，失败则回滚。
   - 每个订阅保留最近一次成功抓取的内容。切换到从未成功抓取的订阅时先抓取，失败则不切换。
-  - `mixin.d/*.yaml` 对所有订阅共用，每个订阅另有自己的 mixin（`mixin.d/<订阅名>/*.yaml`，只在它启用时应用，排在共用的之后，见下文“订阅 mixin”）。共用的 mixin 可能引用某个机场特有的策略组：`patch-`、`delete-` 找不到目标时只给出警告；插入了不存在的名称等导致 `mihomo -t` 不通过时，不发布并提示原因。
+  - `mixin.d/*.yaml` 对所有订阅共用，每个订阅另有自己的 mixin（`mixin.d/<订阅名>/*.yaml`，只在它启用时应用，排在共用的之后，见下文“订阅 mixin”）。共用的 mixin 可能引用某个机场特有的策略组：`patch`、`delete` 找不到目标时只给出警告；插入了不存在的名称等导致 `mihomo -t` 不通过时，不发布并提示原因。
   - 不能删除正在启用的订阅，需先切换到其他订阅。
 - **订阅抓取**（`pkg/core/subscription`）：
   - 机场按 User-Agent 决定返回的格式。默认 `clash.meta mihomo tunlr/<版本>`，同时命中面板常见的 `clash.meta` 与 `mihomo` 子串判断；返回 base64 节点列表时，报错提示更换 User-Agent。可以自定义，优先级从高到低：
@@ -218,7 +218,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
     | 独占 | `tunlr:core`（`external-controller-unix`，工具经它访问 API）<br>`tunlr:tun`（`tun.enable` 等，见 8.3）<br>`tunlr:geo`（`geo-auto-update`、`geo-update-interval`，见第 7 节）<br>`tunlr:panel`（`external-controller`、`secret`）<br>`tunlr:proxy`（`allow-lan`、`lan-allowed-ips`，见第 10 节“代理端口的局域网访问”） | 用户的 mixin 之后 | 报错，不发布 |
     | 默认值 | `tunlr:mirror`（`geox-url`；配置了 `github-mirror` 时另有 `external-ui-url` 和让镜像直连的规则） | 用户的 mixin 之前 | 允许，`config plan` 中记为“覆盖 tunlr:mirror” |
 
-  - 冲突：用户的 mixin 写了独占的键（即使值相同）、用 `null` 或 `delete-` 删除它，或把它的上级整个替换掉。报告为 mixin 错误（`*config.MixinError`，退出码 3），指出文件、行和改用的命令，例如 `mixin 20-x.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); remove it from the mixin`。同一映射中的其他键照常可改（如 `tun.stack`、`tun.route-exclude-address`）。
+  - 冲突：用户的 mixin 在 `mihomo:` 下写了独占的键（即使值相同）、用 `null` 删除它，或把它的上级整个替换掉。报告为 mixin 错误（`*config.MixinError`，退出码 3），指出文件、行和改用的命令，例如 `mixin 20-x.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); remove it from the mixin`。同一映射中的其他键照常可改（如 `tun.stack`、`tun.route-exclude-address`）。
   - 为什么拒绝而不是像原来那样忽略并警告：被忽略的设置让人以为生效了，交互命令和手改的 mixin 各说各的；拒绝时用户立刻知道该用哪个命令。代价是工具升级新增独占的键后，已经写了它的 mixin 会让定时更新保持当前配置（与 mixin 出错相同），`doctor` 的 `install.mixins` 列出这种冲突。
   - `secret` 也是独占的，不支持自定义：换 secret 用 `tunlr panel reset-secret`。
   - 受管 mixin 只在内存中合成，不写入 `mixin.d`：写成文件会让用户以为可以编辑它，改了又被工具覆盖；设置变化时还要同步文件。`tunlr config` 列出用户的 mixin 文件和全部受管 mixin（独占的列出键和命令，默认值的列出内容，`secret` 的值不出现），`config plan` 列出受管 mixin 的名称和默认值的内容。
@@ -226,20 +226,67 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 回滚和自动关闭透明代理不重新合成，只把独占的受管 mixin 按当前状态重新写入生效的配置（`config.Enforce`），包括面板的监听地址和 `secret`。
 - **mixin**（`pkg/core/config/mixin.go`）。参考了 clashctl（单个 mixin.yaml，嵌套的 `prepend`/`append`/`override`/`inject`）和 ShellCrash（按类别分文件、文本拼接、`-t` 失败时静默丢弃全部自定义）后的设计：
   - 场景：改通用设置；加自己的节点、策略组、规则、rule-providers、listeners；改订阅里已有的策略组和节点（塞入自己的节点、改 interval、加 dialer-proxy）；去掉机场的信息节点和不要的组或规则；按用途分文件、可以单独停用。
-  - **语法：mihomo 原生写法 + 前缀操作**。不带前缀的键与 mihomo 配置语义完全一致；同一个文件里可以对同一个键做多种操作；一条规则推广到任意层级。没有采用 clashctl 的嵌套写法（`rules` 是列表就替换、是映射就执行操作，语义由类型决定，且只对写死的几个键有效），也没有用 YAML 标签（同一个键在一个文件里只能出现一次，无法既前插又追加）。
+  - **两个命名空间：`mihomo:` 是原生配置，`tunlr:` 是 tunlr 的语法**（2026-10-29 讨论后定）。一个 mixin 文件的顶层只有这两个键（外加放锚点的 `x-`），各自可以省略：
+
+    ```yaml
+    mihomo:                      # 原样合并进生成的配置，不含任何 tunlr 的写法
+      log-level: warning
+      dns:
+        nameserver: [192.168.1.1, 223.5.5.5]
+    tunlr:                       # 由 tunlr 解析，不进入配置
+      proxy-filter:
+        exclude-filter: 倍率
+      proxies:
+        append:
+          - {name: 家宽, type: socks5, server: 203.0.113.1, port: 1080}
+      proxy-groups:
+        patch:
+          - name: 节点选择
+            prepend-proxies: [家宽]
+      rules:
+        prepend:
+          - DOMAIN-SUFFIX,corp.example.com,家宽
+        delete:
+          - /^GEOIP,CN/
+    ```
+
+    - 为什么分开：mixin 里有两类东西，mihomo 的配置和只有 tunlr 认识的操作。混在一层里，看一个键要先判断它是谁的。分成两块后，`mihomo:` 下的每个键都能直接查 mihomo 文档，`tunlr:` 下的每个键都在本节有定义，谁来解析一目了然，两边各自可以独立演进。
+    - 为什么不做成只有 `tunlr:` 的一套语言：mihomo 的配置面很大且一直在加，建模一部分就有改不了的东西，全部建模等于永远追着上游重写 schema，mihomo 的文档和示例也用不上了。`mihomo:` 就是这个兜底：tunlr 没覆盖到的，照样能改。
+    - 为什么操作只针对几个列表：tunlr 的操作只对订阅带来的三个列表（节点、策略组、规则）有意义，它们是 mihomo 配置里仅有的“用户必须在机场的内容上增删改”的地方；其余键都来自模板或用户自己，整体写一遍就够。所以 `tunlr:` 下按这几个对象分组，而不是对任意一层都提供增删改。
+    - 顶层出现这两个键（和 `x-`）之外的键时报错，不猜测用户的意图。
+
+  - **`mihomo:` 的合并语义**：与 mihomo 配置完全一致的写法，按 RFC 7386 JSON Merge Patch 合并：
 
     | 写法 | 语义 |
     |---|---|
     | `键: 值` | 映射逐层合并，标量和列表整体替换。只写 `dns.nameserver` 不会清掉 `dns` 下的其他字段 |
-    | `键: null` | 删除该键（同 RFC 7386 JSON Merge Patch） |
-    | `prepend-键` / `append-键` | 在列表前插入 / 后追加，列表不存在时创建。顶层 `rules` 和 `sub-rules` 中的规则列表追加在末尾的 `MATCH` 之前，否则追加的规则永远不会命中 |
-    | `patch-键` | 每一项按 `name` 找到列表中的项，用同样的语义递归修改它（可以在项里用 `prepend-proxies` 等）。找不到时警告，不报错：机场改名很常见 |
-    | `delete-键` | 列表按 `name`（字符串列表按值）删除，映射按键删除。顶层删除节点或策略组时，同时从所有策略组的 `proxies` 中移除 |
+    | `键: null` | 删除该键 |
 
-  - 前缀可用在任何一层映射里，例如 `dns` 下的 `prepend-nameserver`、`sub-rules` 下的 `append-<名称>`。`patch-`、`delete-` 中的名称写成 `/正则/` 时匹配所有符合的项（用于批量修改同一地区的节点、删掉个别的组或规则；成批筛选节点用 `tunlr.proxy-filter`）。
-  - 同一层中按 替换 → 删除 → 修改 → 插入 的固定顺序执行，与书写顺序无关。这样先删掉订阅的 `MATCH` 再追加自己的 `MATCH`、删除信息节点不会误删自己追加的节点。
+    - 列表只整体替换，不提供插入和删除：要在列表里增删的只有订阅带来的三个列表，归 `tunlr:`。嵌套的列表（`dns.nameserver`、`listeners`、`tun.route-exclude-address` 等）都来自模板或用户自己，整体写一遍是最清楚的写法。
+    - 在这里整体替换 `proxies`、`proxy-groups`、`rules`、`sub-rules` 时给出警告，指向 `tunlr:` 下的操作（订阅更新后机场的内容会全部丢掉，多半不是本意）。
+    - 受管的键（见上文“受管 mixin”）在这里和在 `tunlr:` 里一样不能动。
+
+  - **`tunlr:` 的操作**：下面的键之外一律报错，免得写错了以为生效。
+
+    | 键 | 含义 |
+    |---|---|
+    | `proxy-filter` | 筛选订阅的节点，见下文“节点筛选” |
+    | `proxies`、`proxy-groups`、`rules` | 对订阅的同名列表做操作，各自是一个映射，键为下表的四种操作 |
+    | `sub-rules` | 映射：`<名称>` → 同样的四种操作，作用于 `sub-rules.<名称>` |
+
+    | 操作 | 语义 |
+    |---|---|
+    | `prepend` / `append` | 在列表前插入 / 后追加，列表不存在时创建。规则列表（`rules`、`sub-rules.<名称>`）追加在末尾的 `MATCH` 之前，否则追加的规则永远不会命中 |
+    | `patch` | 每一项按 `name` 找到列表中的项，按 `mihomo:` 的语义递归修改它（映射合并、标量和列表替换、`null` 删除字段）。项里对列表字段的增删用 `prepend-<字段>`、`append-<字段>`、`delete-<字段>`，如策略组的 `prepend-proxies`：这是前缀写法仅剩的位置，显式写出，不靠值的类型猜。找不到时警告，不报错：机场改名很常见 |
+    | `delete` | 按 `name`（规则按整条内容）删除。删除节点或策略组时，同时从所有策略组的 `proxies` 中移除 |
+
+    - `patch`、`delete` 中的名称写成 `/正则/` 时匹配所有符合的项（用于批量修改同一地区的节点、删掉个别的组或规则；成批筛选节点用 `proxy-filter`）。
+    - 操作的值必须是列表（`null` 视为没写）。
+    - 不给 `proxy-providers`、`rule-providers` 设操作：它们是映射，在 `mihomo:` 里逐键合并、`null` 删除已经够用。有真实需求再加。
+  - **一个文件内的执行顺序**固定，与书写顺序无关：先 `mihomo:`（替换与合并），再 `tunlr:` 的 删除 → 修改 → 插入。这样先删掉订阅的 `MATCH` 再追加自己的 `MATCH`、删除信息节点不会误删自己追加的节点；`patch` 也能改到 `mihomo:` 里刚替换的内容。`proxy-filter` 不在这个顺序里：它在任何 mixin 之前执行（见下文）。
   - 顶层以 `x-` 开头的键不写入配置，用来放 YAML 锚点；锚点不能跨文件。mixin 中的注释不带入生成的配置。
-  - 顶层的 `tunlr` 是 tunlr 自己的命名空间，同样不写入配置，合并规则与其他键相同（后面的文件逐字段覆盖前面的）。目前只有 `proxy-filter`；其中出现不认识的键时报错，免得写错了以为生效。
+  - 多个文件时两个命名空间都是“后面的文件作用在前面的结果上”：`mihomo:` 逐键覆盖，`tunlr:` 的操作逐个执行（后面文件前插的规则排得更靠前，后面的文件可以 `patch` 前面文件加入的组），`proxy-filter` 逐字段覆盖。
+  - 受管 mixin 在内部用同一种写法表达（独占的键写在 `mihomo:` 下，`tunlr:mirror`、`tunlr:filter` 插入的规则写在 `tunlr.rules.prepend` 下），走同一套引擎。
   - **正则与 mihomo 相同**（2026-10-29）：所有正则（`/正则/` 和 `proxy-filter`）都用 `github.com/dlclark/regexp2`，即 mihomo 筛选节点所用的库（.NET 语法，支持前后查找）。同一个字符串既由 tunlr 执行、又原样写给内核，两边的结果必须一致；只有一种正则语义，也不必记哪里支持什么。原来用 Go 的 `regexp`（RE2），常见写法两者相同。
 - **节点筛选（`tunlr.proxy-filter`）**（2026-10-29）：mihomo 没有全局的节点筛选，只有 provider 和策略组上的 `filter`、`exclude-filter`、`exclude-type`，而且策略组上的 `filter` 对 `proxies:` 中按名称列出的节点不生效。机场的完整配置绝大多数是顶层列出节点、策略组按名称引用，原生的筛选一个也去不掉，所以由 tunlr 实现：
 
@@ -253,7 +300,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 
   - 字段、写法和语义照搬 mihomo 的 provider（读源码 `adapter/outboundgroup/groupbase.go` 与文档）：先取 `filter`，再去掉 `exclude-filter`，最后去掉 `exclude-type`，两边都匹配时去掉。按 provider 而不是策略组的语义，因为它决定的是“有哪些节点”：`exclude-type` 匹配配置中 `type` 的写法（`ss`、`vmess`），而不是策略组用的内部类型名（`Shadowsocks`）。
   - 写在共用的 mixin 里对所有订阅生效，写在订阅 mixin 里只对这个订阅生效、并逐字段覆盖共用的。
-  - **只筛选订阅带来的节点**：在订阅层之后、任何 mixin 之前执行（用的是全部 mixin 合并后的 `tunlr.proxy-filter`）。mixin 用 `append-proxies` 加的自己的节点不受影响，`delete-proxies` 照常只删点名的。
+  - **只筛选订阅带来的节点**：在订阅层之后、任何 mixin 之前执行（用的是全部 mixin 合并后的 `tunlr.proxy-filter`）。mixin 用 `tunlr.proxies.append` 加的自己的节点不受影响，`tunlr.proxies.delete` 照常只删点名的。
   - 订阅中直接列出的 `proxies`：tunlr 筛选，去掉的节点从所有策略组的 `proxies` 中移除。策略组因此变空（原来有成员，现在没有，且没有 `use`、`include-all*`）时删掉它，并从其他组中移除，直到没有空组；mihomo 运行时会给空组放一个兜底出站，但组里已经没有可用的节点，发布前删掉、在 plan 中说明更清楚。被删的组如果在全部 mixin 应用之后仍被规则（`rules`、`sub-rules`）引用，报错不发布（退出码 3），列出这些规则，由用户放宽筛选或用 mixin 处理，不悄悄把这部分流量改成直连或拒绝。订阅只有直接列出的节点、却全被筛掉时同样报错。
   - 订阅中的 `proxy-providers`：tunlr 看不到其中的节点，把三个字段写进每个 provider 由内核筛选。provider 原来就有的：`exclude-filter` 用反引号、`exclude-type` 用 `|` 追加（都是任一匹配即去掉，可以直接拼接）；`filter` 要两边都满足，组合为 `^(?=.*?(?:原有))(?=.*?(?:新的))`（多条时各自先合成 `(?:a)|(?:b)`），只有 regexp2 支持前瞻，这也是正则要与 mihomo 一致的原因之一。
   - 正则在合成时检查语法。订阅只有直接列出的节点时，某条正则一个节点都没匹配到给出警告（多半是写错了）。`config plan` 给出一行摘要，如 `Proxy filter: kept 20 of 43 proxies; removed empty groups: 美国, 新加坡; filtered by mihomo in providers: airport`，`--json` 中为 `proxy_filter`。
@@ -268,8 +315,8 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - mixin 可能含有节点密码，目录 0700，文件 0600。
 - **范围与检查**：
   - 受管的键：动了独占的受管 mixin 的键时报错（见上文“受管 mixin”）。
-  - 允许但警告：数字前缀位数不同导致的意外顺序；用不带前缀的 `rules`/`proxies`/`proxy-groups` 整体替换订阅的内容；`patch-`、`delete-` 没有匹配的项。
-  - 报错（退出码 3，不发布）：YAML 解析失败；动了受管的键；前缀操作的值不是列表，或目标的类型不对（如 `prepend-dns`）；`patch-` 的项没有 `name`；正则无效；端口安全检查不通过（见下）；以及 `mihomo -t` 不通过。
+  - 允许但警告：数字前缀位数不同导致的意外顺序；在 `mihomo:` 中整体替换订阅的 `rules`/`proxies`/`proxy-groups`/`sub-rules`；`patch`、`delete` 没有匹配的项。
+  - 报错（退出码 3，不发布）：YAML 解析失败；顶层有 `mihomo`、`tunlr`、`x-` 之外的键（提示放到 `mihomo:` 下）；动了受管的键；`tunlr:` 下有不认识的键，或操作的值不是列表；`patch` 的项没有 `name`；正则无效；端口安全检查不通过（见下）；以及 `mihomo -t` 不通过。
   - **端口安全**（MVP 5）：合成的结果会让其他主机无需凭据就能使用代理或 DNS 时不发布，避免公网服务器成为开放代理、开放 DNS 解析器。由 `pkg/core/config.CheckExposure` 检查：
     - `allow-lan: true` 而 `authentication` 为空，且 `lan-allowed-ips` 不是只含私有地址段（每一项都在 `config.LANAllowedIPs` 的某个网段之内；没写这个键时内核放行所有来源）：代理端口（`mixed-port`、`port`、`socks-port` 等）对外开放且没有认证。`tunlr proxy lan on` 写的就是只含私有地址段的列表，所以通过。
     - `listeners` 中 `mixed`、`http`、`socks` 类型的项监听在非回环地址（不写 `listen` 即为 `0.0.0.0`），且没有认证：写了 `users: []`，或没写 `users`（这时沿用全局的 `authentication`）而全局也为空。
@@ -279,7 +326,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
     - 认证的用户名和密码由用户写在 mixin 里，tunlr 不生成、不保存。`doctor` 对生效的配置做同样的检查（`install.exposure`）。
   - mixin 有错时绝不丢掉它去发布（ShellCrash 的做法）：丢掉用户写的直连或拦截规则可能让流量走错路。定时更新遇到 mixin 错误同样保持当前配置。
 - **`tunlr config edit [名称]`**：同 visudo、`kubectl edit`，在临时副本上编辑，保存后合成并运行 `-t`，有错就显示原因并让用户选择重新编辑或放弃，**通过后才写回 `mixin.d`**，然后显示 diff、确认后发布。有错的编辑因此不会进入 `mixin.d`，定时任务读不到。
-  - 新文件以带完整说明、全部注释掉的示例开始（`templates/mixin.yaml`），未修改就不保存。省略名称时从已有文件中选择或新建（共用的，或启用订阅的）。名称写成 `<订阅名>/<文件名>` 时是订阅 mixin，订阅必须存在。
+  - 新文件以带完整说明、全部注释掉的示例开始（`templates/mixin.yaml`，`mihomo:` 与 `tunlr:` 两段各给示例），未修改就不保存。省略名称时从已有文件中选择或新建（共用的，或启用订阅的）。名称写成 `<订阅名>/<文件名>` 时是订阅 mixin，订阅必须存在。
   - `-t` 因下载数据失败而未能完成时，可以选择只保存不发布。编辑期间文件被别人改过时不覆盖，编辑结果留在临时文件中。
   - 编辑器取 `$VISUAL`、`$EDITOR`，否则依次尝试 `vim`、`nano`、`vi`（有 vim 就用 vim，不经 Debian 的 `editor` 替代项，它常指向 nano）；需要终端，非交互模式下报用法错误，直接改文件后用 `config plan`/`config apply` 即可。
   - 打开编辑器前只说明 tunlr 自己的规则（保存退出后校验并显示差异、确认后才发布；不保存退出则不做改动），不讲编辑器本身的用法。
@@ -302,7 +349,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   | 面板触发的内核升级 | 内核 | 按规则分流，直连 github.com | 无，事后由工具核对（见第 7 节） |
 
   - 读 mihomo 源码（`component/http`）确认：内核自己的 HTTP 请求交给内部 tunnel，按目标域名匹配规则，失败时才退回直连。所以策略组选中不可用的节点时，面板和 geo 下载全部失败（实测）。
-  - **镜像直连规则**：配置了 `github-mirror` 时，工具在订阅规则前插入 `DOMAIN,<镜像域名>,DIRECT`（镜像是 IP 时用 `IP-CIDR`/`IP-CIDR6`）。镜像本来就是为直连准备的；实测选中不可用的节点时，加上这条规则后面板经镜像下载成功。它属于提供默认值的 `tunlr:mirror` 而不是独占的：用户有理由让镜像也走代理，可以用 `delete-rules` 去掉。没有配置镜像时不加，直连 github.com 在国内很慢，交给规则决定。将来 TUN 阶段需要直连的主机（如订阅域名）也放在这一层。
+  - **镜像直连规则**：配置了 `github-mirror` 时，工具在订阅规则前插入 `DOMAIN,<镜像域名>,DIRECT`（镜像是 IP 时用 `IP-CIDR`/`IP-CIDR6`）。镜像本来就是为直连准备的；实测选中不可用的节点时，加上这条规则后面板经镜像下载成功。它属于提供默认值的 `tunlr:mirror` 而不是独占的：用户有理由让镜像也走代理，可以用 `tunlr.rules.delete` 去掉。没有配置镜像时不加，直连 github.com 在国内很慢，交给规则决定。将来 TUN 阶段需要直连的主机（如订阅域名）也放在这一层。
   - **信任边界**：镜像可以篡改它转发的内容。工具的下载有官方 sha256 兜底，内核的下载没有。其中面板在浏览器中运行并持有 API secret，geo 数据决定分流，被篡改的后果都很严重，因此改由工具下载并校验：
     - 面板：apply 时若面板目录不存在，工具从 zashboard 最新发布下载 `dist.zip`，按官方 sha256 校验，解压（拒绝指向目录外的路径和非普通文件，限制解压后大小）后原子地放到位。实测内核启动时发现面板目录已存在就跳过下载。只处理 `external-ui-url` 仍是 zashboard 官方地址或其镜像地址的配置，用户在 mixin 中换了面板时交给内核。面板不是必需的：下载失败（时限 5 分钟）照常发布，由内核按 `external-ui-url` 自己下载；下载在加锁之前进行，不阻塞定时任务。
     - geo 数据：校验前缺失的文件由工具校验下载；定时更新默认由 `_update` 触发内核下载后按官方 sha256 核对（见第 7 节“geo 数据更新”）。内核自己的 `geo-auto-update` 下载后不做任何校验，由工具设置决定开关（归 `tunlr:geo`，mixin 改不了），默认关闭。
@@ -654,7 +701,7 @@ tunlr devices forget <设备>              删除记录（恢复为 proxy）
 
 ### 8.13 流量过滤
 
-`tunlr filter` 集中设置哪些流量不按订阅的规则走（2026-10-28 讨论后决定）。都由受管 mixin `tunlr:filter`（提供默认值，用户的 mixin 可以覆盖，或用 `delete-rules` 去掉）在规则最前插入规则，变化经流水线发布（diff、确认、`mihomo -t`），失败时回滚，过滤项恢复原状。全部默认关闭，`init` 不询问。
+`tunlr filter` 集中设置哪些流量不按订阅的规则走（2026-10-28 讨论后决定）。都由受管 mixin `tunlr:filter`（提供默认值，用户的 mixin 可以覆盖，或用 `tunlr.rules.delete` 去掉）在规则最前插入规则，变化经流水线发布（diff、确认、`mihomo -t`），失败时回滚，过滤项恢复原状。全部默认关闭，`init` 不询问。
 
 | 项 | 规则 | 用途 |
 |---|---|---|
@@ -970,6 +1017,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 | 5 | ~~工具设置~~ | 第 10 节 | 已完成 | `tunlr settings` 列出设置，`settings edit` 在编辑器中修改；不做 `set/unset` |
 | 6 | ~~备份与还原~~ | 第 10 节 | 已完成 | 见第 10 节 `backup` |
 | 6a | ~~命令树整理~~ | 第 10 节 | 已完成 | 顶层 26 → 15（`upgrade` 实现后为 16）：`core`（start/stop/restart/logs/upgrade）、`config`（plan/apply/rollback/edit，含原 mixin）、`config` 改名 `settings`、`gateway` 并入 `tun`、`update` 移到 Configuration（不带子命令只查看，立即执行改为 `update run`，`sub set` 并入 `update set sub`）、去掉 `version` 子命令、隐藏 `completion`；帮助按分组显示；旧命令全部删除、不留别名；提示文字、主菜单、测试、本文档同步。随后按“查看命令的参数只改变看什么”的推论：`panel reset-secret`、`core rollback` 改为子命令，`config` 显示配置历史（去掉 `rollback --list`）；`tun gateway on` 交互时选局域网网卡；主菜单按帮助分组重排（Settings 独立成分类、最上面是需要处理的事项、底部显示等价命令、第一级一屏放下、Kernel 分类加回滚和修复安装） |
+| 6b | ~~mixin 分为 `mihomo:` 与 `tunlr:` 两个命名空间~~ | 第 6 节 | 已完成 | `mihomo:` 原样合并（映射合并、标量和列表替换、`null` 删除），`tunlr:` 下按 `proxies`、`proxy-groups`、`rules`、`sub-rules.<名称>` 分组提供 `prepend`/`append`/`patch`/`delete`，`patch` 项内的列表字段用 `prepend-<字段>` 等前缀。受管 mixin、`templates/mixin.yaml`、`sub add` 生成的筛选文件、提示文字、golden 文件同步 |
 | 7 | `tunlr upgrade`（自身升级） | 第 10 节 | 待补全 | 正式发布前必须有：查询最新版本、下载（可经镜像，只认官方 sha256）、用新文件跑 `--version` 确认、原子替换 `/usr/local/bin/tunlr`、必要时重写 unit 和 timer。待定：是否保留旧版本以便回退、开发版如何处理。不做定时任务 |
 | 8 | 发布 | 第 12 节 | 待补全 | `.goreleaser.yaml`（amd64、arm64，带 checksum）还没跑过真正的发布，没有 CI；`install.sh` 与官网未做 |
 

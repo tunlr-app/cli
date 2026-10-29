@@ -2,7 +2,8 @@
 订阅中的端口、API、DNS 等系统设置被丢弃，只采用路由部分。
 
 -- managed/tunlr:panel --
-secret: generated
+mihomo:
+  secret: generated
 -- subscription.yaml --
 # Example Airport
 # Generated for clash-verge
@@ -96,16 +97,19 @@ rules:
 - MATCH,Default Proxy
 -- mixin.d/50-custom.yaml --
 # 自己的规则放在机场规则之前。
-prepend-rules:
-  - DOMAIN-SUFFIX,internal.example.org,DIRECT
-  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+tunlr:
+  rules:
+    prepend:
+      - DOMAIN-SUFFIX,internal.example.org,DIRECT
+      - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
 
-log-level: warning
+mihomo:
+  log-level: warning
 
-# 只替换 nameserver，dns 的其他字段保留模板的值。
-dns:
-  nameserver:
-    - https://1.1.1.1/dns-query
+  # 只替换 nameserver，dns 的其他字段保留模板的值。
+  dns:
+    nameserver:
+      - https://1.1.1.1/dns-query
 -- want.yaml --
 # 本文件由 tunlr 生成，直接修改会在下次 apply 时被覆盖。
 # 自定义设置请写在 mixin 中（tunlr config edit）。

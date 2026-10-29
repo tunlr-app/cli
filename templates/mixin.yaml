@@ -3,50 +3,59 @@
 # /etc/tunlr/mixin.d/ 下的 *.yaml 按文件名顺序逐个应用，后面的文件优先。
 # 可以按用途分文件，用数字前缀排序，例如 10-dns.yaml、20-nodes.yaml、50-rules.yaml。
 # 文件名逐字符比较，前缀请用相同的位数：9-a.yaml 会排在 10-b.yaml 之后。
+# mixin.d/<订阅名>/ 下的文件只在那个订阅启用时应用，排在共用的文件之后。
 # tunlr 的命令管理的键（TUN 开关、API 的监听地址和 secret、geo 数据的自动更新等）这里不能写，
 # 写了会被拒绝并提示改用哪个命令；tunlr config 列出它们。经 GitHub 镜像的下载地址和直连
 # 规则只是默认值，在所有文件之前应用，可以在这里覆盖。
 # 用 tunlr config edit 编辑会在保存时自动检查；直接改文件的，用 tunlr config plan 预览、tunlr config apply 发布。
 #
-# 写法与 mihomo 配置相同，另有几种前缀操作：
-#   键: 值                    映射逐层合并，标量和列表整体替换
-#   键: null                  删除这个键
-#   prepend-键 / append-键    在列表前面插入 / 后面追加（规则追加在最后的 MATCH 之前）
-#   patch-键                  按 name 修改列表中已有的项，项里同样可以用这些写法
-#   delete-键                 按 name 删除列表中的项（字符串列表按值）；
-#                             删除节点或策略组时，同时从所有策略组中移除
-# 前缀在任何一层都能用，例如 dns 下的 prepend-nameserver。
+# 顶层只有两段：
+#   mihomo:  mihomo 的原生配置，写法与 mihomo 文档相同，原样合并进生成的配置：
+#              映射逐层合并，标量和列表整体替换，键: null 删除这个键
+#   tunlr:   tunlr 的操作，不写入配置：
+#              proxy-filter                        筛选订阅的节点（规则同 mihomo 的 proxy-providers）
+#              proxies / proxy-groups / rules      对订阅的这几个列表做操作，各有四种：
+#                prepend / append                  在前面插入 / 后面追加（规则追加在最后的 MATCH 之前）
+#                patch                             按 name 修改已有的项；项里用 prepend-proxies 等改其中的列表
+#                delete                            按 name 删除（规则按整条内容）；删除节点或策略组时，
+#                                                  同时从所有策略组中移除
+#              sub-rules: {名称: {同上四种}}        对 sub-rules 中的规则集做同样的操作
 # name 写成 /正则/ 时匹配所有符合的项。
-# 同一层中按 替换 → 删除 → 修改 → 插入 的顺序执行，与书写顺序无关。
+# 先合并 mihomo:，再按 删除 → 修改 → 插入 的顺序执行 tunlr: 的操作，与书写顺序无关。
 # 规则中含有逗号，要像下面的示例那样逐行写；写成 [A,B,C] 会被拆成三项。
 # 顶层以 x- 开头的键不写入配置，可以用来放 YAML 锚点。
 
-# ---- 通用设置 ----
-# log-level: warning
-# dns:
-#   prepend-nameserver:
-#     - 192.168.1.1
+# mihomo:
+#   log-level: warning
+#   dns:
+#     nameserver:
+#       - 192.168.1.1
+#       - 223.5.5.5
 
-# ---- 自己的节点 ----
-# append-proxies:
-#   - {name: 家宽, type: socks5, server: 203.0.113.1, port: 1080}
-
-# ---- 修改订阅的节点和策略组 ----
-# patch-proxies:
-#   - name: /香港/
-#     udp: true
-# patch-proxy-groups:
-#   - name: 节点选择
-#     prepend-proxies: [家宽]
-#   - name: /自动选择|故障转移/
-#     interval: 600
-
-# ---- 去掉机场的信息节点 ----
-# delete-proxies:
-#   - /剩余流量|套餐到期|官网/
-
-# ---- 规则 ----
-# prepend-rules:        # 优先于订阅的规则
-#   - DOMAIN-SUFFIX,corp.example.com,家宽
-# append-rules:         # 订阅的规则都没有命中时
-#   - GEOIP,LAN,DIRECT
+# tunlr:
+#   # ---- 只要一部分节点 ----
+#   proxy-filter:
+#     # filter: (?i)港|hk|日本        # 只保留匹配的节点，多条用反引号分隔
+#     exclude-filter: 倍率           # 去掉匹配的节点
+#
+#   # ---- 自己的节点，去掉机场的信息节点 ----
+#   proxies:
+#     append:
+#       - {name: 家宽, type: socks5, server: 203.0.113.1, port: 1080}
+#     delete:
+#       - /剩余流量|套餐到期|官网/
+#
+#   # ---- 修改订阅的策略组 ----
+#   proxy-groups:
+#     patch:
+#       - name: 节点选择
+#         prepend-proxies: [家宽]
+#       - name: /自动选择|故障转移/
+#         interval: 600
+#
+#   # ---- 规则 ----
+#   rules:
+#     prepend:              # 优先于订阅的规则
+#       - DOMAIN-SUFFIX,corp.example.com,家宽
+#     append:               # 订阅的规则都没有命中时
+#       - GEOIP,LAN,DIRECT

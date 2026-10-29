@@ -21,17 +21,17 @@ import (
 
 // Mixin 是一份用户 mixin 文件。
 //
-// mixin 的写法与 mihomo 配置相同：映射逐层合并，标量和列表整体替换，值为 null 时删除该键。
-// 另有四种前缀操作，可用在任何一层映射中：
+// mixin 的顶层只有两个命名空间（DESIGN.md 第 6 节）：
 //
-//	prepend-<键> / append-<键>  在列表前插入 / 后追加；rules 和 sub-rules 的列表追加在末尾的 MATCH 之前
-//	patch-<键>                 按 name 找到列表中的项，用同样的语义修改它
-//	delete-<键>                按 name（字符串列表按值，映射按键）删除；顶层删除节点或策略组时，
-//	                           同时从所有策略组的 proxies 中移除
+//	mihomo:  mihomo 的原生配置，原样合并：映射逐层合并，标量和列表整体替换，值为 null 时删除该键
+//	tunlr:   tunlr 的语法，不写入配置：节点筛选 proxy-filter，以及对订阅的 proxies、proxy-groups、
+//	         rules、sub-rules.<名称> 的操作，各有四种：
+//	           prepend / append  在列表前插入 / 后追加；规则追加在末尾的 MATCH 之前
+//	           patch             按 name 找到列表中的项并修改它，项中可用 prepend-<字段> 等前缀操作其中的列表
+//	           delete            按 name（规则按内容）删除；删除节点或策略组时，同时从所有策略组的 proxies 中移除
 //
-// name 写成 /正则/ 时匹配所有符合的项。同一层中按 替换 → 删除 → 修改 → 插入 的顺序执行，
-// 与键在文件中的顺序无关。顶层以 x- 开头的键不写入配置，用来放 YAML 锚点；顶层的 tunlr
-// 是 tunlr 自己的命名空间（如节点筛选 tunlr.proxy-filter），也不写入配置。
+// name 写成 /正则/ 时匹配所有符合的项。一个文件中先合并 mihomo:，再按 删除 → 修改 → 插入 的顺序
+// 执行 tunlr: 的操作，与书写顺序无关。顶层以 x- 开头的键不写入配置，用来放 YAML 锚点。
 //
 // Name 中带一级目录（如 home/10-filter.yaml）的是订阅 mixin，位于 mixin.d/<订阅名>/。
 type Mixin struct {
@@ -254,7 +254,10 @@ func SaveMixin(dir string, m Mixin, previous []byte, existed bool) error {
 	return fsutil.WriteFile(path, m.Data, 0o600)
 }
 
-// 前缀操作，按执行顺序排列。
+// mihomoKey 是 mixin 顶层中 mihomo 原生配置的命名空间，原样合并进生成的配置。
+const mihomoKey = "mihomo"
+
+// 列表操作，按执行顺序排列。
 type mixinOp int
 
 const (
@@ -262,6 +265,24 @@ const (
 	opPatch
 	opInsert // prepend 与 append
 )
+
+// listOp 是一种列表操作的写法。
+type listOp struct {
+	key     string
+	op      mixinOp
+	prepend bool
+}
+
+// listOps 是 tunlr: 下每个列表可用的操作，按执行顺序。
+var listOps = []listOp{
+	{"delete", opDelete, false},
+	{"patch", opPatch, false},
+	{"prepend", opInsert, true},
+	{"append", opInsert, false},
+}
+
+// tunlrLists 是 tunlr: 下可以操作的订阅列表（另有 sub-rules.<名称>）。
+var tunlrLists = []string{"proxies", "proxy-groups", "rules"}
 
 // mixer 把 mixin 文件逐个应用到配置上，记录警告和文件之间的覆盖。
 type mixer struct {
@@ -292,24 +313,126 @@ func (m *mixer) record(path string) {
 	m.setBy[path] = m.file
 }
 
-// apply 把 mixin 映射 src 应用到配置映射 dst 上。path 是 dst 在配置中的路径，顶层为空。
-func (m *mixer) apply(dst, src *yaml.Node, path string) error {
-	type pending struct {
-		op      mixinOp
-		prepend bool
-		key     string
-		keyNode *yaml.Node
-		value   *yaml.Node
+// pending 是一个待执行的列表操作。
+type pending struct {
+	op      mixinOp
+	prepend bool
+	// label 是提示中操作的写法，如 tunlr.rules.prepend、prepend-proxies；line 是它所在的行。
+	label string
+	line  int
+	// dst 是列表所在的映射，key 是列表的键，path 是 dst 在配置中的路径（顶层为空）。
+	dst   *yaml.Node
+	key   string
+	path  string
+	value *yaml.Node
+}
+
+// checkMixin 检查 mixin 文件的结构：顶层只有 mihomo、tunlr 和 x- 开头的键，mihomo 是映射，
+// tunlr 中只有认识的键（见 checkNamespace）。
+func (m *mixer) checkMixin(src *yaml.Node) error {
+	for i := 0; i+1 < len(src.Content); i += 2 {
+		k, v := src.Content[i], src.Content[i+1]
+		switch {
+		case strings.HasPrefix(k.Value, "x-"):
+		case k.Value == mihomoKey:
+			if !isNull(v) && v.Kind != yaml.MappingNode {
+				return m.errorf(v.Line, "%s must be a mapping", mihomoKey)
+			}
+		case k.Value == namespace:
+			if err := m.checkNamespace(v); err != nil {
+				return err
+			}
+		default:
+			return m.errorf(k.Line, "%s: unknown top-level key; mihomo settings go under %s:, tunlr's operations under %s:",
+				k.Value, mihomoKey, namespace)
+		}
 	}
+	return nil
+}
+
+// applyFile 应用一个 mixin 文件（已由 checkMixin 检查）：先把 mihomo: 合并进配置，再执行 tunlr: 中的
+// 列表操作（删除 → 修改 → 插入）。tunlr.proxy-filter 不在这里执行，见 filterProxies。
+func (m *mixer) applyFile(root, src *yaml.Node) error {
+	if v := lookup(src, []string{mihomoKey}); v != nil && v.Kind == yaml.MappingNode {
+		if err := m.merge(root, v, ""); err != nil {
+			return err
+		}
+	}
+	t := lookup(src, []string{namespace})
+	if t == nil || t.Kind != yaml.MappingNode {
+		return nil
+	}
+	var ops []pending
+	// sub-rules 不存在时先用一个独立的映射，插入了规则才放进配置，删除和修改不留下空的 sub-rules。
+	var detached *yaml.Node
+	for i := 0; i+1 < len(t.Content); i += 2 {
+		k, v := t.Content[i], t.Content[i+1]
+		switch {
+		case slices.Contains(tunlrLists, k.Value):
+			ops = append(ops, opsOf(root, k.Value, "", namespace+"."+k.Value, v)...)
+		case k.Value == "sub-rules" && v.Kind == yaml.MappingNode:
+			sr := lookup(root, []string{"sub-rules"})
+			if sr == nil {
+				detached = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+				sr = detached
+			}
+			if sr.Kind != yaml.MappingNode {
+				return m.errorf(k.Line, "%s.sub-rules: sub-rules is not a mapping", namespace)
+			}
+			for j := 0; j+1 < len(v.Content); j += 2 {
+				name := v.Content[j].Value
+				ops = append(ops, opsOf(sr, name, "sub-rules", namespace+".sub-rules."+name, v.Content[j+1])...)
+			}
+		}
+	}
+	if err := m.run(ops); err != nil {
+		return err
+	}
+	if detached != nil && len(detached.Content) > 0 {
+		setValue(root, "sub-rules", detached)
+	}
+	return nil
+}
+
+// opsOf 列出 tunlr: 下一个列表（如 tunlr.rules）中的操作。v 已由 checkOps 检查。
+func opsOf(dst *yaml.Node, key, path, label string, v *yaml.Node) []pending {
+	if v.Kind != yaml.MappingNode {
+		return nil
+	}
+	var ops []pending
+	for i := 0; i+1 < len(v.Content); i += 2 {
+		k := v.Content[i]
+		for _, op := range listOps {
+			if k.Value == op.key {
+				ops = append(ops, pending{op: op.op, prepend: op.prepend, label: label + "." + op.key, line: k.Line,
+					dst: dst, key: key, path: path, value: v.Content[i+1]})
+			}
+		}
+	}
+	return ops
+}
+
+// merge 把 mihomo: 的映射 src 合并到配置映射 dst 上：null 删除，映射逐层合并，其他值整体替换，
+// 不识别任何前缀操作。path 是 dst 在配置中的路径，顶层为空。
+func (m *mixer) merge(dst, src *yaml.Node, path string) error {
+	for i := 0; i+1 < len(src.Content); i += 2 {
+		if err := m.set(dst, src.Content[i], src.Content[i+1], path, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// apply 把 patch 项的内容 src 应用到列表项 dst 上：普通键与 merge 相同，另外认识 prepend-<字段>、
+// append-<字段>、patch-<字段>、delete-<字段> 前缀，作用于项中的列表字段（如策略组的 prepend-proxies），
+// 同样按 删除 → 修改 → 插入 的顺序执行。
+func (m *mixer) apply(dst, src *yaml.Node, path string) error {
 	var ops []pending
 	for i := 0; i+1 < len(src.Content); i += 2 {
 		k, v := src.Content[i], src.Content[i+1]
-		if path == "" && strings.HasPrefix(k.Value, "x-") {
-			continue
-		}
 		op, prepend, key, ok := parseOp(k.Value)
 		if !ok {
-			if err := m.set(dst, k, v, path); err != nil {
+			if err := m.set(dst, k, v, path, true); err != nil {
 				return err
 			}
 			continue
@@ -317,24 +440,29 @@ func (m *mixer) apply(dst, src *yaml.Node, path string) error {
 		if key == "" {
 			return m.errorf(k.Line, "%s: missing the key to operate on", k.Value)
 		}
-		ops = append(ops, pending{op, prepend, key, k, v})
+		ops = append(ops, pending{op: op, prepend: prepend, label: k.Value, line: k.Line, dst: dst, key: key, path: path, value: v})
 	}
+	return m.run(ops)
+}
+
+// run 按 删除 → 修改 → 插入 的顺序执行 ops，同类操作保持书写顺序。
+func (m *mixer) run(ops []pending) error {
 	slices.SortStableFunc(ops, func(a, b pending) int { return int(a.op) - int(b.op) })
 	for _, o := range ops {
 		if isNull(o.value) {
 			continue
 		}
 		if o.value.Kind != yaml.SequenceNode {
-			return m.errorf(o.keyNode.Line, "%s: value must be a list", o.keyNode.Value)
+			return m.errorf(o.line, "%s: value must be a list", o.label)
 		}
 		var err error
 		switch o.op {
 		case opDelete:
-			err = m.delete(dst, o.keyNode, o.key, o.value, path)
+			err = m.delete(o)
 		case opPatch:
-			err = m.patch(dst, o.keyNode, o.key, o.value, path)
+			err = m.patch(o)
 		case opInsert:
-			err = m.insert(dst, o.keyNode, o.key, o.value, path, o.prepend)
+			err = m.insert(o)
 		}
 		if err != nil {
 			return err
@@ -343,27 +471,19 @@ func (m *mixer) apply(dst, src *yaml.Node, path string) error {
 	return nil
 }
 
-// parseOp 识别前缀操作，返回操作、是否为 prepend 和被操作的键。
+// parseOp 识别 patch 项中的前缀操作，返回操作、是否为 prepend 和被操作的键。
 func parseOp(k string) (op mixinOp, prepend bool, key string, ok bool) {
-	for _, p := range []struct {
-		prefix  string
-		op      mixinOp
-		prepend bool
-	}{
-		{"prepend-", opInsert, true},
-		{"append-", opInsert, false},
-		{"patch-", opPatch, false},
-		{"delete-", opDelete, false},
-	} {
-		if key, ok := strings.CutPrefix(k, p.prefix); ok {
+	for _, p := range listOps {
+		if key, ok := strings.CutPrefix(k, p.key+"-"); ok {
 			return p.op, p.prepend, key, true
 		}
 	}
 	return 0, false, "", false
 }
 
-// set 处理普通键：null 删除，映射逐层合并，其他值整体替换。
-func (m *mixer) set(dst, k, v *yaml.Node, path string) error {
+// set 处理普通键：null 删除，映射逐层合并，其他值整体替换。ops 为 true 时（patch 项中）
+// 下一层映射同样认识前缀操作。
+func (m *mixer) set(dst, k, v *yaml.Node, path string, ops bool) error {
 	p := joinPath(path, k.Value)
 	j := valueIndex(dst, k.Value)
 	switch {
@@ -378,41 +498,44 @@ func (m *mixer) set(dst, k, v *yaml.Node, path string) error {
 			if j >= 0 {
 				m.record(p)
 			}
-			// 从空映射开始应用，使新映射中的前缀操作和 null 同样生效。
+			// 从空映射开始合并，使新映射中的 null（和 patch 项中的前缀操作）同样生效。
 			setValue(dst, k.Value, &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"})
 			j = valueIndex(dst, k.Value)
 		}
-		return m.apply(dst.Content[j], v, p)
+		if ops {
+			return m.apply(dst.Content[j], v, p)
+		}
+		return m.merge(dst.Content[j], v, p)
 	}
 	if path == "" && j >= 0 && m.subKeys[k.Value] && v.Kind == yaml.SequenceNode {
-		m.warnf(k.Line, "%s replaces the subscription's %s entirely; use prepend-%s, append-%s, patch-%s or delete-%s to keep them",
-			k.Value, k.Value, k.Value, k.Value, k.Value, k.Value)
+		m.warnf(k.Line, "%s.%s replaces the subscription's %s entirely; use %s.%s (prepend, append, patch, delete) to keep them",
+			mihomoKey, k.Value, k.Value, namespace, k.Value)
 	}
 	m.record(p)
 	setValue(dst, k.Value, clone(v))
 	return nil
 }
 
-// insert 处理 prepend-<键> 与 append-<键>，列表不存在时创建。
-func (m *mixer) insert(dst, k *yaml.Node, key string, items *yaml.Node, path string, prepend bool) error {
-	j := valueIndex(dst, key)
+// insert 处理 prepend 与 append，列表不存在时创建。
+func (m *mixer) insert(o pending) error {
+	j := valueIndex(o.dst, o.key)
 	if j < 0 {
-		setValue(dst, key, &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
-		j = valueIndex(dst, key)
+		setValue(o.dst, o.key, &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
+		j = valueIndex(o.dst, o.key)
 	}
-	target := dst.Content[j]
+	target := o.dst.Content[j]
 	if target.Kind != yaml.SequenceNode {
-		return m.errorf(k.Line, "%s: %s is not a list", k.Value, joinPath(path, key))
+		return m.errorf(o.line, "%s: %s is not a list", o.label, joinPath(o.path, o.key))
 	}
-	add := make([]*yaml.Node, len(items.Content))
-	for i, it := range items.Content {
+	add := make([]*yaml.Node, len(o.value.Content))
+	for i, it := range o.value.Content {
 		add[i] = clone(it)
 	}
 	at := 0
-	if !prepend {
+	if !o.prepend {
 		at = len(target.Content)
 		// 规则在 MATCH 之后永远不会命中，追加的规则放在末尾的 MATCH 之前。
-		isRules := (path == "" && key == "rules") || path == "sub-rules"
+		isRules := (o.path == "" && o.key == "rules") || o.path == "sub-rules"
 		if isRules && at > 0 && isMatchRule(target.Content[at-1]) {
 			at--
 		}
@@ -421,24 +544,24 @@ func (m *mixer) insert(dst, k *yaml.Node, key string, items *yaml.Node, path str
 	return nil
 }
 
-// patch 处理 patch-<键>：每一项按 name 匹配列表中的项，把其余字段应用到匹配的每一项上。
-func (m *mixer) patch(dst, k *yaml.Node, key string, items *yaml.Node, path string) error {
+// patch 处理 patch：每一项按 name 匹配列表中的项，把其余字段应用到匹配的每一项上（见 apply）。
+func (m *mixer) patch(o pending) error {
 	var target *yaml.Node
-	if j := valueIndex(dst, key); j >= 0 {
-		target = dst.Content[j]
+	if j := valueIndex(o.dst, o.key); j >= 0 {
+		target = o.dst.Content[j]
 		if target.Kind != yaml.SequenceNode {
-			return m.errorf(k.Line, "%s: %s is not a list", k.Value, joinPath(path, key))
+			return m.errorf(o.line, "%s: %s is not a list", o.label, joinPath(o.path, o.key))
 		}
 	}
-	for _, it := range items.Content {
+	for _, it := range o.value.Content {
 		ni := -1
 		if it.Kind == yaml.MappingNode {
 			ni = valueIndex(it, "name")
 		}
 		if ni < 0 || it.Content[ni].Kind != yaml.ScalarNode {
-			return m.errorf(it.Line, "%s: each item must be a mapping with a name", k.Value)
+			return m.errorf(it.Line, "%s: each item must be a mapping with a name", o.label)
 		}
-		match, err := m.matcher(k.Value, it.Content[ni])
+		match, err := m.matcher(o.label, it.Content[ni])
 		if err != nil {
 			return err
 		}
@@ -449,25 +572,26 @@ func (m *mixer) patch(dst, k *yaml.Node, key string, items *yaml.Node, path stri
 			for _, t := range target.Content {
 				if name, ok := itemName(t); ok && t.Kind == yaml.MappingNode && match.match(name) {
 					matched = true
-					if err := m.apply(t, body, fmt.Sprintf("%s[%s]", joinPath(path, key), name)); err != nil {
+					if err := m.apply(t, body, fmt.Sprintf("%s[%s]", joinPath(o.path, o.key), name)); err != nil {
 						return err
 					}
 				}
 			}
 		}
 		if !matched {
-			m.warnf(it.Line, "%s: no item named %s; nothing changed", k.Value, match)
+			m.warnf(it.Line, "%s: no item named %s; nothing changed", o.label, match)
 		}
 	}
 	return nil
 }
 
-// delete 处理 delete-<键>：列表按 name（字符串按值）删除，映射按键删除。
-func (m *mixer) delete(dst, k *yaml.Node, key string, items *yaml.Node, path string) error {
+// delete 处理 delete：列表按 name（字符串按值）删除，映射按键删除。
+func (m *mixer) delete(o pending) error {
+	items := o.value
 	matchers := make([]matcher, len(items.Content))
 	for i, it := range items.Content {
 		var err error
-		if matchers[i], err = m.matcher(k.Value, it); err != nil {
+		if matchers[i], err = m.matcher(o.label, it); err != nil {
 			return err
 		}
 	}
@@ -483,8 +607,8 @@ func (m *mixer) delete(dst, k *yaml.Node, key string, items *yaml.Node, path str
 	}
 
 	var removed []string
-	if j := valueIndex(dst, key); j >= 0 {
-		switch target := dst.Content[j]; target.Kind {
+	if j := valueIndex(o.dst, o.key); j >= 0 {
+		switch target := o.dst.Content[j]; target.Kind {
 		case yaml.SequenceNode:
 			target.Content = slices.DeleteFunc(target.Content, func(n *yaml.Node) bool {
 				name, ok := itemName(n)
@@ -504,15 +628,15 @@ func (m *mixer) delete(dst, k *yaml.Node, key string, items *yaml.Node, path str
 			}
 			target.Content = kept
 		default:
-			return m.errorf(k.Line, "%s: %s is neither a list nor a mapping", k.Value, joinPath(path, key))
+			return m.errorf(o.line, "%s: %s is neither a list nor a mapping", o.label, joinPath(o.path, o.key))
 		}
 	}
 	for i, mt := range matchers {
 		if !hit[i] {
-			m.warnf(items.Content[i].Line, "%s: nothing matches %s", k.Value, mt)
+			m.warnf(items.Content[i].Line, "%s: nothing matches %s", o.label, mt)
 		}
 	}
-	if path == "" && (key == "proxies" || key == "proxy-groups") && len(removed) > 0 {
+	if o.path == "" && (o.key == "proxies" || o.key == "proxy-groups") && len(removed) > 0 {
 		names := make(map[string]bool, len(removed))
 		for _, n := range removed {
 			names[n] = true

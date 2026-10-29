@@ -30,28 +30,32 @@ rules:
   - RULE-SET,cn,DIRECT
   - MATCH,节点选择
 -- mixin.d/10-test.yaml --
-append-proxies:
-  - {name: 家宽, type: socks5, server: 203.0.113.1, port: 1080}
-patch-proxies:
-  - name: /^香港/
-    udp: true
-    dialer-proxy: 家宽
-patch-proxy-groups:
-  - name: 节点选择
-    prepend-proxies: [家宽]
-    delete-proxies: [日本 01]
-  - name: 自动选择
-    interval: 600
-    url: null
-  - name: 不存在的组
-    interval: 600
-delete-proxies:
-  - /剩余流量|官网/
-  - 套餐到期
-delete-proxy-groups:
-  - 广告拦截
-delete-rule-providers:
-  - ads
+tunlr:
+  proxies:
+    append:
+      - {name: 家宽, type: socks5, server: 203.0.113.1, port: 1080}
+    patch:
+      - name: /^香港/
+        udp: true
+        dialer-proxy: 家宽
+    delete:
+      - /剩余流量|官网/
+      - 套餐到期
+  proxy-groups:
+    patch:
+      - name: 节点选择
+        prepend-proxies: [家宽]
+        delete-proxies: [日本 01]
+      - name: 自动选择
+        interval: 600
+        url: null
+      - name: 不存在的组
+        interval: 600
+    delete:
+      - 广告拦截
+mihomo:
+  rule-providers:
+    ads: null
 -- want.yaml --
 mixed-port: 7890
 
@@ -77,5 +81,5 @@ rules:
   - RULE-SET,cn,DIRECT
   - MATCH,节点选择
 -- warnings --
-10-test.yaml:14: patch-proxy-groups: no item named 不存在的组; nothing changed
-10-test.yaml:18: delete-proxies: nothing matches 套餐到期
+10-test.yaml:11: tunlr.proxies.delete: nothing matches 套餐到期
+10-test.yaml:20: tunlr.proxy-groups.patch: no item named 不存在的组; nothing changed

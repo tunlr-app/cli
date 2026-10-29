@@ -32,7 +32,7 @@ func (m Managed) Keys() []string {
 	}
 	var keys []string
 	if doc, err := parseNode(m.Data); err == nil && doc != nil {
-		for _, p := range leafPaths(doc.Content[0], nil) {
+		for _, p := range leafPaths(mihomoOf(doc.Content[0]), nil) {
 			keys = append(keys, strings.Join(p, "."))
 		}
 	}
@@ -119,30 +119,20 @@ func writes(src *yaml.Node, path []string) bool {
 	return true
 }
 
-// pathLine 返回 mixin 中离 path 最近的、写出来的键所在的行：沿路径能走多深走多深，每一层也认
-// 作用于该键的前缀操作（如 delete-tun）。找不到时为 0。
+// pathLine 返回 mixin 的 mihomo: 中离 path 最近的、写出来的键所在的行：沿路径能走多深走多深。
+// 找不到时为 0。
 func pathLine(m *yaml.Node, path []string) int {
 	line := 0
 	for _, k := range path {
 		if m == nil || m.Kind != yaml.MappingNode {
 			return line
 		}
-		next := -1
-		for i := 0; i+1 < len(m.Content); i += 2 {
-			name := m.Content[i].Value
-			if name == k {
-				next = i
-				break
-			}
-			if _, _, key, ok := parseOp(name); ok && key == k {
-				line = m.Content[i].Line
-			}
-		}
-		if next < 0 {
+		i := valueIndex(m, k)
+		if i < 0 {
 			return line
 		}
-		line = m.Content[next].Line
-		m = m.Content[next+1]
+		line = m.Content[i-1].Line
+		m = m.Content[i]
 	}
 	return line
 }

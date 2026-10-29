@@ -40,7 +40,7 @@ func TestDrift(t *testing.T) {
 	// 改了 mixin、还没发布：指纹变化，列出有变化的顶层键。
 	before := key()
 	mixin := filepath.Join(p.Layout.MixinDir(), "10-log.yaml")
-	writeFile(t, mixin, "log-level: warning\n")
+	writeFile(t, mixin, "mihomo:\n  log-level: warning\n")
 	if key() == before {
 		t.Error("key unchanged after adding a mixin")
 	}
@@ -49,7 +49,7 @@ func TestDrift(t *testing.T) {
 	}
 
 	// 合成出错：记为 DriftError，不是错误。
-	writeFile(t, mixin, "tun:\n  enable: true\n")
+	writeFile(t, mixin, "mihomo:\n  tun:\n    enable: true\n")
 	if d := drift(); d.State != DriftError || d.Error == "" {
 		t.Errorf("error: %+v", d)
 	}

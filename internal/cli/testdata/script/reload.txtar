@@ -30,7 +30,10 @@ stdout '"reloaded": false'
 cmp kernel-loaded before.yaml
 
 -- reject-mixin.yaml --
-prepend-rules:
-  - MATCH,REJECT
+tunlr:
+  rules:
+    prepend:
+      - MATCH,REJECT
 -- ok-mixin.yaml --
-log-level: warning
+mihomo:
+  log-level: warning

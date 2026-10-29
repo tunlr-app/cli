@@ -102,7 +102,7 @@ func Compose(l Layers) (*Result, error) {
 	}
 	keys := ownedKeys(l.Managed)
 
-	// 先从所有 mixin 中取出 tunlr 命名空间并合并：订阅的节点按合并后的 tunlr.proxy-filter 筛选，
+	// 先检查所有 mixin 并合并其中的 tunlr.proxy-filter：订阅的节点按合并后的筛选处理，
 	// 然后才应用 mixin，mixin 自己加的节点不受筛选影响。
 	user := append(defaults, l.Mixins...)
 	srcs := make([]*yaml.Node, len(user))
@@ -118,7 +118,7 @@ func Compose(l Layers) (*Result, error) {
 		srcs[i] = doc.Content[0]
 		stripComments(srcs[i])
 		m.file = mx.Name
-		if err := m.takeNamespace(ns, srcs[i]); err != nil {
+		if err := m.takeFilter(ns, srcs[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -145,10 +145,10 @@ func Compose(l Layers) (*Result, error) {
 		}
 		m.file = mx.Name
 		first := len(m.warnings)
-		if err := m.apply(root, src, ""); err != nil {
+		if err := m.applyFile(root, src); err != nil {
 			return nil, err
 		}
-		if err := conflicts(mx.Name, src, root, keys, before); err != nil {
+		if err := conflicts(mx.Name, mihomoOf(src), root, keys, before); err != nil {
 			return nil, err
 		}
 		slices.SortStableFunc(m.warnings[first:], func(a, b Warning) int { return a.Line - b.Line })
@@ -163,7 +163,7 @@ func Compose(l Layers) (*Result, error) {
 
 	for _, mx := range exclusive {
 		if doc, _ := parseNode(mx.Data); doc != nil {
-			mergeMapping(root, doc.Content[0])
+			mergeMapping(root, mihomoOf(doc.Content[0]))
 		}
 	}
 	res.Facts = factsOf(root)
@@ -331,6 +331,14 @@ func inlineMerge(m *yaml.Node) error {
 	}
 	m.Content = append(append(append([]*yaml.Node{}, m.Content[:at]...), merged...), m.Content[at+2:]...)
 	return nil
+}
+
+// mihomoOf 返回 mixin 中 mihomo: 的映射，没有时返回空映射。
+func mihomoOf(src *yaml.Node) *yaml.Node {
+	if v := lookup(src, []string{mihomoKey}); v != nil && v.Kind == yaml.MappingNode {
+		return v
+	}
+	return &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 }
 
 // mergeMapping 把 src 合并进 dst：两边都是映射时逐层合并，否则用 src 的值整体替换。

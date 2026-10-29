@@ -2,11 +2,13 @@
 订阅中的同名键被丢弃。提供默认值的（tunlr:mirror）用户的 mixin 可以覆盖，覆盖记为它的名称。
 
 -- managed/tunlr:panel --
-secret: generated-secret
+mihomo:
+  secret: generated-secret
 -- default/tunlr:mirror --
-external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
-geox-url:
-  mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
+mihomo:
+  external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
+  geox-url:
+    mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
 -- subscription.yaml --
 secret: from-airport
 proxies:
@@ -14,11 +16,13 @@ proxies:
 rules:
   - MATCH,a
 -- mixin.d/50-custom.yaml --
-external-ui-url: https://example.net/ui.zip
-geox-url:
-  geosite: https://example.net/geosite.dat
+mihomo:
+  external-ui-url: https://example.net/ui.zip
+  geox-url:
+    geosite: https://example.net/geosite.dat
 -- managed/tunlr:core --
-external-controller-unix: api.sock
+mihomo:
+  external-controller-unix: api.sock
 -- want.yaml --
 # 本文件由 tunlr 生成，直接修改会在下次 apply 时被覆盖。
 # 自定义设置请写在 mixin 中（tunlr config edit）。

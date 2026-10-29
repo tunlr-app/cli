@@ -891,63 +891,88 @@ const (
 //	             （config.LANAllowedIPs），内核拒绝其他来源；关闭时 allow-lan: false
 //
 // 提供默认值、用户可以覆盖的：tunlr:mirror，geo 数据的下载地址，配置了 GitHub 镜像时另有经镜像的面板
-// 下载地址和让镜像直连的规则（用 delete-rules 去掉）；tunlr:filter，有过滤项时在规则最前插入的规则
+// 下载地址和让镜像直连的规则（用 tunlr.rules.delete 去掉）；tunlr:filter，有过滤项时在规则最前插入的规则
 // （设为直连的设备、拒绝 QUIC、只代理常用端口，见 filterRules 和 DESIGN.md 8.13）。
 func managed(secret string, sw switches, set *settings.Settings) []config.Managed {
 	geoAuto, geoHours := set.GeoAutoUpdate()
-	geo := fmt.Sprintf("geo-auto-update: %t\n", geoAuto)
+	geo := fmt.Sprintf("  geo-auto-update: %t\n", geoAuto)
 	if geoAuto {
-		geo += fmt.Sprintf("geo-update-interval: %d\n", geoHours)
+		geo += fmt.Sprintf("  geo-update-interval: %d\n", geoHours)
 	}
 	controller := fmt.Sprintf("127.0.0.1:%d", APIPort)
 	if sw.panelLAN {
 		controller = LANController
 	}
-	panel := marshal(struct {
+	panel := marshal(section{Mihomo: struct {
 		Controller string `yaml:"external-controller"`
 		Secret     string `yaml:"secret"`
-	}{controller, secret})
+	}{controller, secret}})
 
 	// 来源列表开关时都写入（模板中也有，位置紧跟 allow-lan），开关只改 allow-lan。
-	proxy := marshal(struct {
+	proxy := marshal(section{Mihomo: struct {
 		AllowLAN      bool     `yaml:"allow-lan"`
 		LANAllowedIPs []string `yaml:"lan-allowed-ips"`
-	}{sw.proxyLAN, config.LANAllowedIPs})
+	}{sw.proxyLAN, config.LANAllowedIPs}})
 
 	mirror := set.GitHubMirror
 	m := struct {
 		GeoxURL       map[string]string `yaml:"geox-url,omitempty"`
 		ExternalUIURL string            `yaml:"external-ui-url,omitempty"`
-		PrependRules  []string          `yaml:"prepend-rules,omitempty"`
-	}{GeoxURL: mihomo.GeoxURL(mirror), PrependRules: mirrorRules(mirror)}
+	}{GeoxURL: mihomo.GeoxURL(mirror)}
 	if mirror != "" {
 		m.ExternalUIURL = download.MirrorURL(mirror, mihomo.ZashboardURL)
 	}
-	mirrorData := marshal(m)
+	mirrorSection := section{Tunlr: prependRules(mirrorRules(mirror))}
+	if len(m.GeoxURL) > 0 || m.ExternalUIURL != "" {
+		mirrorSection.Mihomo = m
+	}
+	mirrorData := marshal(mirrorSection)
 
 	list := []config.Managed{
-		{Name: ManagedCore, Data: fmt.Appendf(nil, "external-controller-unix: %s\n", paths.CoreSocketName)},
-		{Name: ManagedTun, Command: "tunlr tun on/off", Data: fmt.Appendf(nil, `tun:
-  enable: %t
-  auto-route: true
-  auto-redirect: true
-  strict-route: false
-  device: %s
-  iproute2-table-index: %d
-  iproute2-rule-index: %d
+		{Name: ManagedCore, Data: fmt.Appendf(nil, "mihomo:\n  external-controller-unix: %s\n", paths.CoreSocketName)},
+		{Name: ManagedTun, Command: "tunlr tun on/off", Data: fmt.Appendf(nil, `mihomo:
+  tun:
+    enable: %t
+    auto-route: true
+    auto-redirect: true
+    strict-route: false
+    device: %s
+    iproute2-table-index: %d
+    iproute2-rule-index: %d
 `, sw.tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex)},
-		{Name: ManagedGeo, Command: "tunlr update set geo", Data: []byte(geo), Owns: []string{"geo-auto-update", "geo-update-interval"}},
+		{Name: ManagedGeo, Command: "tunlr update set geo", Data: []byte("mihomo:\n" + geo), Owns: []string{"geo-auto-update", "geo-update-interval"}},
 		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel reset-secret", Data: panel},
 		{Name: ManagedProxy, Command: "tunlr proxy lan on/off", Data: proxy, Owns: []string{"allow-lan", "lan-allowed-ips"}},
 		{Name: ManagedMirror, Command: "tunlr settings edit", Default: true, Data: mirrorData},
 	}
 	if rules := filterRules(sw); len(rules) > 0 {
 		list = append(list, config.Managed{Name: ManagedFilter, Command: "tunlr filter", Default: true,
-			Data: marshal(struct {
-				PrependRules []string `yaml:"prepend-rules"`
-			}{rules})})
+			Data: marshal(section{Tunlr: prependRules(rules)})})
 	}
 	return list
+}
+
+// section 是受管 mixin 的两个命名空间，写法与用户的 mixin 相同。
+type section struct {
+	Mihomo any         `yaml:"mihomo,omitempty"`
+	Tunlr  *tunlrRules `yaml:"tunlr,omitempty"`
+}
+
+// tunlrRules 是受管 mixin 中 tunlr: 的部分：只有在规则最前插入的规则。
+type tunlrRules struct {
+	Rules struct {
+		Prepend []string `yaml:"prepend"`
+	} `yaml:"rules"`
+}
+
+// prependRules 返回在规则最前插入 rules 的 tunlr: 部分，rules 为空时为 nil。
+func prependRules(rules []string) *tunlrRules {
+	if len(rules) == 0 {
+		return nil
+	}
+	t := &tunlrRules{}
+	t.Rules.Prepend = rules
+	return t
 }
 
 // marshal 以与生成的配置相同的缩进（2 格）编码受管 mixin 的内容，tunlr config 和 plan 照原样显示。

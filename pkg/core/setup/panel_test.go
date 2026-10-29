@@ -88,7 +88,7 @@ func TestPanel(t *testing.T) {
 	}
 
 	// 配置中是别的端口和 secret；secret 中的特殊字符在链接中转义。
-	editPublished(t, i, "external-controller: \"[::1]:9091\"\nsecret: \"a b&c\"\n")
+	editPublished(t, i, "mihomo:\n  external-controller: \"[::1]:9091\"\n  secret: \"a b&c\"\n")
 	p, _ = i.Panel(ctx, PanelOptions{})
 	if p.SSHCommand != "ssh -N -L 9091:[::1]:9091 <server>" || p.Port != 9091 {
 		t.Errorf("ipv6: %q", p.SSHCommand)
@@ -99,7 +99,7 @@ func TestPanel(t *testing.T) {
 
 	// 对外监听：隧道经 127.0.0.1，另外给出默认路由网卡和 SSH 连进来的地址的链接。
 	i.Interfaces = lanInterface
-	editPublished(t, i, "external-controller: 0.0.0.0:9090\n")
+	editPublished(t, i, "mihomo:\n  external-controller: 0.0.0.0:9090\n")
 	p, _ = i.Panel(ctx, PanelOptions{SSHConnection: "198.51.100.7 51234 203.0.113.10 22", Label: "srv"})
 	if !p.Public || p.SSHCommand != "ssh -N -L 9090:127.0.0.1:9090 203.0.113.10" || p.LAN || len(p.LANURLs) != 2 ||
 		!strings.HasPrefix(p.LANURLs[0], "http://192.168.1.20:9090/ui/#/setup?hostname=192.168.1.20&label=srv&port=9090") ||
@@ -111,7 +111,7 @@ func TestPanel(t *testing.T) {
 	}
 
 	// 面板关掉了。
-	editPublished(t, i, "external-controller: null\n")
+	editPublished(t, i, "mihomo:\n  external-controller: null\n")
 	if _, err := i.Panel(ctx, PanelOptions{}); !errors.Is(err, core.ErrCheckFailed) {
 		t.Errorf("no controller: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestPanelLAN(t *testing.T) {
 	}
 
 	// mixin 设置了 external-controller 时拒绝，提示改用的命令。
-	writeMixin(t, i, "external-controller: 127.0.0.1:9091\n")
+	writeMixin(t, i, "mihomo:\n  external-controller: 127.0.0.1:9091\n")
 	var me *config.MixinError
 	if _, err := i.pipeline(nil).PlanPanelLAN(ctx, false); !errors.As(err, &me) || !strings.Contains(err.Error(), "tunlr panel lan on/off") {
 		t.Errorf("mixin: %v", err)

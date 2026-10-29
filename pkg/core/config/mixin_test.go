@@ -9,14 +9,13 @@ import (
 	"github.com/tunlr-app/cli/templates"
 )
 
-// uncommentExample 取消示例 mixin 中各段示例的注释（从第一个“# ----”段落标题开始）。
+// uncommentExample 取消示例 mixin 中各段示例的注释（从“# mihomo:”开始）。
 func uncommentExample(example []byte) string {
 	var b strings.Builder
 	started := false
 	for line := range strings.Lines(string(example)) {
-		if strings.HasPrefix(line, "# ----") {
+		if strings.HasPrefix(line, "# mihomo:") {
 			started = true
-			continue
 		}
 		if started {
 			line = strings.TrimPrefix(line, "# ")
@@ -32,6 +31,7 @@ func TestMixinExample(t *testing.T) {
 	sub := []byte(`proxies:
   - {name: 剩余流量：10GB, type: ss, server: x.example.net, port: 1, cipher: aes-128-gcm, password: p}
   - {name: 香港 01, type: ss, server: hk.example.net, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: 香港 02 倍率 3, type: ss, server: hk2.example.net, port: 1, cipher: aes-128-gcm, password: p}
 proxy-groups:
   - {name: 节点选择, type: select, proxies: [自动选择, 剩余流量：10GB, 香港 01]}
   - {name: 自动选择, type: url-test, url: http://www.gstatic.com/generate_204, interval: 300, proxies: [香港 01]}
@@ -39,8 +39,8 @@ rules:
   - MATCH,节点选择
 `)
 	base := Layers{Template: templates.Config, Subscription: sub, Managed: []Managed{
-		{Name: "tunlr:tun", Data: []byte("tun:\n  enable: true\n  auto-route: true\n")},
-		{Name: "tunlr:panel", Data: []byte("external-controller: 127.0.0.1:9090\nsecret: s\n")},
+		{Name: "tunlr:tun", Data: []byte("mihomo:\n  tun:\n    enable: true\n    auto-route: true\n")},
+		{Name: "tunlr:panel", Data: []byte("mihomo:\n  external-controller: 127.0.0.1:9090\n  secret: s\n")},
 	}}
 	want, err := Compose(base)
 	if err != nil {
@@ -74,8 +74,8 @@ rules:
 			t.Errorf("config lacks %q:\n%s", want, cfg)
 		}
 	}
-	if strings.Contains(cfg, "剩余流量") {
-		t.Errorf("info node not deleted:\n%s", cfg)
+	if strings.Contains(cfg, "剩余流量") || strings.Contains(cfg, "倍率") {
+		t.Errorf("info node or filtered proxy not removed:\n%s", cfg)
 	}
 }
 

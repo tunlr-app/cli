@@ -18,25 +18,33 @@ proxy-groups:
 rules:
   - MATCH,g
 -- mixin.d/10-base.yaml --
-dns:
-  nameserver:
-    - 1.1.1.1
-allow-lan: true
-prepend-rules:
-  - DOMAIN-SUFFIX,ten.example,DIRECT
-append-proxy-groups:
-  - {name: mine, type: select, proxies: [DIRECT]}
+mihomo:
+  dns:
+    nameserver:
+      - 1.1.1.1
+  allow-lan: true
+tunlr:
+  rules:
+    prepend:
+      - DOMAIN-SUFFIX,ten.example,DIRECT
+  proxy-groups:
+    append:
+      - {name: mine, type: select, proxies: [DIRECT]}
 -- mixin.d/20-override.yaml --
-dns:
-  nameserver:
-    - 8.8.8.8
-prepend-rules:
-  - DOMAIN-SUFFIX,twenty.example,DIRECT
-patch-proxy-groups:
-  - name: mine
-    append-proxies: [a]
-proxies:
-  - {name: b, type: ss, server: b.example.net, port: 2, cipher: aes-128-gcm, password: p}
+mihomo:
+  dns:
+    nameserver:
+      - 8.8.8.8
+  proxies:
+    - {name: b, type: ss, server: b.example.net, port: 2, cipher: aes-128-gcm, password: p}
+tunlr:
+  rules:
+    prepend:
+      - DOMAIN-SUFFIX,twenty.example,DIRECT
+  proxy-groups:
+    patch:
+      - name: mine
+        append-proxies: [a]
 -- want.yaml --
 mixed-port: 7890
 allow-lan: true
@@ -59,6 +67,6 @@ rules:
   - DOMAIN-SUFFIX,ten.example,DIRECT
   - MATCH,g
 -- warnings --
-20-override.yaml:9: proxies replaces the subscription's proxies entirely; use prepend-proxies, append-proxies, patch-proxies or delete-proxies to keep them
+20-override.yaml:5: mihomo.proxies replaces the subscription's proxies entirely; use tunlr.proxies (prepend, append, patch, delete) to keep them
 -- overrides --
 dns.nameserver: 20-override.yaml overrides 10-base.yaml

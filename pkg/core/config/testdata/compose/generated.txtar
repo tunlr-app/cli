@@ -9,14 +9,18 @@ proxies:
 rules:
   - MATCH,a
 -- default/tunlr:mirror --
-prepend-rules:
-  - DOMAIN,gh-proxy.com,DIRECT
-  - DOMAIN,mirror.example.net,DIRECT
+tunlr:
+  rules:
+    prepend:
+      - DOMAIN,gh-proxy.com,DIRECT
+      - DOMAIN,mirror.example.net,DIRECT
 -- mixin.d/10-test.yaml --
-prepend-rules:
-  - DOMAIN-SUFFIX,corp.example.com,DIRECT
-delete-rules:
-  - DOMAIN,mirror.example.net,DIRECT
+tunlr:
+  rules:
+    prepend:
+      - DOMAIN-SUFFIX,corp.example.com,DIRECT
+    delete:
+      - DOMAIN,mirror.example.net,DIRECT
 -- want.yaml --
 mixed-port: 7890
 

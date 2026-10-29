@@ -37,18 +37,25 @@ func matchRegexp(re *regexp2.Regexp, s string) bool {
 	return ok
 }
 
-// takeNamespace 从 mixin src 中取出顶层的 tunlr，检查后合并到 ns（各文件的 tunlr 依次合并的结果）。
-func (m *mixer) takeNamespace(ns, src *yaml.Node) error {
-	i := valueIndex(src, namespace)
+// tunlrKeys 是 tunlr: 下认识的键。
+var tunlrKeys = []string{"proxy-filter", "proxies", "proxy-groups", "rules", "sub-rules"}
+
+// takeFilter 检查 mixin src 的结构（checkMixin），并把其中的 tunlr.proxy-filter 合并到 ns
+// （各文件依次合并的结果，节点筛选在任何 mixin 之前按它执行）。
+func (m *mixer) takeFilter(ns, src *yaml.Node) error {
+	if err := m.checkMixin(src); err != nil {
+		return err
+	}
+	t := lookup(src, []string{namespace})
+	if t == nil || t.Kind != yaml.MappingNode {
+		return nil
+	}
+	i := valueIndex(t, "proxy-filter")
 	if i < 0 {
 		return nil
 	}
-	k, v := src.Content[i-1], src.Content[i]
-	src.Content = slices.Delete(src.Content, i-1, i+1)
-	if err := m.checkNamespace(v); err != nil {
-		return err
-	}
-	return m.set(ns, k, v, "")
+	wrapped := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{t.Content[i-1], t.Content[i]}}
+	return m.set(ns, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: namespace}, wrapped, "", false)
 }
 
 // checkNamespace 检查 tunlr 的内容：只认识的键，值的类型正确，正则有效。
@@ -61,8 +68,27 @@ func (m *mixer) checkNamespace(v *yaml.Node) error {
 	}
 	for i := 0; i+1 < len(v.Content); i += 2 {
 		k, pf := v.Content[i], v.Content[i+1]
-		if k.Value != "proxy-filter" {
-			return m.errorf(k.Line, "%s.%s: unknown key (known: proxy-filter)", namespace, k.Value)
+		switch {
+		case !slices.Contains(tunlrKeys, k.Value):
+			return m.errorf(k.Line, "%s.%s: unknown key (known: %s)", namespace, k.Value, strings.Join(tunlrKeys, ", "))
+		case k.Value == "sub-rules":
+			if isNull(pf) {
+				continue
+			}
+			if pf.Kind != yaml.MappingNode {
+				return m.errorf(pf.Line, "%s.sub-rules must be a mapping of rule set names", namespace)
+			}
+			for j := 0; j+1 < len(pf.Content); j += 2 {
+				if err := m.checkOps(namespace+".sub-rules."+pf.Content[j].Value, pf.Content[j+1]); err != nil {
+					return err
+				}
+			}
+			continue
+		case k.Value != "proxy-filter":
+			if err := m.checkOps(namespace+"."+k.Value, pf); err != nil {
+				return err
+			}
+			continue
 		}
 		if isNull(pf) {
 			continue
@@ -87,6 +113,26 @@ func (m *mixer) checkNamespace(v *yaml.Node) error {
 					return m.errorf(fv.Line, "%s: invalid regular expression %q: %v", path, p, err)
 				}
 			}
+		}
+	}
+	return nil
+}
+
+// checkOps 检查 tunlr: 下一个列表的操作：只有 prepend、append、patch、delete，值为列表。
+func (m *mixer) checkOps(path string, v *yaml.Node) error {
+	if isNull(v) {
+		return nil
+	}
+	if v.Kind != yaml.MappingNode {
+		return m.errorf(v.Line, "%s must be a mapping of operations (prepend, append, patch, delete)", path)
+	}
+	for i := 0; i+1 < len(v.Content); i += 2 {
+		k, ov := v.Content[i], v.Content[i+1]
+		if !slices.ContainsFunc(listOps, func(o listOp) bool { return o.key == k.Value }) {
+			return m.errorf(k.Line, "%s.%s: unknown operation (known: prepend, append, patch, delete)", path, k.Value)
+		}
+		if !isNull(ov) && ov.Kind != yaml.SequenceNode {
+			return m.errorf(k.Line, "%s.%s: value must be a list", path, k.Value)
 		}
 	}
 	return nil

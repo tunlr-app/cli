@@ -29,7 +29,8 @@ exec tunlr proxy env
 stdout '^export http_proxy=''http://127\.0\.0\.1:7899''$'
 
 -- port.yaml --
-mixed-port: 7899
+mihomo:
+  mixed-port: 7899
 -- airport.yaml --
 proxies:
   - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}

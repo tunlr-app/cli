@@ -198,8 +198,8 @@ func TestApplySubscriptionAndMixin(t *testing.T) {
 
 	useSubscription(t, p.Layout, "main", "port: 1234\n"+subscriptionV1)
 	dir := p.Layout.MixinDir()
-	writeFile(t, filepath.Join(dir, "20-b.yaml"), "log-level: debug\n")
-	writeFile(t, filepath.Join(dir, "10-a.yaml"), "log-level: warning\n")
+	writeFile(t, filepath.Join(dir, "20-b.yaml"), "mihomo:\n  log-level: debug\n")
+	writeFile(t, filepath.Join(dir, "10-a.yaml"), "mihomo:\n  log-level: warning\n")
 	writeFile(t, filepath.Join(dir, "notes.txt"), "log-level: error\n")
 	plan := mustPlan(t, p)
 	if plan.Subscription != "main" || len(plan.Dropped) != 1 || plan.Dropped[0] != "port" {
@@ -228,10 +228,10 @@ func TestApplySubscriptionAndMixin(t *testing.T) {
 func TestPlanWithMixin(t *testing.T) {
 	p, _, _ := newPipeline(t)
 	dir := p.Layout.MixinDir()
-	writeFile(t, filepath.Join(dir, "10-a.yaml"), "log-level: warning\n")
-	writeFile(t, filepath.Join(dir, "30-c.yaml"), "mode: global\n")
+	writeFile(t, filepath.Join(dir, "10-a.yaml"), "mihomo:\n  log-level: warning\n")
+	writeFile(t, filepath.Join(dir, "30-c.yaml"), "mihomo:\n  mode: global\n")
 
-	plan, err := p.PlanWithMixin(context.Background(), config.Mixin{Name: "10-a.yaml", Data: []byte("log-level: debug\n")})
+	plan, err := p.PlanWithMixin(context.Background(), config.Mixin{Name: "10-a.yaml", Data: []byte("mihomo:\n  log-level: debug\n")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestPlanWithMixin(t *testing.T) {
 		t.Errorf("replace: mixins %v\n%s", plan.Mixins, plan.Config)
 	}
 
-	plan, err = p.PlanWithMixin(context.Background(), config.Mixin{Name: "20-b.yaml", Data: []byte("mode: direct\n")})
+	plan, err = p.PlanWithMixin(context.Background(), config.Mixin{Name: "20-b.yaml", Data: []byte("mihomo:\n  mode: direct\n")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,9 +256,9 @@ func TestSubscriptionMixins(t *testing.T) {
 	useSubscription(t, p.Layout, "spare", subscriptionV1)
 	useSubscription(t, p.Layout, "main", subscriptionV1)
 	dir := p.Layout.MixinDir()
-	writeFile(t, filepath.Join(dir, "10-a.yaml"), "log-level: warning\n")
-	writeFile(t, filepath.Join(dir, "main", "10-x.yaml"), "log-level: debug\n")
-	writeFile(t, filepath.Join(dir, "spare", "10-x.yaml"), "log-level: error\n")
+	writeFile(t, filepath.Join(dir, "10-a.yaml"), "mihomo:\n  log-level: warning\n")
+	writeFile(t, filepath.Join(dir, "main", "10-x.yaml"), "mihomo:\n  log-level: debug\n")
+	writeFile(t, filepath.Join(dir, "spare", "10-x.yaml"), "mihomo:\n  log-level: error\n")
 
 	plan := mustPlan(t, p)
 	if strings.Join(plan.Mixins, ",") != "10-a.yaml,main/10-x.yaml" || !strings.Contains(string(plan.Config), "\nlog-level: debug\n") {
@@ -269,16 +269,16 @@ func TestSubscriptionMixins(t *testing.T) {
 	}
 
 	// 编辑共用的和启用订阅的：照常是可以发布的计划；新文件插在所在那一段的正确位置。
-	plan, err := p.PlanWithMixin(ctx, config.Mixin{Name: "main/05-y.yaml", Data: []byte("mode: global\n")})
+	plan, err := p.PlanWithMixin(ctx, config.Mixin{Name: "main/05-y.yaml", Data: []byte("mihomo:\n  mode: global\n")})
 	if err != nil || plan.Inactive || strings.Join(plan.Mixins, ",") != "10-a.yaml,main/05-y.yaml,main/10-x.yaml" {
 		t.Errorf("active: %v %v %v", plan.Mixins, plan.Inactive, err)
 	}
-	plan, err = p.PlanWithMixin(ctx, config.Mixin{Name: "20-b.yaml", Data: []byte("mode: global\n")})
+	plan, err = p.PlanWithMixin(ctx, config.Mixin{Name: "20-b.yaml", Data: []byte("mihomo:\n  mode: global\n")})
 	if err != nil || strings.Join(plan.Mixins, ",") != "10-a.yaml,20-b.yaml,main/10-x.yaml" {
 		t.Errorf("shared: %v %v", plan.Mixins, err)
 	}
 
-	plan, err = p.PlanWithMixin(ctx, config.Mixin{Name: "spare/10-x.yaml", Data: []byte("log-level: silent\n")})
+	plan, err = p.PlanWithMixin(ctx, config.Mixin{Name: "spare/10-x.yaml", Data: []byte("mihomo:\n  log-level: silent\n")})
 	if err != nil || !plan.Inactive || plan.Subscription != "spare" || strings.Join(plan.Mixins, ",") != "10-a.yaml,spare/10-x.yaml" ||
 		!strings.Contains(string(plan.Config), "\nlog-level: silent\n") {
 		t.Fatalf("inactive: %+v, %v", plan, err)
@@ -306,10 +306,10 @@ func TestSubscriptionMixins(t *testing.T) {
 // TestMixinErrorIsCheckFailure 验证有错的 mixin 不能发布，按“检查未通过”报告并指出文件。
 func TestMixinErrorIsCheckFailure(t *testing.T) {
 	p, _, _ := newPipeline(t)
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "50-rules.yaml"), "rules: x\nprepend-rules: [MATCH,DIRECT]\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "50-rules.yaml"), "mihomo:\n  rules: x\ntunlr:\n  rules:\n    prepend: [MATCH,DIRECT]\n")
 	_, err := p.Plan(context.Background())
 	var me *config.MixinError
-	if !errors.As(err, &me) || !errors.Is(err, core.ErrCheckFailed) || err.Error() != "mixin 50-rules.yaml:2: prepend-rules: rules is not a list" {
+	if !errors.As(err, &me) || !errors.Is(err, core.ErrCheckFailed) || err.Error() != "mixin 50-rules.yaml:5: tunlr.rules.prepend: rules is not a list" {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -465,7 +465,7 @@ func TestApplyRestartsForControllerChanges(t *testing.T) {
 	mustApply(t, p, mustPlan(t, p))
 	reloads := len(r.loaded)
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "external-ui-name: x\nexternal-doh-server: /dns-query\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "mihomo:\n  external-ui-name: x\n  external-doh-server: /dns-query\n")
 	plan := mustPlan(t, p)
 	if !slices.Equal(plan.Restart, []string{"external-doh-server", "external-ui-name"}) {
 		t.Fatalf("restart keys = %v", plan.Restart)
@@ -486,7 +486,7 @@ func TestRestartFailureRollsBack(t *testing.T) {
 	mustApply(t, p, mustPlan(t, p))
 	before, _ := os.ReadFile(p.Layout.CoreConfig())
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "external-ui-name: x\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "mihomo:\n  external-ui-name: x\n")
 	rs.fail = true
 	_, err := p.Apply(context.Background(), mustPlan(t, p))
 	if !errors.Is(err, core.ErrRolledBack) || !errors.Is(err, mihomo.ErrUnhealthy) {
@@ -505,7 +505,7 @@ func TestRestartKeysWithoutService(t *testing.T) {
 	p, _, r := newPipeline(t)
 	p.Restarter = &fakeRestarter{layout: p.Layout, stopped: true}
 	mustApply(t, p, mustPlan(t, p))
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "external-ui-name: x\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-api.yaml"), "mihomo:\n  external-ui-name: x\n")
 	res, err := p.Apply(context.Background(), mustPlan(t, p))
 	if err != nil {
 		t.Fatal(err)
@@ -689,11 +689,11 @@ func TestManagedConflicts(t *testing.T) {
 	mustApply(t, p, mustPlan(t, p))
 
 	for _, tt := range []struct{ mixin, want string }{
-		{"secret: mine\n", "mixin 10-a.yaml:1: secret is managed by tunlr:panel (change it with: tunlr panel lan on/off, tunlr panel reset-secret)"},
-		{"x: 1\nexternal-controller: 0.0.0.0:9091\n", "mixin 10-a.yaml:2: external-controller is managed by tunlr:panel"},
-		{"tun:\n  stack: system\n  enable: true\n", "mixin 10-a.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off)"},
-		{"geo-update-interval: 6\n", "mixin 10-a.yaml:1: geo-update-interval is managed by tunlr:geo (change it with: tunlr update set geo)"},
-		{"external-controller-unix: x.sock\n", "mixin 10-a.yaml:1: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
+		{"mihomo:\n  secret: mine\n", "mixin 10-a.yaml:2: secret is managed by tunlr:panel (change it with: tunlr panel lan on/off, tunlr panel reset-secret)"},
+		{"mihomo:\n  x: 1\n  external-controller: 0.0.0.0:9091\n", "mixin 10-a.yaml:3: external-controller is managed by tunlr:panel"},
+		{"mihomo:\n  tun:\n    stack: system\n    enable: true\n", "mixin 10-a.yaml:4: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off)"},
+		{"mihomo:\n  geo-update-interval: 6\n", "mixin 10-a.yaml:2: geo-update-interval is managed by tunlr:geo (change it with: tunlr update set geo)"},
+		{"mihomo:\n  external-controller-unix: x.sock\n", "mixin 10-a.yaml:2: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
 	} {
 		writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), tt.mixin)
 		var me *config.MixinError
@@ -704,7 +704,7 @@ func TestManagedConflicts(t *testing.T) {
 			t.Errorf("%q: CheckMixins = %v", tt.mixin, err)
 		}
 	}
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "tun:\n  stack: system\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "mihomo:\n  tun:\n    stack: system\n")
 	if err := p.CheckMixins(ctx); err != nil {
 		t.Errorf("allowed key: %v", err)
 	}
@@ -744,7 +744,7 @@ func TestExposureRejected(t *testing.T) {
 	useSubscription(t, p.Layout, "main", subscriptionV1)
 	mustApply(t, p, mustPlan(t, p))
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "listeners:\n  - {name: open, type: mixed, port: 7999}\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "mihomo:\n  listeners:\n    - {name: open, type: mixed, port: 7999}\n")
 	var ee *config.ExposureError
 	if _, err := p.Plan(ctx); !errors.As(err, &ee) || !errors.Is(err, core.ErrCheckFailed) {
 		t.Fatalf("plan: %v", err)
@@ -753,7 +753,7 @@ func TestExposureRejected(t *testing.T) {
 		t.Fatalf("rollback: %v", err)
 	}
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "listeners:\n  - {name: open, type: mixed, port: 7999}\nauthentication: [\"u:p\"]\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "mihomo:\n  listeners:\n    - {name: open, type: mixed, port: 7999}\n  authentication: [\"u:p\"]\n")
 	mustPlan(t, p)
 }
 
@@ -776,7 +776,7 @@ func TestProxyLAN(t *testing.T) {
 	if off := string(mustPlan(t, p).Config); !strings.Contains(off, "\nallow-lan: false\n\n# ") || !strings.Contains(off, "\nlan-allowed-ips:\n  - 127.0.0.0/8\n  - 10.0.0.0/8\n") {
 		t.Errorf("off:\n%s", off)
 	}
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "lan-allowed-ips: [0.0.0.0/0]\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-lan.yaml"), "mihomo:\n  lan-allowed-ips: [0.0.0.0/0]\n")
 	var me *config.MixinError
 	if _, err := p.PlanProxyLAN(ctx, true); !errors.As(err, &me) || !strings.Contains(err.Error(), "tunlr proxy lan on/off") {
 		t.Errorf("mixin: %v", err)
@@ -798,7 +798,7 @@ func TestMirrorDefaults(t *testing.T) {
 	}
 
 	// tunlr:mirror 应用在用户的 mixin 之前，用户可以覆盖，覆盖记录在计划中。
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "external-ui-url: https://example.com/ui.zip\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "mihomo:\n  external-ui-url: https://example.com/ui.zip\n")
 	plan := mustPlan(t, p)
 	if cfg := string(plan.Config); !strings.Contains(cfg, "\nexternal-ui-url: https://example.com/ui.zip\n") {
 		t.Errorf("mixin did not override the default:\n%s", cfg)
@@ -829,14 +829,14 @@ func TestMirrorRules(t *testing.T) {
 	useSubscription(t, p.Layout, "main", subscriptionV1)
 	writeFile(t, p.Layout.SettingsFile(), "github-mirror: https://gh-proxy.com/\n")
 	plan := mustPlan(t, p)
-	if m := plan.Managed[len(plan.Managed)-1]; m.Name != ManagedMirror || !strings.Contains(string(m.Data), "prepend-rules:\n  - DOMAIN,gh-proxy.com,DIRECT\n") {
+	if m := plan.Managed[len(plan.Managed)-1]; m.Name != ManagedMirror || !strings.Contains(string(m.Data), "tunlr:\n  rules:\n    prepend:\n      - DOMAIN,gh-proxy.com,DIRECT\n") {
 		t.Errorf("mirror = %s", m.Data)
 	}
 	if !strings.Contains(string(plan.Config), "\nrules:\n  - DOMAIN,gh-proxy.com,DIRECT\n  - MATCH,a\n") {
 		t.Errorf("config:\n%s", plan.Config)
 	}
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "delete-rules:\n  - DOMAIN,gh-proxy.com,DIRECT\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "tunlr:\n  rules:\n    delete:\n      - DOMAIN,gh-proxy.com,DIRECT\n")
 	if cfg := string(mustPlan(t, p).Config); strings.Contains(cfg, "gh-proxy.com,DIRECT") {
 		t.Errorf("mixin could not remove the rule:\n%s", cfg)
 	}
@@ -874,7 +874,7 @@ func TestApplyInstallsUI(t *testing.T) {
 
 	// 用户在 mixin 中换了面板：交给内核。
 	os.RemoveAll(want)
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-ui.yaml"), "external-ui-url: https://example.net/other.zip\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-ui.yaml"), "mihomo:\n  external-ui-url: https://example.net/other.zip\n")
 	res, err = p.Apply(context.Background(), mustPlan(t, p))
 	if err != nil || res.UIInstalled != "" || res.UIError != nil {
 		t.Fatalf("other panel: %+v, %v", res, err)

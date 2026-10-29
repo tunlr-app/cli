@@ -57,7 +57,7 @@ func writeDefaults(w io.Writer, vs []managedView) {
 		if !v.Default || strings.TrimSpace(v.Content) == "{}" {
 			continue
 		}
-		fmt.Fprintf(w, "Defaults from %s (%s; a mixin can override these, remove rules with delete-rules):\n", v.Name, v.Command)
+		fmt.Fprintf(w, "Defaults from %s (%s; a mixin can override these, remove rules with tunlr.rules.delete):\n", v.Name, v.Command)
 		for l := range strings.SplitSeq(strings.TrimRight(v.Content, "\n"), "\n") {
 			fmt.Fprintf(w, "  %s\n", l)
 		}

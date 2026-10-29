@@ -30,8 +30,10 @@ tunlr:
     filter: 美国
     exclude-filter: 倍率`剩余流量`新加坡
 -- mixin.d/20-own.yaml --
-append-proxies:
-  - {name: 美国 自建, type: ss, server: home.example.net, port: 7, cipher: aes-128-gcm, password: p}
+tunlr:
+  proxies:
+    append:
+      - {name: 美国 自建, type: ss, server: home.example.net, port: 7, cipher: aes-128-gcm, password: p}
 -- mixin.d/home/10-filter.yaml --
 tunlr:
   proxy-filter:
