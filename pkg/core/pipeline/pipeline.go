@@ -121,7 +121,8 @@ type Plan struct {
 	Overrides []config.Override
 	// ProxyFilter 是节点筛选的结果，没有设置时为 nil（仅 KindApply）。
 	ProxyFilter *config.ProxyFilterResult
-	// Inactive 表示这是按没有启用的订阅合成的计划（见 PlanWithMixin），只用来检查，Apply 拒绝它。
+	// Inactive 表示这是按没有启用的订阅合成的计划（见 PlanWithMixin、PlanSubscription），只用来检查，
+	// Apply 拒绝它。
 	Inactive bool
 	// Managed 是 tunlr 的交互功能生成的受管 mixin，按 Managed 函数的顺序排列（仅 KindApply）。
 	// 其中含 API secret，展示时只列出键。
@@ -169,6 +170,23 @@ func (p *Pipeline) PlanWithMixin(ctx context.Context, m config.Mixin) (*Plan, er
 		if sub != st.Active {
 			opts.subscription = sub
 		}
+	}
+	return p.plan(ctx, opts)
+}
+
+// PlanSubscription 同 Plan，但按订阅 name 被启用时的样子合成，不改动状态文件，用于 sub use --dry-run。
+// name 不是启用的订阅时 Plan.Inactive 为真，这样的计划不能发布。订阅不存在时报 core.ErrInvalidArgument。
+func (p *Pipeline) PlanSubscription(ctx context.Context, name string) (*Plan, error) {
+	st, _, err := state.LoadOrNew(p.Layout.StateFile(), p.now())
+	if err != nil {
+		return nil, err
+	}
+	if st.Find(name) == nil {
+		return nil, fmt.Errorf("%w: no subscription named %s (see tunlr sub)", core.ErrInvalidArgument, name)
+	}
+	opts := planOptions{}
+	if name != st.Active {
+		opts.subscription = name
 	}
 	return p.plan(ctx, opts)
 }

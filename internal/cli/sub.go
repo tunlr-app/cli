@@ -475,6 +475,14 @@ func (a *app) newSubUseCommand() *cobra.Command {
 					return err
 				}
 			}
+			if a.opts.DryRun {
+				// 不切换订阅，只按它被启用时的样子预览配置。
+				plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().PlanSubscription(cmd.Context(), name) })
+				if err != nil {
+					return err
+				}
+				return a.publish(cmd, plan, "")
+			}
 			res, err := a.subscriptions().Use(cmd.Context(), name)
 			if err != nil {
 				return err

@@ -187,8 +187,18 @@ func (a *app) writePlan(w io.Writer, v planView) {
 		}
 		if n := strings.Count(v.Diff, "\n"); n > maxDiffLines && !a.fullDiff {
 			a.writeDiffSections(w, v.DiffSections, n)
-		} else {
+		} else if a.fullDiff {
 			fmt.Fprint(w, a.style.diff(v.Diff))
+		} else {
+			width, _ := a.size()
+			if width == 0 {
+				width = defaultDiffWidth
+			}
+			diff, shortened := shortenDiff(v.Diff, width)
+			fmt.Fprint(w, a.style.diff(diff))
+			if shortened {
+				fmt.Fprintln(w, a.style.dim("Long lines are shortened (…); show them in full with --full-diff."))
+			}
 		}
 		fmt.Fprintln(w)
 	}
@@ -242,7 +252,7 @@ func (a *app) writeDiffSections(w io.Writer, sections []config.DiffSection, line
 }
 
 func (a *app) withFullDiff(cmd *cobra.Command) *cobra.Command {
-	cmd.Flags().BoolVar(&a.fullDiff, "full-diff", false, fmt.Sprintf("show the whole diff even when it is longer than %d lines", maxDiffLines))
+	cmd.Flags().BoolVar(&a.fullDiff, "full-diff", false, fmt.Sprintf("show the whole diff even when it is longer than %d lines, without shortening long lines", maxDiffLines))
 	return cmd
 }
 

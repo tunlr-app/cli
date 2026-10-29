@@ -57,7 +57,7 @@ func TestEncodeMatchesWhole(t *testing.T) {
 			if err := encodeNode(&whole, &doc); err != nil {
 				t.Fatal(err)
 			}
-			got, err := encode(&doc)
+			got, err := encodeChunks(&doc)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -66,6 +66,50 @@ func TestEncodeMatchesWhole(t *testing.T) {
 				t.Errorf("chunked output differs\n%s", diff)
 			}
 		})
+	}
+}
+
+// TestEncodeAstral 确认 emoji 原样输出（不写成 \U 转义），引号的写法保持原样，节点内容不变，
+// 文档中原有的私用区字符不被当作占位换掉。
+func TestEncodeAstral(t *testing.T) {
+	in := "# 🚀 head\n" +
+		"proxies:\n" +
+		"  - {name: 🇭🇰 香港 01, type: ss}\n" +
+		"  - {name: '🇯🇵|日本 02', type: ss}\n" +
+		"  - {name: \"🇺🇸 美国\\t03\", type: ss}\n" +
+		"  - {name:  私用区 🇭🇰, type: ss} # 🎉\n" +
+		"rules:\n" +
+		"  - 'DOMAIN,a.example,🚀 节点选择'\n" +
+		"  - MATCH,🐟 漏网之鱼\n"
+	want := "# 🚀 head\n" +
+		"proxies:\n" +
+		"  - {name: 🇭🇰 香港 01, type: ss}\n" +
+		"  - {name: '🇯🇵|日本 02', type: ss}\n" +
+		"  - {name: \"🇺🇸 美国\\t03\", type: ss}\n" +
+		"  - {name:  私用区 🇭🇰, type: ss} # 🎉\n" +
+		"rules:\n" +
+		"  - 'DOMAIN,a.example,🚀 节点选择'\n" +
+		"  - MATCH,🐟 漏网之鱼\n"
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(in), &doc); err != nil {
+		t.Fatal(err)
+	}
+	got, err := encode(&doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Errorf("encode =\n%s\nwant\n%s", got, want)
+	}
+	var back yaml.Node
+	if err := yaml.Unmarshal(got, &back); err != nil {
+		t.Fatalf("output does not parse: %v", err)
+	}
+	if v := back.Content[0].Content[1].Content[3].Content[1].Value; v != " 私用区 🇭🇰" {
+		t.Errorf("name after round trip = %q", v)
+	}
+	if v := doc.Content[0].Content[3].Content[1].Value; v != "MATCH,🐟 漏网之鱼" {
+		t.Errorf("node not restored: %q", v)
 	}
 }
 

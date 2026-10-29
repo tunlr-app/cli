@@ -53,7 +53,15 @@ stderr 'sub use needs the name of a subscription'
 exitcode 2 tunlr sub remove
 stderr 'sub remove needs the names'
 
-# 切换
+# 切换；--dry-run 只预览配置，不切换
+# （测试中没有内核，校验无法进行，所以退出码不为 0。）
+! exec tunlr sub use backup --dry-run
+stdout '^Subscription: backup$'
+stdout 'Not applied'
+! stdout 'Switched'
+grep '"active": "main"' root/var/lib/tunlr/state.json
+exitcode 2 tunlr sub use nosuch --dry-run
+stderr 'no subscription named nosuch'
 exec tunlr sub use backup
 stdout '^Switched to "backup": 2 proxies'
 exec tunlr sub use backup
