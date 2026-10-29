@@ -31,7 +31,7 @@ mihomo:
 mixed-port: 7890
 allow-lan: false
 
-# 允许局域网访问时只放行这些私有地址段（含本机，内核对回环地址也检查），由 tunlr 管理。
+# 允许局域网访问时只放行本机和这些私有地址段（内核对回环地址也检查），由 tunlr 管理（tunlr:proxy 写入同样的值）。
 lan-allowed-ips:
   - 127.0.0.0/8
   - 10.0.0.0/8

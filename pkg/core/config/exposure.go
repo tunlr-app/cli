@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
 
 	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/pkg/core/netfilter"
 )
 
 // ExposureError 报告配置会让其他主机无需凭据就能使用代理或 DNS（见 DESIGN.md 第 6 节“端口安全”），
@@ -89,12 +91,10 @@ func CheckExposure(cfg []byte) error {
 	return nil
 }
 
-// LANAllowedIPs 是代理端口对局域网开放时 lan-allowed-ips 的值：私有地址段、共享地址空间 100.64/10（RFC 6598，
-// 同样不会从公网直接到达）和链路本地地址。内核对回环地址同样按它检查，所以本机的 127.0.0.0/8 和 ::1 也在其中（tunlr 自己经 127.0.0.1 检测代理）。
-var LANAllowedIPs = []string{
-	"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
-	"::1/128", "fc00::/7", "fe80::/10",
-}
+// LANAllowedIPs 是代理端口对局域网开放时 lan-allowed-ips 的值：netfilter.PrivateIPv4、PrivateIPv6 定义的私有地址段，
+// 加上回环地址。内核对回环地址同样按它检查，所以本机也要在其中（tunlr 自己经 127.0.0.1 检测代理）。
+var LANAllowedIPs = slices.Concat([]string{netfilter.LoopbackIPv4}, netfilter.PrivateIPv4,
+	[]string{netfilter.LoopbackIPv6}, netfilter.PrivateIPv6)
 
 // LANAccess 报告配置是否打开了代理端口的局域网访问（allow-lan），以及来源是否只限于私有地址段。
 func LANAccess(cfg []byte) (allowLAN, private bool, err error) {

@@ -7,6 +7,6 @@ table inet tunlr_panel {
 	chain input {
 		type filter hook input priority filter - 1; policy accept;
 		tcp dport 9090 ip saddr != { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop
-		tcp dport 9090 ip6 saddr != { ::1, fe80::/10, fc00::/7 } drop
+		tcp dport 9090 ip6 saddr != { ::1/128, fc00::/7, fe80::/10 } drop
 	}
 }

@@ -29,6 +29,6 @@ table inet {{.Table}} {
 		# 早于内核的 TCP 重定向（dstnat），看到的是原始的目标地址。
 		type filter hook prerouting priority raw; policy accept;
 		ether type ip iifname @lan fib daddr type != local update @gateway { ether saddr . ip saddr }
-		ether type ip ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } fib daddr type local tcp dport @ports update @proxy { ether saddr . ip saddr }
+		ether type ip ip saddr { {{.Private}} } fib daddr type local tcp dport @ports update @proxy { ether saddr . ip saddr }
 	}
 }

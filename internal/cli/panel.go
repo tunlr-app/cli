@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -157,15 +158,19 @@ func (a *app) resetSecret(cmd *cobra.Command) error {
 	return nil
 }
 
+// privateRanges 列出 tunlr 视为局域网的地址段（netfilter.PrivateIPv4、PrivateIPv6），用于帮助文字。
+func privateRanges() string {
+	return strings.Join(slices.Concat(netfilter.PrivateIPv4, netfilter.PrivateIPv6), ", ")
+}
+
 func (a *app) newPanelLANCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "lan",
 		Short: "Show whether devices on the LAN can open the panel; turn it on or off",
 		Long: "By default the panel is only reachable from this server (through an SSH tunnel). With LAN\n" +
 			"access on, mihomo's API listens on all addresses, and an nftables table drops\n" +
-			"connections to it from addresses that are not private (10/8, 172.16/12, 192.168/16,\n" +
-			"100.64/10 including Tailscale, 169.254/16; IPv6 link-local and fc00::/7), so phones\n" +
-			"and tablets at home can open it.\n" +
+			"connections to it from addresses that are not private (" + privateRanges() + "),\n" +
+			"so phones and tablets at home can open it.\n" +
 			"The API secret still protects it, but travels unencrypted over the LAN.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {

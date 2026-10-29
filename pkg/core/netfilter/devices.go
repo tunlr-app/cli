@@ -34,10 +34,10 @@ func RenderDevices() ([]byte, error) {
 		return nil, err
 	}
 	var b bytes.Buffer
-	err = t.Execute(&b, map[string]string{
+	err = t.Execute(&b, privateVars(map[string]string{
 		"Table":   DevicesTable,
 		"Timeout": fmt.Sprintf("%dh", int(DeviceTimeout.Hours())),
-	})
+	}))
 	return b.Bytes(), err
 }
 

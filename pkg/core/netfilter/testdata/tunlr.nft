@@ -5,10 +5,10 @@ delete table inet tunlr
 table inet tunlr {
 	chain prerouting {
 		type filter hook prerouting priority mangle - 1; policy accept;
-		# 目标为本机（此时尚未 DNAT，Docker 发布的端口也算）、不是从 TUN 进来的连接。不限于新连接：
+		# 目标为本机、不是从 TUN 进来的连接。在 DNAT 之前判断，所以端口转发给容器、虚拟机的连接也算。不限于新连接：
 		# 加载本表前已经建立的连接（如开启 TUN 的 SSH 会话）在对方发来下一个包时也会标记。
 		iifname != { "lo", "tunlr0" } fib daddr type local ct direction original ct mark set ct mark | 0x10000000
-		# 容器等转发而来的回包。
+		# DNAT 后转发出去的连接的回包。
 		ct direction reply ct mark & 0x10000000 == 0x10000000 meta mark set meta mark | 0x10000000
 	}
 	chain output {

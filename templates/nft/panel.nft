@@ -6,7 +6,7 @@ delete table inet {{.Table}}
 table inet {{.Table}} {
 	chain input {
 		type filter hook input priority filter - 1; policy accept;
-		tcp dport {{.Port}} ip saddr != { 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop
-		tcp dport {{.Port}} ip6 saddr != { ::1, fe80::/10, fc00::/7 } drop
+		tcp dport {{.Port}} ip saddr != { {{.Loopback}}, {{.Private}} } drop
+		tcp dport {{.Port}} ip6 saddr != { {{.Loopback6}}, {{.Private6}} } drop
 	}
 }

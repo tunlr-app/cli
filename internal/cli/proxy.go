@@ -39,8 +39,8 @@ func (a *app) newProxyCommand() *cobra.Command {
 		Use:   "lan",
 		Short: "Show whether devices on the LAN can use the proxy port; turn it on or off",
 		Long: "With LAN access on, the configuration has allow-lan: true and lan-allowed-ips limited to\n" +
-			"private addresses (10/8, 172.16/12, 192.168/16, 100.64/10 including Tailscale, 169.254/16,\n" +
-			"this server itself; IPv6 link-local and fc00::/7), so no authentication is needed at home.\n" +
+			"this server itself and private addresses (" + privateRanges() + "),\n" +
+			"so no authentication is needed at home.\n" +
 			"Both keys are managed by tunlr; mixins cannot set them. Add authentication in a mixin if\n" +
 			"you want a password anyway.",
 		Args: usageArgs(cobra.NoArgs),

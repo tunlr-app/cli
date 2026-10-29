@@ -824,6 +824,10 @@ func TestTemplateURLs(t *testing.T) {
 	if !bytes.Contains(templates.Config, []byte("\n  listen: "+DNSListen+"\n")) {
 		t.Errorf("template dns.listen differs from %s", DNSListen)
 	}
+	// 模板中写的 lan-allowed-ips 只为固定它在配置中的位置，值必须与 tunlr:proxy 写入的相同。
+	if want := "\nlan-allowed-ips:\n  - " + strings.Join(config.LANAllowedIPs, "\n  - ") + "\n"; !bytes.Contains(templates.Config, []byte(want)) {
+		t.Errorf("template lan-allowed-ips differs from %v", config.LANAllowedIPs)
+	}
 }
 
 // TestMirrorRules 验证配置了 GitHub 镜像时，镜像主机的直连规则插在订阅规则前面，用户可以在 mixin 中去掉。

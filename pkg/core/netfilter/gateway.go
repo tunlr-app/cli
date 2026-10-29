@@ -43,11 +43,11 @@ func RenderGateway(iface string) ([]byte, error) {
 		return nil, err
 	}
 	var b bytes.Buffer
-	err = t.Execute(&b, map[string]string{
+	err = t.Execute(&b, privateVars(map[string]string{
 		"Table":     GatewayTable,
 		"Device":    Device,
 		"Interface": iface,
-	})
+	}))
 	return b.Bytes(), err
 }
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/netip"
 	"net/url"
 	"os"
 	"slices"
@@ -210,22 +209,8 @@ func (i *Installer) PanelLANPreflight(ctx context.Context) (*PanelLANPlan, error
 	return p, nil
 }
 
-// privateNets 是面板对局域网开放时允许的来源，与 templates/nft/panel.nft 中的 IPv4 地址段一致。
-var privateNets = []netip.Prefix{
-	netip.MustParsePrefix("10.0.0.0/8"),
-	netip.MustParsePrefix("172.16.0.0/12"),
-	netip.MustParsePrefix("192.168.0.0/16"),
-	netip.MustParsePrefix("100.64.0.0/10"),
-	netip.MustParsePrefix("169.254.0.0/16"),
-}
-
-func privateAddress(s string) bool {
-	ip, err := netip.ParseAddr(s)
-	if err != nil {
-		return false
-	}
-	return slices.ContainsFunc(privateNets, func(p netip.Prefix) bool { return p.Contains(ip.Unmap()) })
-}
+// privateAddress 报告地址 s 是否在私有地址段中，见 netfilter.PrivateIPv4。
+func privateAddress(s string) bool { return netfilter.PrivateAddress(s) }
 
 // PanelLANResult 是开关面板局域网访问的结果。
 type PanelLANResult struct {
