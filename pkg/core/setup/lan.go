@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io/fs"
 	"net"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -22,11 +24,41 @@ type LANInterface struct {
 	Default bool `json:"default,omitempty"`
 }
 
-// virtualPrefixes 是不作为局域网网卡候选的虚拟网卡名前缀（容器网桥、虚拟网卡、VPN）。
-var virtualPrefixes = []string{"docker", "br-", "veth", "virbr", "vnet", "tailscale", "wg", "zt", "tun", "tap", "cni", "flannel", "cali", "kube"}
+// physicalInterface 报告网卡 name 是否接着真实的网络：它自己是硬件（或虚拟机的）网卡，即 sysfs 中有
+// device；或者它是叠在这样的网卡之上的网桥、bond、VLAN、macvlan（lower_<网卡> 指向下层，逐层查找）。
+// 回环、容器网桥（成员只有 veth）、veth、tun/tap、WireGuard 等 VPN 都没有 device，不算。
+// 按内核给出的属性判断，不按网卡名猜：名字由各个软件自己取，列不全也可能撞名。
+func (i *Installer) physicalInterface(name string) bool {
+	return physicalIn(i.Layout.NetDevices(), name, 0)
+}
 
-// LANInterfaces 列出可以作为网关模式局域网网卡的候选：已启用、有 IPv4 地址，排除回环、透明代理的
-// TUN 和常见的虚拟网卡。IPv4 默认路由所在的网卡排在最前，其余按名称排序。
+// maxNetDepth 限制逐层查找下层网卡的深度，网桥上的 bond 上的 VLAN 这类叠法也不会超过它。
+const maxNetDepth = 4
+
+func physicalIn(dir, name string, depth int) bool {
+	if netfilter.ValidInterface(name) != nil {
+		return false
+	}
+	if _, err := os.Lstat(filepath.Join(dir, name, "device")); err == nil {
+		return true
+	}
+	if depth >= maxNetDepth {
+		return false
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, name))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if lower, ok := strings.CutPrefix(e.Name(), "lower_"); ok && physicalIn(dir, lower, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
+// LANInterfaces 列出可以作为网关模式局域网网卡的候选：已启用、有 IPv4 地址、接着真实网络的网卡
+// （见 physicalInterface）。IPv4 默认路由所在的网卡总是候选，排在最前，其余按名称排序。
 func (i *Installer) LANInterfaces(ctx context.Context) ([]LANInterface, error) {
 	list := i.InterfaceNames
 	if list == nil {
@@ -39,9 +71,7 @@ func (i *Installer) LANInterfaces(ctx context.Context) ([]LANInterface, error) {
 	def, _ := i.rules().DefaultInterface(ctx)
 	var res []LANInterface
 	for _, name := range names {
-		if name == "lo" || name == netfilter.Device || name != def && slices.ContainsFunc(virtualPrefixes, func(p string) bool {
-			return strings.HasPrefix(name, p)
-		}) {
+		if name == netfilter.Device || name != def && !i.physicalInterface(name) {
 			continue
 		}
 		ifi, err := i.lookupInterface(name)

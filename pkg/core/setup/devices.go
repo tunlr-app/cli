@@ -139,7 +139,7 @@ func (i *Installer) Devices(ctx context.Context, opts DeviceOptions) (*DeviceLis
 	}
 	if opts.All {
 		for _, n := range neighbors {
-			if byMAC[n.MAC] != nil || !lanNeighbor(n) || slices.ContainsFunc(order, func(d *Device) bool { return d.MAC == n.MAC }) {
+			if byMAC[n.MAC] != nil || !i.lanNeighbor(n) || slices.ContainsFunc(order, func(d *Device) bool { return d.MAC == n.MAC }) {
 				continue
 			}
 			order = append(order, &Device{IP: n.IP, MAC: n.MAC, State: DeviceLAN, Route: RouteProxy})
@@ -194,17 +194,10 @@ func neighborByIP(list []netfilter.Neighbor, ip string) *netfilter.Neighbor {
 	return nil
 }
 
-// lanNeighbor 报告邻居是否是局域网中的设备，而不是本机的容器、TUN 等虚拟网卡另一端。
-func lanNeighbor(n netfilter.Neighbor) bool {
-	if n.Interface == netfilter.Device || !privateAddress(n.IP) {
-		return false
-	}
-	for _, prefix := range []string{"docker", "br-", "veth", "virbr", "cni", "flannel", "tailscale"} {
-		if strings.HasPrefix(n.Interface, prefix) {
-			return false
-		}
-	}
-	return true
+// lanNeighbor 报告邻居是否是局域网中的设备：私有地址，且在接着真实网络的网卡上（见 physicalInterface），
+// 而不是本机的容器、TUN、VPN 等虚拟网卡另一端。
+func (i *Installer) lanNeighbor(n netfilter.Neighbor) bool {
+	return privateAddress(n.IP) && i.physicalInterface(n.Interface)
 }
 
 func routeOf(r state.Device) string {

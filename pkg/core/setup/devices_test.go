@@ -33,6 +33,8 @@ func newDevicesInstaller(t *testing.T) (*Installer, *fakeHost) {
 	t.Helper()
 	i, h := newGatewayInstaller(t, "1")
 	gatewayOn(t, i, "ens3")
+	fakeNIC(t, i.Layout, "ens3", true)
+	fakeNIC(t, i.Layout, "docker0", false, "veth1")
 	h.seen = map[string]string{
 		"gateway": seenSet(macPhone, "192.168.1.5", 30, macTV, "192.168.1.6", 7200),
 		"proxy":   seenSet(macPhone, "192.168.1.5", 10),

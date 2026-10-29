@@ -102,5 +102,8 @@ func (l Layout) RPFilter(iface string) string {
 	return l.join("proc", "sys", "net", "ipv4", "conf", iface, "rp_filter")
 }
 
+// NetDevices 是网卡的 sysfs 目录（/sys/class/net），每块网卡一个子目录，测试时也放在 Root 下。
+func (l Layout) NetDevices() string { return l.join("sys", "class", "net") }
+
 // ToolBinary 是安装后的 tunlr 自身，unit 中引用这个路径。
 func (l Layout) ToolBinary() string { return l.join("usr", "local", "bin", "tunlr") }
