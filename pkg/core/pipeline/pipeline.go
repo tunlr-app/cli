@@ -1,7 +1,7 @@
 // Package pipeline 实现配置流水线：合成 → 校验 → 预览差异 → 原子发布 → 记录历史，以及回滚。
 //
 // 一次发布分两步：Plan 计算要发布的配置、与生效配置的差异和 mihomo -t 的结果，不改动任何
-// 状态（只可能补齐校验所需的 geo 数据）；用户确认后 Apply 在文件锁内发布这个 Plan。
+// 状态（只可能留下 mihomo -t 现场下载的 geo 数据）；用户确认后 Apply 在文件锁内发布这个 Plan。
 // 两步之间生效的配置被改动时，Apply 拒绝发布，避免覆盖用户没有看过的变化。
 package pipeline
 
@@ -75,9 +75,9 @@ type Pipeline struct {
 	Layout paths.Layout
 	// Version 是 tunlr 的版本，记录在历史修订中。
 	Version string
-	// Validator 为空时使用 Layout.CoreBinary() 的 mihomo -t，缺失的 geo 数据按工具设置中的镜像下载。
+	// Validator 为空时使用 Layout.CoreBinary() 的 mihomo -t，缺失的 geo 数据由它按配置中的 geox-url 下载。
 	Validator Validator
-	// Download 为空时按工具设置中的镜像下载（geo 数据、面板）。
+	// Download 为空时按工具设置中的镜像下载（面板）。
 	Download *download.Client
 	// Reloader 为空时经 Layout.CoreSocket() 的 API 让内核重新加载 Layout.CoreConfig()。
 	// 返回 mihomo.ErrNotRunning 表示内核没有运行，配置会在内核启动时生效。
@@ -123,6 +123,9 @@ type Plan struct {
 	Overrides []config.Override
 	// Rewrites 是受管 mixin 在合成的最后改写的值，如经镜像的 geox-url（仅 KindApply）。
 	Rewrites []config.Rewrite
+	// GeoSources 是 geo 数据的自动更新和来源的各键来自哪一层：兜底值（tunlr:defaults 或 mixin 中的
+	// tunlr.defaults）、订阅或 mixin（仅 KindApply）。
+	GeoSources []config.KeySource
 	// ProxyFilter 是节点筛选的结果，没有设置时为 nil（仅 KindApply）。
 	ProxyFilter *config.ProxyFilterResult
 	// Inactive 表示这是按没有启用的订阅合成的计划（见 PlanWithMixin、PlanSubscription），只用来检查，
@@ -135,8 +138,8 @@ type Plan struct {
 	RollbackTo int
 	// Restart 是有变化、需要重启内核才能生效的顶层键；不为空时发布后重启内核而不是热重载。
 	Restart []string
-	// GeoReplaced 是来源变了（geox-url 改了，如切换到自带 geo 来源的订阅）的 geo 文件名：已按新来源下载到
-	// 暂存目录并用于校验，发布时换进内核的工作目录并重启内核。
+	// GeoReplaced 是来源变了（geox-url 改了，如切换到自带 geo 来源的订阅）的 geo 文件名：mihomo -t 已按新来源
+	// 下载到暂存目录并用于校验，发布时换进内核的工作目录并重启内核。
 	GeoReplaced []string
 	// Proxies 汇总节点的变化，尚未发布过、没有变化或无法解析时为 nil。
 	Proxies *config.ProxyChanges
@@ -271,8 +274,18 @@ func (p *Pipeline) PlanResetSecret(ctx context.Context) (*Plan, error) {
 // CheckMixins 只合成配置、不校验也不比较，检查 mixin 有没有错、有没有动 tunlr 独占的键；
 // 有时返回 *config.MixinError。用于 doctor。
 func (p *Pipeline) CheckMixins(ctx context.Context) error {
-	_, err := p.plan(ctx, planOptions{composeOnly: true})
+	_, err := p.Compose(ctx, "")
 	return err
+}
+
+// Compose 只合成配置：不检查端口安全、不与生效的配置比较，也不校验。sub 非空时按订阅 sub 启用时合成。
+// 返回的计划只有 Config、Subscription、Mixins、Managed、Dropped 和 GeoSources，不能发布；用于查看配置各部分的来源。
+func (p *Pipeline) Compose(ctx context.Context, sub string) (*Plan, error) {
+	plan, err := p.plan(ctx, planOptions{composeOnly: true, subscription: sub})
+	if plan != nil {
+		plan.Inactive = true
+	}
+	return plan, err
 }
 
 // Managed 返回按状态文件和工具设置生成的受管 mixin，与发布时所用的相同；还没有生成过 API secret 时
@@ -414,15 +427,18 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		Managed:      plan.Managed,
 		Mixins:       mixins,
 	})
-	if err != nil || opts.composeOnly {
+	if err != nil {
 		return nil, err
+	}
+	plan.Config, plan.Dropped, plan.facts, plan.GeoSources = res.Config, res.Dropped, res.Facts, res.GeoSources
+	if opts.composeOnly {
+		return plan, nil
 	}
 	res.Warnings = append(res.Warnings, config.DNSWarnings(res.Facts, hasInterface)...)
 	// 只在重新合成时检查端口安全；回滚和重写独占的键不经过这里，以免旧配置无法恢复。
 	if err := config.CheckExposure(res.Config); err != nil {
 		return nil, err
 	}
-	plan.Config, plan.Dropped, plan.facts = res.Config, res.Dropped, res.Facts
 	plan.Warnings, plan.Overrides, plan.Rewrites, plan.ProxyFilter = res.Warnings, res.Overrides, res.Rewrites, res.ProxyFilter
 	if opts.noValidate {
 		if plan.Current, err = p.readCurrent(); err != nil {
@@ -568,7 +584,7 @@ func (p *Pipeline) finish(ctx context.Context, plan *Plan) error {
 	if !plan.Changed() {
 		return nil
 	}
-	staged := ""
+	var fresh []mihomo.GeoFile
 	if current != nil {
 		plan.Diff, plan.DiffSections = config.Diff("current", "new", current, plan.Config)
 		// 无法解析的生效配置（facts 为 nil）交给 mihomo -t 报告。
@@ -579,41 +595,35 @@ func (p *Pipeline) finish(ctx context.Context, plan *Plan) error {
 		}
 		if facts != nil {
 			var err error
-			if staged, err = p.stageGeo(ctx, plan, facts.Geo.URLs); err != nil {
-				// 下载新来源的数据失败与配置写法无关，同校验未能完成：保持当前配置。
-				plan.Check = err
-				return nil
+			if fresh, err = mihomo.GeoSourceChanges(p.Layout.CoreDir(), mihomo.GeoFilesFor(plan.facts.Geo), facts.Geo.URLs, plan.facts.Geo.URLs); err != nil {
+				return err
 			}
 		}
 	}
-	v, err := p.validator(staged)
+	// 来源变了的 geo 文件（例如切换到用自定义 geosite 分类的订阅）不用旧文件校验，由 mihomo -t 按新来源下载到
+	// 暂存目录，发布时换进工作目录。不然内核会继续用旧来源的数据，直到它自己下一次更新，规则引用的分类在旧
+	// 文件中可能没有。
+	staged := p.Layout.GeoStageDir()
+	if err := os.RemoveAll(staged); err != nil {
+		return err
+	}
+	v, err := p.validator(fresh, staged, true)
 	if err != nil {
 		return err
 	}
 	plan.Check = v.Validate(ctx, plan.Config, &plan.facts.Geo)
+	if len(fresh) == 0 {
+		return nil
+	}
+	if plan.geoStaged, err = mihomo.StagedGeo(staged, fresh); err != nil {
+		return err
+	}
+	for _, f := range fresh {
+		if _, ok := plan.geoStaged[f.Name]; ok {
+			plan.GeoReplaced = append(plan.GeoReplaced, f.Name)
+		}
+	}
 	return nil
-}
-
-// stageGeo 找出工作目录中已有、但 geox-url 从 old 变为 plan 中的地址后来源不同的 geo 文件（只看配置用到的），
-// 按新来源下载到暂存目录，记入 plan，返回暂存目录；没有这样的文件时返回空串。不然内核会继续用旧来源的数据，
-// 直到它自己下一次更新：例如切换到用自定义 geosite 分类的订阅后，规则引用的分类在旧文件中没有。
-func (p *Pipeline) stageGeo(ctx context.Context, plan *Plan, old map[string]string) (string, error) {
-	changed, err := mihomo.GeoSourceChanges(p.Layout.CoreDir(), mihomo.GeoFilesFor(plan.facts.Geo), old, plan.facts.Geo.URLs)
-	if err != nil || len(changed) == 0 {
-		return "", err
-	}
-	set, err := settings.Load(p.Layout.SettingsFile())
-	if err != nil {
-		return "", err
-	}
-	dir := p.Layout.GeoStageDir()
-	if plan.geoStaged, err = mihomo.StageGeo(ctx, p.downloader(set), dir, changed, plan.facts.Geo.URLs, p.owner()); err != nil {
-		return "", err
-	}
-	for _, f := range changed {
-		plan.GeoReplaced = append(plan.GeoReplaced, f.Name)
-	}
-	return dir, nil
 }
 
 // ApplyResult 是一次发布的结果。
@@ -890,14 +900,14 @@ func (p *Pipeline) installUI(ctx context.Context, facts *config.Facts) (string, 
 	return dir, nil
 }
 
-// CheckCurrent 用 mihomo -t 校验生效的配置，只读：不下载缺失的 geo 数据（缺了由 -t 报告）。
+// CheckCurrent 用 mihomo -t 校验生效的配置，只读：mihomo -t 现场下载的 geo 数据不保留。
 // 没有生效的配置时 exists 为 false。
 func (p *Pipeline) CheckCurrent(ctx context.Context) (exists bool, err error) {
 	current, err := p.readCurrent()
 	if err != nil || current == nil {
 		return false, err
 	}
-	v, err := p.validator("")
+	v, err := p.validator(nil, "", false)
 	if err != nil {
 		return true, err
 	}
@@ -915,21 +925,19 @@ func (p *Pipeline) readCurrent() ([]byte, error) {
 	return data, err
 }
 
-// validator 返回校验用的 Validator；staged 不为空时，其中暂存的 geo 文件代替工作目录中的旧文件（见 stageGeo）。
-func (p *Pipeline) validator(staged string) (Validator, error) {
+// validator 返回校验用的 Validator：fresh 是来源变了的 geo 文件，mihomo -t 下载的存到 staged；keep 为 true 时
+// 工作目录中缺失、mihomo -t 下载的 geo 文件存进工作目录（见 mihomo.Validator）。
+func (p *Pipeline) validator(fresh []mihomo.GeoFile, staged string, keep bool) (Validator, error) {
 	if p.Validator != nil {
 		return p.Validator, nil
 	}
-	set, err := settings.Load(p.Layout.SettingsFile())
-	if err != nil {
-		return nil, err
-	}
 	return &mihomo.Validator{
-		Binary:   p.Layout.CoreBinary(),
-		HomeDir:  p.Layout.CoreDir(),
-		Staged:   staged,
-		Download: p.downloader(set),
-		RunAs:    p.owner(),
+		Binary:  p.Layout.CoreBinary(),
+		HomeDir: p.Layout.CoreDir(),
+		Fresh:   fresh,
+		Staged:  staged,
+		Keep:    keep,
+		RunAs:   p.owner(),
 	}, nil
 }
 
@@ -963,16 +971,17 @@ func (p *Pipeline) now() time.Time {
 
 // 受管 mixin 的名称。
 const (
-	ManagedCore   = "tunlr:core"
-	ManagedTun    = "tunlr:tun"
-	ManagedPanel  = "tunlr:panel"
-	ManagedProxy  = "tunlr:proxy"
-	ManagedDNS    = "tunlr:dns"
-	ManagedMirror = "tunlr:mirror"
-	ManagedFilter = "tunlr:filter"
+	ManagedCore     = "tunlr:core"
+	ManagedTun      = "tunlr:tun"
+	ManagedPanel    = "tunlr:panel"
+	ManagedProxy    = "tunlr:proxy"
+	ManagedDefaults = "tunlr:defaults"
+	ManagedDNS      = "tunlr:dns"
+	ManagedMirror   = "tunlr:mirror"
+	ManagedFilter   = "tunlr:filter"
 )
 
-// DNSListen 是内核 DNS 的监听地址，由 tunlr:dns 提供（模板中也写着同一个值）。
+// DNSListen 是内核 DNS 的监听地址，由 tunlr:dns 提供（tunlr:defaults 中的 dns 不写监听地址）。
 const DNSListen = "127.0.0.1:1053"
 
 // managed 生成 tunlr 的交互功能对应的受管 mixin，顺序即展示的顺序。独占键的：
@@ -984,7 +993,8 @@ const DNSListen = "127.0.0.1:1053"
 //	tunlr:proxy  代理端口的局域网访问开关：开启时 allow-lan: true，lan-allowed-ips 限制为私有地址段
 //	             （config.LANAllowedIPs），内核拒绝其他来源；关闭时 allow-lan: false
 //
-// 提供默认值、用户可以覆盖的：tunlr:dns，DNS 的监听地址（订阅中的被丢弃，见 config.Compose）；
+// 提供默认值、用户可以覆盖的：tunlr:defaults，兜底值（templates.Defaults：geo 数据的设置和 DNS），写在
+// tunlr.defaults 中，订阅没有写时才用（见 config.Compose）；tunlr:dns，DNS 的监听地址（订阅中的被丢弃）；
 // tunlr:mirror，配置了 GitHub 镜像时经镜像的面板下载地址和让镜像直连的规则（用 tunlr.rules.delete 去掉），
 // 并在合成的最后把 geox-url 中 GitHub 的地址改为经镜像（RewriteGeoxURL，用户的 mixin 不能取消）；tunlr:filter，有过滤项
 // 时在规则最前插入的规则（设为直连的设备、拒绝 QUIC、只代理常用端口，见 filterRules 和 DESIGN.md 8.13）。
@@ -1034,6 +1044,7 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 %s`, sw.tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex, tunDNS)},
 		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel reset-secret", Data: panel},
 		{Name: ManagedProxy, Command: "tunlr proxy lan on/off", Data: proxy, Owns: []string{"allow-lan", "lan-allowed-ips"}},
+		DefaultsManaged(),
 		{Name: ManagedDNS, Default: true, Data: fmt.Appendf(nil, "mihomo:\n  dns:\n    listen: %s\n", DNSListen)},
 		mirrorManaged,
 	}
@@ -1042,6 +1053,12 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 			Data: marshal(section{Tunlr: prependRules(rules)})})
 	}
 	return list
+}
+
+// DefaultsManaged 返回 tunlr:defaults：订阅没有写时使用的 geo 数据设置和 DNS（templates.Defaults），
+// 不随开关和设置变化。
+func DefaultsManaged() config.Managed {
+	return config.Managed{Name: ManagedDefaults, Default: true, Data: templates.Defaults}
 }
 
 // section 是受管 mixin 的两个命名空间，写法与用户的 mixin 相同。

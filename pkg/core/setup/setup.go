@@ -256,7 +256,7 @@ func (i *Installer) InitSteps(ctx context.Context, opts InitOptions) ([]string, 
 		steps = append(steps, "Install mihomo "+v+", verified against the official sha256")
 	}
 	sd := i.systemd()
-	steps = append(steps, fmt.Sprintf("Install and enable %s and %s (subscriptions %s unless set otherwise; geo data checked after mihomo updates it)",
+	steps = append(steps, fmt.Sprintf("Install and enable %s and %s (subscriptions %s unless set otherwise)",
 		service.CoreUnit, service.UpdateTimer, settings.DescribePeriod(subscription.DefaultUpdate)))
 
 	list, err := subscription.LoadList(i.Layout.SubscriptionList())

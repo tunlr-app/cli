@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -29,11 +30,18 @@ import (
 	"github.com/tunlr-app/cli/templates"
 )
 
-// fakeValidator 在配置含 MATCH,NOPE 时报告检查未通过，并记录校验次数。
-type fakeValidator struct{ calls int }
+// fakeValidator 在配置含 MATCH,NOPE 时报告检查未通过，并记录校验次数。download 不为空时，校验时调用它，
+// 模拟 mihomo -t 下载 geo 文件。
+type fakeValidator struct {
+	calls    int
+	download func(cfg []byte)
+}
 
 func (v *fakeValidator) Validate(_ context.Context, cfg []byte, _ *config.GeoNeeds) error {
 	v.calls++
+	if v.download != nil {
+		v.download(cfg)
+	}
 	if bytes.Contains(cfg, []byte("MATCH,NOPE")) {
 		return core.ErrCheckFailed
 	}
@@ -113,6 +121,14 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func mixinNames(mixins []config.Mixin) []string {
+	var names []string
+	for _, m := range mixins {
+		names = append(names, m.Name)
+	}
+	return names
 }
 
 func mustPlan(t *testing.T, p *Pipeline) *Plan {
@@ -297,10 +313,10 @@ func TestSubscriptionMixins(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := mixinsFor(all, "spare"); len(got) != 2 || got[1].Name != "spare/10-x.yaml" {
-		t.Errorf("mixinsFor = %+v", got)
+		t.Errorf("mixinsFor = %v", mixinNames(got))
 	}
 	if got := mixinsFor(all, ""); len(got) != 1 {
-		t.Errorf("mixinsFor(none) = %+v", got)
+		t.Errorf("mixinsFor(none) = %v", mixinNames(got))
 	}
 }
 
@@ -722,7 +738,7 @@ func TestManagedConflicts(t *testing.T) {
 	}
 
 	ms, err := p.Managed()
-	if err != nil || len(ms) != 6 || ms[4].Name != ManagedDNS || ms[5].Name != ManagedMirror || !ms[5].Default || ms[1].Keys()[0] != "tun.enable" {
+	if err != nil || len(ms) != 7 || ms[4].Name != ManagedDefaults || ms[5].Name != ManagedDNS || ms[6].Name != ManagedMirror || !ms[6].Default || ms[1].Keys()[0] != "tun.enable" {
 		t.Errorf("Managed = %+v, %v", ms, err)
 	}
 }
@@ -812,18 +828,15 @@ func TestMirrorDefaults(t *testing.T) {
 	}
 }
 
-// TestTemplateURLs 确认模板中面板和 geo 数据的地址与内核的默认地址一致。
+// TestTemplateURLs 确认模板中面板的地址、tunlr:defaults 中 geo 数据的地址与内核的默认地址一致。
 func TestTemplateURLs(t *testing.T) {
 	if !bytes.Contains(templates.Config, []byte("\nexternal-ui-url: "+mihomo.ZashboardURL+"\n")) {
 		t.Errorf("template external-ui-url differs from %s", mihomo.ZashboardURL)
 	}
 	for _, f := range []mihomo.GeoFile{mihomo.GeoIPDat, mihomo.GeoSite, mihomo.GeoMMDB, mihomo.GeoASN} {
-		if !bytes.Contains(templates.Config, []byte(": "+f.URL()+"\n")) {
-			t.Errorf("template geox-url lacks %s", f.URL())
+		if !bytes.Contains(templates.Defaults, []byte(": "+f.URL()+"\n")) {
+			t.Errorf("defaults geox-url lacks %s", f.URL())
 		}
-	}
-	if !bytes.Contains(templates.Config, []byte("\n  listen: "+DNSListen+"\n")) {
-		t.Errorf("template dns.listen differs from %s", DNSListen)
 	}
 	// 模板中写的 lan-allowed-ips 只为固定它在配置中的位置，值必须与 tunlr:proxy 写入的相同。
 	if want := "\nlan-allowed-ips:\n  - " + strings.Join(config.LANAllowedIPs, "\n  - ") + "\n"; !bytes.Contains(templates.Config, []byte(want)) {
@@ -961,14 +974,18 @@ func TestSubscriptionDNS(t *testing.T) {
 	}
 }
 
-// TestGeoSourceChange 验证 geox-url 改了（如切换到自带 geo 来源的订阅）时，已有的 geo 文件按新来源下载、
-// 用于校验，发布时才换进工作目录；内核加载失败时连同配置一起换回。
+// TestGeoSourceChange 验证 geox-url 改了（如切换到自带 geo 来源的订阅）时，mihomo -t 按新来源下载到暂存目录的
+// geo 文件发布时才换进工作目录；内核加载失败时连同配置一起换回。
 func TestGeoSourceChange(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("from " + r.URL.Path))
-	}))
-	defer srv.Close()
-	p, _, r := newPipeline(t)
+	const srv = "http://geo.example"
+	p, v, r := newPipeline(t)
+	// 校验时把新来源的文件“下载”到暂存目录，内容是地址中的路径。
+	source := regexp.MustCompile(`geosite: '?` + srv + `(/[^'\s]+)`)
+	v.download = func(cfg []byte) {
+		if m := source.FindSubmatch(cfg); m != nil {
+			writeFile(t, filepath.Join(p.Layout.GeoStageDir(), mihomo.GeoSite.Name), "from "+string(m[1]))
+		}
+	}
 	useSubscription(t, p.Layout, "main", "proxies:\n  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}\nrules:\n  - GEOSITE,cn,a\n  - MATCH,a\n")
 	mustApply(t, p, mustPlan(t, p))
 	geosite := filepath.Join(p.Layout.CoreDir(), "GeoSite.dat")
@@ -978,7 +995,7 @@ func TestGeoSourceChange(t *testing.T) {
 		return string(data)
 	}
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-geo.yaml"), "mihomo:\n  geox-url:\n    geosite: "+srv.URL+"/a.dat\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-geo.yaml"), "mihomo:\n  geox-url:\n    geosite: "+srv+"/a.dat\n")
 	plan := mustPlan(t, p)
 	if fmt.Sprint(plan.GeoReplaced) != "[GeoSite.dat]" || read() != "old" {
 		t.Fatalf("plan: replaced %v, file %q", plan.GeoReplaced, read())
@@ -990,12 +1007,12 @@ func TestGeoSourceChange(t *testing.T) {
 	if _, err := os.Stat(p.Layout.GeoStageDir()); !os.IsNotExist(err) {
 		t.Errorf("staging left behind: %v", err)
 	}
-	// 发布后没有变化，不再下载。
+	// 发布后没有变化，不再暂存。
 	if plan := mustPlan(t, p); plan.Changed() || plan.GeoReplaced != nil {
 		t.Errorf("unchanged: %+v", plan.GeoReplaced)
 	}
 
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-geo.yaml"), "mihomo:\n  geox-url:\n    geosite: "+srv.URL+"/b.dat\n")
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-geo.yaml"), "mihomo:\n  geox-url:\n    geosite: "+srv+"/b.dat\n")
 	plan = mustPlan(t, p)
 	r.fail = true
 	if _, err := p.Apply(context.Background(), plan); !errors.Is(err, core.ErrRolledBack) {
@@ -1003,5 +1020,38 @@ func TestGeoSourceChange(t *testing.T) {
 	}
 	if read() != "from /a.dat" {
 		t.Errorf("geo data not put back: %q", read())
+	}
+}
+
+// TestDefaultsManaged 验证兜底值 tunlr:defaults：订阅没有写时使用，订阅写了部分 geox-url 时其余的文件用它的地址；
+// 它是提供默认值的受管 mixin，不写入 mixin.d。
+func TestDefaultsManaged(t *testing.T) {
+	p, _, _ := newPipeline(t)
+	useSubscription(t, p.Layout, "main", subscriptionV1+"geox-url:\n  geosite: https://geo.example/site.dat\n")
+	plan := mustPlan(t, p)
+	cfg := string(plan.Config)
+	for _, want := range []string{"\n  geosite: https://geo.example/site.dat\n", "\n  mmdb: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb\n",
+		"\ngeo-update-interval: 168\n", "\n  enhanced-mode: fake-ip\n"} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("config lacks %q:\n%s", want, cfg)
+		}
+	}
+	for _, s := range plan.GeoSources {
+		want := config.KeySource{Path: s.Path, Value: s.Value, From: ManagedDefaults, Fallback: true}
+		if s.Path == "geox-url.geosite" {
+			want = config.KeySource{Path: s.Path, Value: s.Value, From: config.FromSubscription}
+		}
+		if s != want {
+			t.Errorf("source %+v, want %+v", s, want)
+		}
+	}
+	if i := slices.IndexFunc(plan.Managed, func(m config.Managed) bool { return m.Name == ManagedDefaults }); i < 0 || !plan.Managed[i].Default {
+		t.Errorf("managed = %v", plan.Managed)
+	}
+	if len(plan.Mixins) != 0 {
+		t.Errorf("mixins = %v", plan.Mixins)
+	}
+	if _, err := os.Stat(p.Layout.MixinDir()); !os.IsNotExist(err) {
+		t.Errorf("mixin.d: %v", err)
 	}
 }

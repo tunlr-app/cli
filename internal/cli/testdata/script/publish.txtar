@@ -90,10 +90,11 @@ stdout 'Mixins \(in order\): 10-level.yaml, 50-rules.yaml, 9-late.yaml$'
 stdout '  9-late.yaml: applied after 10-level.yaml because names sort character by character; to apply it before, rename it to 09-late.yaml'
 rm root/etc/tunlr/mixin.d/50-rules.yaml root/etc/tunlr/mixin.d/10-level.yaml root/etc/tunlr/mixin.d/90-ignored.yml root/etc/tunlr/mixin.d/9-late.yaml
 
-# plan 列出 tunlr 管理的 mixin，不显示 secret 的值
+# plan 列出 tunlr 管理的 mixin，不显示 secret 的值；geo 设置都是兜底值时不列出来源
 exec tunlr config plan
 stdout '^Managed by tunlr: tunlr:core, tunlr:tun, tunlr:panel, tunlr:proxy \(mixins cannot change their keys; see: tunlr config\)$'
-stdout '^Defaults from tunlr: tunlr:dns \(mixins can override them; see: tunlr config\)$'
+stdout '^Defaults from tunlr: tunlr:defaults, tunlr:dns \(mixins can override them; see: tunlr config\)$'
+! stdout 'Geo data settings not from'
 ! stdout 'geox-url'
 ! stdout 'Rewritten by'
 exec tunlr config
@@ -102,8 +103,9 @@ stdout '^  tunlr:tun \(tunlr tun on/off\): tun.enable, tun.auto-route, '
 stdout '^  tunlr:panel \(tunlr panel lan on/off, tunlr panel reset-secret\): external-controller, secret$'
 stdout '^Defaults from tunlr:dns \(a mixin can override these\):$'
 stdout '^      listen: 127.0.0.1:1053$'
+stdout '^Fallbacks from tunlr:defaults \(used where the subscription does not set them; per subscription: tunlr update set geo <sub>; a mixin can override these\):$'
+stdout '^      geo-update-interval: 168$'
 ! stdout 'tunlr:mirror'
-! stdout 'tunlr:geo'
 exec tunlr config --json
 stdout '"name": "tunlr:core"'
 ! stdout '"content": "secret'
@@ -119,7 +121,7 @@ rm root/etc/tunlr/mixin.d/20-mine.yaml
 # geox-url 中 github.com 的地址在合成的最后改为经镜像，plan 列出改写的键，tunlr config 给出默认值和改写
 cp mirror-settings.yaml root/etc/tunlr/settings.yaml
 exec tunlr config plan
-stdout '^Defaults from tunlr: tunlr:dns, tunlr:mirror \(mixins can override them; see: tunlr config\)$'
+stdout '^Defaults from tunlr: tunlr:defaults, tunlr:dns, tunlr:mirror \(mixins can override them; see: tunlr config\)$'
 stdout '^Rewritten by tunlr:mirror: geox-url.geoip, geox-url.geosite, geox-url.mmdb, geox-url.asn$'
 stdout '^\+  mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb$'
 stdout '^\+  - DOMAIN,gh-proxy.com,DIRECT$'

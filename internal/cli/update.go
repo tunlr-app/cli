@@ -2,7 +2,11 @@ package cli
 
 import (
 	"cmp"
+	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -10,6 +14,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tunlr-app/cli/pkg/core/config"
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/setup"
 	"github.com/tunlr-app/cli/pkg/core/subscription"
@@ -37,13 +43,14 @@ func (a *app) newUpdateCommand() *cobra.Command {
 		Short: "Show when subscriptions and geo data update; run updates now, set their schedules",
 		Long: "tunlr-update.timer wakes up every hour and runs the updates that are due: each\n" +
 			"subscription on its own period (tunlr update set). The geo data is downloaded by mihomo\n" +
-			"itself as the configuration says (geo-auto-update, geo-update-interval: the template's,\n" +
-			"the subscription's or a mixin's); after each download the timer verifies the files that\n" +
-			"come from a GitHub release against the official sha256.\n\n" +
+			"itself as the configuration says (geox-url, geo-auto-update, geo-update-interval); tunlr\n" +
+			"neither downloads nor verifies it. Each subscription can have its own settings (tunlr update\n" +
+			"set geo <sub>); what neither they nor the subscription set comes from tunlr's built-in\n" +
+			"fallbacks (tunlr:defaults, listed by tunlr config).\n\n" +
 			"Without a subcommand, show how often each one updates, how it last went and when it is\n" +
-			"next due.",
+			"next due, and where each geo setting comes from.",
 		Args: usageArgs(cobra.NoArgs),
-		RunE: func(cmd *cobra.Command, args []string) error { return a.showSchedules() },
+		RunE: func(cmd *cobra.Command, args []string) error { return a.showSchedules(cmd.Context()) },
 	}
 	cmd.AddCommand(a.newUpdateRunCommand(), a.newUpdateSetCommand())
 	return cmd
@@ -56,8 +63,7 @@ func (a *app) newUpdateRunCommand() *cobra.Command {
 		Long: "Run the scheduled updates now, whether or not they are due: sub fetches every saved\n" +
 			"subscription (also those set to never update) and, if the active one changed, publishes\n" +
 			"the configuration (like tunlr config apply --yes); geo has mihomo download the geo data from\n" +
-			"geox-url and verifies the files from a GitHub release against the official sha256 (other\n" +
-			"sources cannot be verified). Without arguments, both. A subscription that\n" +
+			"geox-url now (it is not verified). Without arguments, both. A subscription that\n" +
 			"fails to update keeps its last good copy; a configuration that fails mihomo -t is not\n" +
 			"published. To fetch only some subscriptions, use tunlr sub update.",
 		Args: usageArgs(cobra.ArbitraryArgs),
@@ -125,11 +131,15 @@ func (a *app) renderUpdate(res *setup.UpdateResult, err error) error {
 	return rerr
 }
 
-// showSchedules 列出每个订阅和 geo 数据的更新周期、上次执行和下次到期（tunlr update）。
-func (a *app) showSchedules() error {
+// showSchedules 列出每个订阅和 geo 数据的更新周期、上次执行和下次到期，以及 geo 数据各项设置的来源（tunlr update）。
+func (a *app) showSchedules(ctx context.Context) error {
 	scheds, err := a.installer().Schedules()
 	if err != nil {
 		return err
+	}
+	// 合成失败（如启用的订阅还没有内容）时不列出来源，问题由 config plan 报告。
+	if sources, err := a.installer().GeoSources(ctx, ""); err == nil {
+		scheds[len(scheds)-1].Sources = sources
 	}
 	return a.render(scheds, func() error {
 		tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
@@ -156,13 +166,30 @@ func (a *app) showSchedules() error {
 			fmt.Fprintf(a.stdout, "\nThe last update of %s failed: %s\n", scheduleObject(s), s.Last.Message)
 		}
 		fmt.Fprintln(a.stdout)
+		if len(geo.Sources) > 0 {
+			active := ""
+			for _, s := range scheds {
+				if s.Active {
+					active = s.Name
+				}
+			}
+			if active != "" {
+				fmt.Fprintf(a.stdout, "Geo data settings with %q active (tunlr update set geo %s changes them):\n", active, active)
+			} else {
+				fmt.Fprintln(a.stdout, "Geo data settings (no subscription yet):")
+			}
+			if err := a.writeGeoSources(geo.Sources); err != nil {
+				return err
+			}
+			fmt.Fprintln(a.stdout)
+		}
 		fmt.Fprintln(a.stdout, a.style.dim(describeGeoUpdates(geo)))
 		_, err := fmt.Fprintln(a.stdout, a.style.dim("Due updates run at the next hourly check; tunlr update run runs them now."))
 		return err
 	})
 }
 
-// describeGeoUpdates 说明 geo 数据由谁更新、何时核对。
+// describeGeoUpdates 说明 geo 数据由谁更新、最新的文件是什么时候的。
 func describeGeoUpdates(s setup.Schedule) string {
 	line := "mihomo downloads the geo data by itself (geo-auto-update in the configuration)"
 	if s.Period == settings.PeriodOff {
@@ -171,7 +198,30 @@ func describeGeoUpdates(s setup.Schedule) string {
 	if !s.Updated.IsZero() {
 		line += "; the newest file is from " + formatTime(s.Updated)
 	}
-	return line + ".\ntunlr verifies the files after each download (LAST RUN)."
+	return line + "."
+}
+
+// writeGeoSources 列出 geo 数据各项设置的值和来源。
+func (a *app) writeGeoSources(sources []config.KeySource) error {
+	tw := tabwriter.NewWriter(a.stdout, 0, 0, 2, ' ', 0)
+	for _, s := range sources {
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", s.Path, cmp.Or(s.Value, "(mihomo's default)"), a.describeGeoSource(s))
+	}
+	return tw.Flush()
+}
+
+// describeGeoSource 说明一项 geo 设置来自哪里：兜底值（tunlr:defaults，或 mixin 中的 tunlr.defaults），
+// 订阅，或 mixin 的 mihomo:（如 tunlr update set geo 写的订阅的 geo mixin）；哪里都没有写时用内核的默认值。
+func (a *app) describeGeoSource(s config.KeySource) string {
+	switch {
+	case s.Fallback && s.From == config.FromTemplate:
+		return a.style.dim("not set")
+	case s.Fallback:
+		return a.style.dim("fallback (" + s.From + ")")
+	case s.From == config.FromSubscription:
+		return "the subscription"
+	}
+	return "mixin " + s.From
 }
 
 // scheduleLabel 是一项更新在表格中的名称，如 "sub home *"（启用的订阅）、"geo"。
@@ -201,12 +251,9 @@ func describePeriod(p string) string {
 	return settings.DescribePeriod(p) + " (" + p + ")"
 }
 
-// describeNext 是下次到期的时间。geo 数据是内核下一次更新的大致时间，由内核决定；内核更新过、还没有
-// 核对时为 "verify"。
+// describeNext 是下次到期的时间。geo 数据是内核下一次更新的大致时间，由内核决定。
 func (a *app) describeNext(s setup.Schedule) string {
 	switch {
-	case s.Task == setup.TaskGeo && s.Due(time.Now()):
-		return "verify now"
 	case s.Next.IsZero():
 		return "-"
 	case s.Task == setup.TaskGeo:
@@ -218,7 +265,7 @@ func (a *app) describeNext(s setup.Schedule) string {
 }
 
 // describeSchedule 是 status 中一项更新的一行说明，如 "sub home daily, last ok 2026-10-27 03:12"、
-// "geo weekly by mihomo, verified 2026-10-20 12:00"。
+// "geo weekly by mihomo, newest file 2026-10-20 12:00"。
 func (a *app) describeSchedule(s setup.Schedule) string {
 	name := "sub " + s.Name
 	if s.Task == setup.TaskGeo {
@@ -230,13 +277,10 @@ func (a *app) describeSchedule(s setup.Schedule) string {
 	line := name + " " + settings.DescribePeriod(s.Period)
 	if s.Task == setup.TaskGeo {
 		line += " by mihomo"
-		switch {
-		case s.Last == nil:
-			return line + a.style.dim(", not verified yet")
-		case s.Last.Status == setup.StepFailed:
-			return line + ", " + a.style.bad("verification failed "+formatTime(s.Last.At))
+		if s.Updated.IsZero() {
+			return line + a.style.dim(", no files yet")
 		}
-		return line + a.style.dim(", verified "+formatTime(s.Last.At))
+		return line + a.style.dim(", newest file "+formatTime(s.Updated))
 	}
 	switch {
 	case s.Last == nil:
@@ -254,20 +298,24 @@ var periodChoices = []string{"1h", "6h", "12h", "1d", "7d", settings.PeriodOff}
 
 const periodOther = "Other..."
 
-// geoUpdateHint 说明 geo 数据的更新周期在哪里改。
-const geoUpdateHint = "the geo data is updated by mihomo as the configuration says; change geo-auto-update and geo-update-interval (hours) with a mixin (tunlr mixin edit)"
-
 func (a *app) newUpdateSetCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "set sub [name] [period]",
-		Short: "Set how often a subscription updates",
+	var urls []string
+	cmd := &cobra.Command{
+		Use:   "set sub [name] [period] | set geo [sub] [period] [--url <file>=<url>...]",
+		Short: "Set how often a subscription or the geo data updates, and where a subscription's geo data comes from",
 		Long: "Set how often a subscription is fetched: a number of hours or days such as 6h, 1d or 7d,\n" +
 			"off for never, or default (" + subscription.DefaultUpdate + "). Every saved subscription is fetched on its own\n" +
 			"period; only the active one's configuration is published. A new subscription's period is\n" +
 			"given with tunlr sub add --update. What is left out is chosen from a list (needs a\n" +
 			"terminal).\n\n" +
-			"The geo data is updated by mihomo itself as the configuration says: change\n" +
-			"geo-auto-update and geo-update-interval (hours) with a mixin.",
+			"geo changes the geo data settings of one subscription: how often mihomo itself updates the\n" +
+			"geo data (off for never) and, with --url geoip|geosite|mmdb|asn=<url>, where it downloads\n" +
+			"each file; default undoes the change. They are written to mixin.d/<sub>/" + setup.GeoMixinFile + ", override\n" +
+			"what the subscription sets and apply only while it is active. What is not set there comes\n" +
+			"from the subscription, or else from tunlr's built-in fallbacks (tunlr:defaults: " + setup.GeoDefaultUpdate + ",\n" +
+			"the official files). Without a period or --url, the current settings are shown and the\n" +
+			"change is chosen from a list (needs a terminal). The configuration is then published if\n" +
+			"the subscription is active (--yes when there is no terminal).",
 		Args: usageArgs(cobra.MaximumNArgs(3)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if a.opts.DryRun {
@@ -276,16 +324,179 @@ func (a *app) newUpdateSetCommand() *cobra.Command {
 			if len(args) > 0 {
 				switch args[0] {
 				case "sub", "subscription":
+					if len(urls) > 0 {
+						return usageErrorf("--url is only for update set geo")
+					}
 					args = args[1:]
 				case "geo":
-					return usageErrorf("%s", geoUpdateHint)
+					return a.setGeoUpdate(cmd, args[1:], urls)
 				default:
-					return usageErrorf("update set takes sub first, e.g. tunlr update set sub home 6h")
+					return usageErrorf("update set takes sub or geo first, e.g. tunlr update set sub home 6h")
 				}
 			}
 			return a.setSubUpdate(cmd, args)
 		},
 	}
+	cmd.Flags().StringArrayVar(&urls, "url", nil, "with geo: where mihomo downloads a geo file, as <file>=<url> or <file>=default (repeatable)")
+	return cmd
+}
+
+// setGeoUpdate 是 update set geo [sub] [period] [--url <file>=<url>...]：修改一个订阅的 geo 数据设置（写进它的
+// geo mixin），订阅启用时随后发布。没有给出订阅时从列表中选择；没有给出周期和地址时列出当前的设置，选择改哪一项。
+func (a *app) setGeoUpdate(cmd *cobra.Command, args, urls []string) error {
+	ctx := cmd.Context()
+	if len(args) > 2 {
+		return usageErrorf("update set geo takes a subscription and a period, e.g. tunlr update set geo home 1d")
+	}
+	ch := setup.GeoChange{URLs: map[string]string{}}
+	for _, u := range urls {
+		k, v, ok := strings.Cut(u, "=")
+		if !ok || v == "" {
+			return usageErrorf("--url takes <file>=<url> or <file>=default, e.g. --url geosite=https://example.com/geosite.dat")
+		}
+		ch.URLs[k] = v
+	}
+	entries, err := a.subscriptions().List()
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return errors.New("no subscriptions yet: geo data settings are made per subscription; add one with: tunlr sub add <name> <url|file>")
+	}
+	sub := ""
+	if len(args) > 0 {
+		sub = args[0]
+		if !slices.ContainsFunc(entries, func(e subscription.Entry) bool { return e.Name == sub }) {
+			if _, err := updatePeriodArg(sub); err == nil {
+				return usageErrorf("update set geo takes the subscription first, e.g. tunlr update set geo %s %s", entries[0].Name, sub)
+			}
+			return fmt.Errorf("%w: %s", subscription.ErrNotFound, sub)
+		}
+	}
+	if len(args) == 2 {
+		ch.Update = args[1]
+		if ch.Update != setup.GeoDefault {
+			if _, err := settings.ParsePeriod(ch.Update); err != nil {
+				return err
+			}
+		}
+	}
+	if (sub == "" || ch.Update == "" && len(urls) == 0) && !a.interactive() {
+		return usageErrorf("update set geo needs the subscription and a period or --url, e.g. tunlr update set geo %s 1d", entries[0].Name)
+	}
+	if sub == "" {
+		if sub, err = a.chooseSubscription(cmd, "Change the geo data settings of which subscription?"); err != nil {
+			_, err := a.cancelled(err)
+			return err
+		}
+	}
+	if ch.Update == "" && len(urls) == 0 {
+		if ch, err = a.chooseGeoChange(cmd, sub); err != nil {
+			_, err := a.cancelled(err)
+			return err
+		}
+	}
+	if err := a.requireYes("update set geo"); err != nil {
+		return err
+	}
+	w, err := a.installer().SetGeo(ctx, sub, ch)
+	if err != nil {
+		return err
+	}
+	if !a.opts.JSON {
+		if _, err := os.Stat(w.File); errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(a.stdout, "Removed %s: %q uses what it sets, or else tunlr's fallbacks.\n", w.File, sub)
+		} else {
+			fmt.Fprintf(a.stdout, "Wrote %s for %q to %s.\n", strings.Join(w.Keys, ", "), sub, w.File)
+		}
+	}
+	if !w.Active {
+		return a.render(w, func() error {
+			_, err := fmt.Fprintf(a.stdout, "%q is not the active subscription; the change applies when it is (tunlr sub use %s).\n", sub, sub)
+			return err
+		})
+	}
+	plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().Plan(ctx) })
+	switch {
+	case err != nil:
+		return fmt.Errorf("the change is saved, but the configuration could not be composed: %w", err)
+	case plan.Current == nil:
+		return a.render(w, func() error {
+			_, err := fmt.Fprintln(a.stdout, "No configuration has been published yet; the change takes effect with tunlr config apply.")
+			return err
+		})
+	case !plan.Changed():
+		return a.render(w, func() error {
+			_, err := fmt.Fprintln(a.stdout, "The configuration stays the same.")
+			return err
+		})
+	}
+	if !a.opts.JSON {
+		fmt.Fprintln(a.stdout)
+	}
+	err = a.publish(cmd, plan, "Apply this configuration?")
+	if err == nil && a.aborted {
+		fmt.Fprintln(a.stdout, "The change stays saved; tunlr config apply publishes it later.")
+	}
+	a.aborted = false // 修改已经保存，不发布也不是什么都没做。
+	return err
+}
+
+// chooseGeoChange 列出订阅 sub 启用时 geo 数据各项设置的值和来源，让用户选择改哪一项并给出新值。
+func (a *app) chooseGeoChange(cmd *cobra.Command, sub string) (setup.GeoChange, error) {
+	ctx := cmd.Context()
+	ch := setup.GeoChange{URLs: map[string]string{}}
+	sources, err := a.installer().GeoSources(ctx, sub)
+	if err != nil {
+		return ch, err
+	}
+	fmt.Fprintf(a.stdout, "Geo data settings with %q active:\n", sub)
+	if err := a.writeGeoSources(sources); err != nil {
+		return ch, err
+	}
+	fmt.Fprintln(a.stdout)
+	own := sub + "/" + setup.GeoMixinFile
+	values := map[string]string{}
+	changed := false
+	for _, s := range sources {
+		values[s.Path] = s.Value
+		changed = changed || s.From == own
+	}
+	period := setup.GeoPeriod(sources)
+	options := []string{"How often mihomo updates it (now " + describePeriod(period) + ")"}
+	for _, k := range setup.GeoURLKeys {
+		options = append(options, "Where "+k+" is downloaded from")
+	}
+	if changed {
+		options = append(options, "Undo all changes for "+sub+" (remove "+own+")")
+	}
+	i, err := a.prompt.Choose(ctx, "Change what?", options, 0)
+	if err != nil {
+		return ch, err
+	}
+	def := "what " + sub + " sets, or else tunlr's fallbacks"
+	switch {
+	case i == 0:
+		ch.Update, err = a.choosePeriod(cmd, "geo data", period, def)
+	case i <= len(setup.GeoURLKeys):
+		k := setup.GeoURLKeys[i-1]
+		var u string
+		u, err = a.prompt.Input(ctx, "Where to download "+k+" from",
+			"An http or https URL; leave it empty for the default ("+def+").\nNow: "+cmp.Or(values["geox-url."+k], "mihomo's default"), "",
+			func(s string) error {
+				if s = strings.TrimSpace(s); s == "" {
+					return nil
+				}
+				return setup.ValidateGeoURL(s)
+			})
+		ch.URLs[k] = cmp.Or(strings.TrimSpace(u), setup.GeoDefault)
+	default:
+		ch.Update = setup.GeoDefault
+		for _, k := range setup.GeoURLKeys {
+			ch.URLs[k] = setup.GeoDefault
+		}
+	}
+	return ch, err
 }
 
 // setSubUpdate 是 update set sub [name] [period]：修改一个订阅的自动更新周期。
@@ -321,7 +532,7 @@ func (a *app) setSubUpdate(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	} else {
-		if period, err = a.choosePeriod(cmd, fmt.Sprintf("subscription %q", name), entries[i].UpdatePeriod()); err != nil || period == "" {
+		if period, err = a.choosePeriod(cmd, fmt.Sprintf("subscription %q", name), entries[i].UpdatePeriod(), ""); err != nil || period == "" {
 			_, err := a.cancelled(err)
 			return err
 		}
@@ -343,20 +554,25 @@ func (a *app) setSubUpdate(cmd *cobra.Command, args []string) error {
 }
 
 // choosePeriod 让用户从常用周期中选择，或输入其他周期；光标起始于当前设置。object 是更新对象在
-// 问题中的说法，如 "geo data"。
-func (a *app) choosePeriod(cmd *cobra.Command, object, current string) (string, error) {
-	options := make([]string, 0, len(periodChoices)+1)
-	for _, p := range periodChoices {
+// 问题中的说法，如 "geo data"。def 不为空时另有恢复默认的一项（返回 "default"），def 说明默认是什么。
+func (a *app) choosePeriod(cmd *cobra.Command, object, current, def string) (string, error) {
+	choices := slices.Clone(periodChoices)
+	options := make([]string, 0, len(choices)+2)
+	for _, p := range choices {
 		options = append(options, describePeriod(p))
 	}
+	if def != "" {
+		choices = append(choices, setup.GeoDefault)
+		options = append(options, "Default ("+def+")")
+	}
 	options = append(options, periodOther)
-	initial := max(0, slices.Index(periodChoices, current))
+	initial := max(0, slices.Index(choices, current))
 	i, err := a.prompt.Choose(cmd.Context(), fmt.Sprintf("Update the %s how often?", object), options, initial)
 	if err != nil {
 		return "", err
 	}
-	if i < len(periodChoices) {
-		return periodChoices[i], nil
+	if i < len(choices) {
+		return choices[i], nil
 	}
 	p, err := a.prompt.Input(cmd.Context(), "Period", "A number of hours or days, such as 3h or 2d, or off.", "", func(s string) error {
 		_, err := settings.ParsePeriod(strings.TrimSpace(s))

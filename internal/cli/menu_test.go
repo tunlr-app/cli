@@ -279,7 +279,7 @@ func TestMenuRefresh(t *testing.T) {
 	// 内核停了：列表随之变化，光标留在原来那一项。
 	mt.data = menuWith(stoppedStatus, 2, 3)
 	mt.send(menuTickMsg(mt.m.tick))
-	if got := strings.Join(mt.m.labels, "|"); got != "Start mihomo|Recent logs|Upgrade mihomo|Update geo data now|Open the panel|Open panel to LAN|New API secret|mihomo details|← Back" {
+	if got := strings.Join(mt.m.labels, "|"); got != "Start mihomo|Recent logs|Upgrade mihomo|Open the panel|Open panel to LAN|New API secret|mihomo details|← Back" {
 		t.Fatalf("labels = %q", got)
 	}
 	if mt.hovered() != "Recent logs" || !strings.Contains(mt.view(), "mihomo not running") {
@@ -336,10 +336,10 @@ func TestMenuItems(t *testing.T) {
 
 	for group, want := range map[string]string{
 		"":            "tunlr: Show status|Subs & config|Traffic|LAN devices|mihomo & panel|Maintenance|Quit",
-		groupConfig:   "tunlr › Subs & config: Add a sub|Switch sub|Change a sub|Fetch subs now|Remove a sub|Edit a mixin|Publish config|Roll back config|List subs|Config details|← Back",
+		groupConfig:   "tunlr › Subs & config: Add a sub|Switch sub|Change a sub|Fetch subs now|Remove a sub|Geo data settings|Update geo data now|Edit a mixin|Publish config|Roll back config|List subs|Config details|← Back",
 		groupTraffic:  "tunlr › Traffic: Turn TUN off|Turn gateway on|Open proxy port to LAN|Block QUIC|Proxy some ports only|Send a network direct|TUN details|Proxy port details|Filter details|← Back",
 		groupDevices:  "tunlr › LAN devices: List devices|List all LAN devices|Name a device|Route a device|Forget a device|← Back",
-		groupCore:     "tunlr › mihomo & panel: Restart mihomo|Stop mihomo|Recent logs|Upgrade mihomo|Update geo data now|Open the panel|Open panel to LAN|New API secret|mihomo details|← Back",
+		groupCore:     "tunlr › mihomo & panel: Restart mihomo|Stop mihomo|Recent logs|Upgrade mihomo|Open the panel|Open panel to LAN|New API secret|mihomo details|← Back",
 		groupMaintain: "tunlr › Maintenance: Back up to a file|Restore a backup|Edit settings|Diagnose|Repair install|← Back",
 	} {
 		if got := labels(group, runningStatus, 2, 3); got != want {
@@ -374,15 +374,15 @@ func TestMenuItems(t *testing.T) {
 	}
 
 	for group, want := range map[string]string{
-		groupConfig:  "tunlr › Subs & config: Add a sub|Change a sub|Fetch subs now|Edit a mixin|Publish config|List subs|Config details|← Back",
+		groupConfig:  "tunlr › Subs & config: Add a sub|Change a sub|Fetch subs now|Geo data settings|Update geo data now|Edit a mixin|Publish config|List subs|Config details|← Back",
 		groupTraffic: "tunlr › Traffic: Turn TUN on|Turn gateway on|Open proxy port to LAN|Block QUIC|Proxy some ports only|Send a network direct|TUN details|Proxy port details|Filter details|← Back",
-		groupCore:    "tunlr › mihomo & panel: Start mihomo|Recent logs|Upgrade mihomo|Update geo data now|Open the panel|Open panel to LAN|New API secret|mihomo details|← Back",
+		groupCore:    "tunlr › mihomo & panel: Start mihomo|Recent logs|Upgrade mihomo|Open the panel|Open panel to LAN|New API secret|mihomo details|← Back",
 	} {
 		if got := labels(group, stoppedStatus, 1, 0); got != want {
 			t.Errorf("stopped %q:\n got %s\nwant %s", group, got, want)
 		}
 	}
-	if got := labels(groupConfig, stoppedStatus, 0, 0); got != "tunlr › Subs & config: Add a sub|Edit a mixin|Publish config|List subs|Config details|← Back" {
+	if got := labels(groupConfig, stoppedStatus, 0, 0); got != "tunlr › Subs & config: Add a sub|Update geo data now|Edit a mixin|Publish config|List subs|Config details|← Back" {
 		t.Errorf("no subs: %s", got)
 	}
 
@@ -452,15 +452,11 @@ func TestMenuAttention(t *testing.T) {
 	s.Updates = []setup.Schedule{
 		{Task: setup.TaskSubscription, Name: "home", Last: &state.UpdateRun{Status: setup.StepFailed}},
 		{Task: setup.TaskSubscription, Name: "spare", Last: &state.UpdateRun{Status: setup.StepFailed}},
-		{Task: setup.TaskGeo, Last: &state.UpdateRun{Status: setup.StepOK}},
+		{Task: setup.TaskGeo},
 	}
-	want := "! Publish the changes not yet published = config apply|! Start mihomo (failed) = core start|! Run the failed update again = update run sub"
+	want := "! Publish the changes not yet published = config apply|! Start mihomo (failed) = core start|! Fetch subs again (the last fetch failed) = update run sub"
 	if got := attention(&s, 3); got != want {
 		t.Errorf("attention:\n got %s\nwant %s", got, want)
-	}
-	s.Updates[2].Last.Status = setup.StepFailed
-	if got := attention(&s, 3); !strings.HasSuffix(got, "|! Run the failed updates again = update run") {
-		t.Errorf("both failed: %q", got)
 	}
 	// 手工改过的配置不算没发布的改动（apply 会覆盖它，留给 Subs & config 分类）。
 	s.Drift.State = pipeline.DriftEdited

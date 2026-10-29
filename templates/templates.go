@@ -40,6 +40,15 @@ var Config []byte
 //go:embed mixin.yaml
 var Mixin []byte
 
+// Defaults 是受管 mixin tunlr:defaults 的内容：订阅没有写时使用的 geo 数据设置和 DNS，写在 tunlr.defaults 中
+// （订阅写了的顶层键整个替换它，geox-url 按文件）。geo 数据由内核自己按 geo-update-interval（小时）下载和更新；
+// 设置了 github-mirror 时，geox-url 中 GitHub 的地址由 tunlr:mirror 改为经镜像。dns 不写监听地址（由 tunlr:dns
+// 提供）；开启 TUN 时 tunlr:tun 强制 dns.enable: true。它只在内存中合成，不写入 mixin.d；用户按订阅用
+// tunlr update set geo 覆盖，或在自己的 mixin 中覆盖。
+//
+//go:embed defaults.yaml
+var Defaults []byte
+
 // Settings 是还没有设置文件时 tunlr settings edit 的起始内容：各项的说明和注释掉的默认值。
 //
 //go:embed settings.yaml

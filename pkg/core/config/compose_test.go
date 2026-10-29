@@ -20,7 +20,7 @@ import (
 var update = flag.Bool("update", false, "rewrite the want sections of golden files")
 
 // TestComposeGolden 读取 testdata/compose/*.txtar。每个文件包含输入
-// template.yaml（缺省时使用内置模板）、subscription.yaml、受管 mixin（managed/<名称> 独占键，
+// template.yaml（缺省时使用内置模板，并加上内置的兜底值 tunlr:defaults）、subscription.yaml、受管 mixin（managed/<名称> 独占键，
 // default/<名称> 提供默认值）和 mixin.d/<文件名>（按出现顺序应用），以及期望输出 want.yaml、dropped（被丢弃的订阅键）、
 // warnings 和 overrides（每行一条）。用 go test ./pkg/core/config -update 重新生成期望输出。
 func TestComposeGolden(t *testing.T) {
@@ -60,6 +60,7 @@ func TestComposeGolden(t *testing.T) {
 			}
 			if _, ok := sections["template.yaml"]; !ok {
 				l.Template = templates.Config
+				l.Managed = append([]Managed{builtinDefaults}, l.Managed...)
 			}
 			res, err := Compose(l)
 			if err != nil {
@@ -109,6 +110,9 @@ func TestComposeGolden(t *testing.T) {
 		})
 	}
 }
+
+// builtinDefaults 同 pipeline.DefaultsManaged（这里不能引用 pipeline）。
+var builtinDefaults = Managed{Name: "tunlr:defaults", Default: true, Data: templates.Defaults}
 
 // setSection 替换归档中的一节；data 为空时删除该节。
 func setSection(ar *txtar.Archive, name string, data []byte) {
@@ -238,7 +242,7 @@ func TestComposeErrors(t *testing.T) {
 		{
 			name: "namespace unknown key",
 			l:    mixinLayers("a: 1\n", "tunlr:\n  proxy-filters: {}\n"),
-			want: "mixin 10-test.yaml:2: tunlr.proxy-filters: unknown key (known: proxy-filter, proxies, proxy-groups, rules, sub-rules)",
+			want: "mixin 10-test.yaml:2: tunlr.proxy-filters: unknown key (known: defaults, proxy-filter, proxies, proxy-groups, rules, sub-rules)",
 		},
 		{
 			name: "proxy filter unknown key",
@@ -465,8 +469,8 @@ func TestComposeDNS(t *testing.T) {
 	}
 }
 
-// TestComposeMirrorGeoxURL 检查 geox-url 中 github.com 的地址不论来自哪一层都经镜像，其他地址不变，
-// 改写的键记在结果中。
+// TestComposeMirrorGeoxURL 检查 geox-url 中 github.com 的地址不论来自哪一层（包括订阅没写、从前面补全的文件）
+// 都经镜像，其他地址不变，改写的键记在结果中。
 func TestComposeMirrorGeoxURL(t *testing.T) {
 	l := mixinLayers("geox-url:\n  geoip: https://github.com/a/b/releases/download/v1/geoip.dat\n",
 		"mihomo:\n  geox-url:\n    mmdb: https://github.com/c/d/releases/latest/download/geoip.metadb\n    asn: https://cdn.example/asn.mmdb\n")
@@ -478,6 +482,7 @@ func TestComposeMirrorGeoxURL(t *testing.T) {
 	}
 	want := "geox-url:\n" +
 		"  geosite: https://m.example/https://github.com/e/f/raw/main/geosite.dat\n" +
+		"  geoip: https://m.example/https://github.com/a/b/releases/download/v1/geoip.dat\n" +
 		"  mmdb: https://m.example/https://github.com/c/d/releases/latest/download/geoip.metadb\n" +
 		"  asn: https://cdn.example/asn.mmdb\n"
 	if string(res.Config) != want {
@@ -486,7 +491,7 @@ func TestComposeMirrorGeoxURL(t *testing.T) {
 	if res.Facts.Geo.URLs["mmdb"] != "https://m.example/https://github.com/c/d/releases/latest/download/geoip.metadb" {
 		t.Errorf("facts URLs = %v", res.Facts.Geo.URLs)
 	}
-	if fmt.Sprint(res.Rewrites) != "[{geox-url.geosite tunlr:mirror} {geox-url.mmdb tunlr:mirror}]" {
+	if fmt.Sprint(res.Rewrites) != "[{geox-url.geosite tunlr:mirror} {geox-url.geoip tunlr:mirror} {geox-url.mmdb tunlr:mirror}]" {
 		t.Errorf("rewrites = %v", res.Rewrites)
 	}
 }

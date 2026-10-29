@@ -126,7 +126,7 @@ func (a *app) newSubAddCommand() *cobra.Command {
 				if !strings.Contains(args[1], "://") {
 					initial = settings.PeriodOff
 				}
-				if period, err = a.choosePeriod(cmd, fmt.Sprintf("subscription %q", args[0]), initial); err != nil || period == "" {
+				if period, err = a.choosePeriod(cmd, fmt.Sprintf("subscription %q", args[0]), initial, ""); err != nil || period == "" {
 					_, err := a.cancelled(err)
 					return err
 				}

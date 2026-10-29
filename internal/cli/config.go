@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/tunlr-app/cli/pkg/core/config"
+	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/setup"
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
@@ -68,14 +69,17 @@ func writeDefaults(w io.Writer, vs []managedView) {
 			continue
 		}
 		empty := strings.TrimSpace(v.Content) == "{}"
-		how := "a mixin can override these"
-		if strings.Contains("\n"+v.Content, "\ntunlr:") {
+		kind, how := "Defaults", "a mixin can override these"
+		switch {
+		case v.Name == pipeline.ManagedDefaults:
+			kind, how = "Fallbacks", "used where the subscription does not set them; per subscription: tunlr update set geo <sub>; "+how
+		case strings.Contains(v.Content, "\n  rules:"):
 			how += ", remove rules with tunlr.rules.delete"
 		}
 		if v.Command != "" {
 			how = v.Command + "; " + how
 		}
-		fmt.Fprintf(w, "Defaults from %s (%s):\n", v.Name, how)
+		fmt.Fprintf(w, "%s from %s (%s):\n", kind, v.Name, how)
 		if !empty {
 			for l := range strings.SplitSeq(strings.TrimRight(v.Content, "\n"), "\n") {
 				fmt.Fprintf(w, "  %s\n", l)

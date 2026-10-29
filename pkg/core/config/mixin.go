@@ -292,7 +292,12 @@ type mixer struct {
 	// subKeys 是来自订阅的顶层键。
 	subKeys map[string]bool
 	// setBy 记录普通键的路径最近由哪个文件设置。
-	setBy     map[string]string
+	setBy map[string]string
+	// fallback 记录 setBy 中最近由 tunlr.defaults 设置的路径；defaults 为 true 时正在应用 tunlr.defaults。
+	fallback map[string]bool
+	defaults bool
+	// filled 记录订阅的映射中缺少、由兜底值补上的路径（见 fillFiles）。
+	filled    map[string]bool
 	warnings  []Warning
 	overrides []Override
 }
@@ -311,6 +316,37 @@ func (m *mixer) record(path string) {
 		m.overrides = append(m.overrides, Override{Path: path, File: m.file, Previous: prev})
 	}
 	m.setBy[path] = m.file
+	if m.fallback != nil {
+		if m.defaults {
+			m.fallback[path] = true
+		} else {
+			delete(m.fallback, path)
+		}
+	}
+}
+
+// applyDefaults 把 mixin src（已由 checkMixin 检查）的 tunlr.defaults 合并进 root，在订阅之前调用。
+// 兜底值的优先级最低，写了受管 mixin 独占的键也不算冲突：独占的键最后写入，总是压过它（例如开启 TUN 时
+// tunlr:tun 的 dns.enable）。
+func (m *mixer) applyDefaults(root, src *yaml.Node) error {
+	d := lookup(src, []string{namespace, "defaults"})
+	if d == nil || d.Kind != yaml.MappingNode {
+		return nil
+	}
+	m.defaults = true
+	defer func() { m.defaults = false }()
+	return m.merge(root, d, "")
+}
+
+// snapshot 返回 keys 中各键在 root 中当前的值（拷贝），不存在的为 nil。
+func snapshot(root *yaml.Node, keys []owned) []*yaml.Node {
+	before := make([]*yaml.Node, len(keys))
+	for i, k := range keys {
+		if n := lookup(root, k.path); n != nil {
+			before[i] = clone(n)
+		}
+	}
+	return before
 }
 
 // pending 是一个待执行的列表操作。

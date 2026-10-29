@@ -9,35 +9,41 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/config"
-	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/fsutil"
 )
 
-// defaultTestTimeout 是 mihomo -t 的时限。geo 数据预先备好时校验只需几十毫秒；
-// 超时通常意味着内核在现场下载数据。
+// defaultTestTimeout 是 mihomo -t 的时限。geo 数据都在时校验只需几十毫秒。
 const defaultTestTimeout = 60 * time.Second
 
-// Validator 用 mihomo -t 校验配置。
+// geoTestTimeout 是 mihomo -t 要现场下载 geo 文件时的时限：内核下载单个文件的时限是 90 秒，
+// 经 GitHub 镜像通常十几秒。
+const geoTestTimeout = 5 * time.Minute
+
+// Validator 用 mihomo -t 校验配置。tunlr 不下载 geo 数据：缺失的由 mihomo -t 按配置中的 geox-url 现场下载，
+// 下载到的按 Keep、Staged 保留下来，下一次校验和内核启动时不必再下载。
 type Validator struct {
 	// Binary 是用于校验的内核，应与将要运行该配置的内核一致。
 	Binary string
-	// HomeDir 是内核的工作目录。其中的 geo 文件提供给校验使用，缺失的会下载到这里。
+	// HomeDir 是内核的工作目录。其中的 geo 文件提供给校验使用。
 	HomeDir string
-	// Staged 不为空时，其中的 geo 文件（见 StageGeo）代替 HomeDir 中的同类文件提供给校验：配置改了它们的来源，
-	// 发布时才换进 HomeDir。
+	// Fresh 是来源变了的 geo 文件（见 GeoSourceChanges）：不提供 HomeDir 中的旧文件，由 mihomo -t 按新的
+	// geox-url 下载。
+	Fresh []GeoFile
+	// Staged 不为空时，mihomo -t 下载的 Fresh 中的文件存到这里，发布时换进 HomeDir（见 InstallStagedGeo）。
 	Staged string
-	// Download 用于下载缺失的 geo 文件；为空时不下载。
-	Download *download.Client
-	// RunAs 是运行 mihomo -t 的身份，也是下载到 HomeDir 的 geo 文件的属主。内核二进制可被内核用户改写，
+	// Keep 为 true 时，mihomo -t 下载的、HomeDir 中缺失的 geo 文件存进 HomeDir；为 false 时丢弃（只读的检查）。
+	Keep bool
+	// RunAs 是运行 mihomo -t 的身份，也是保留下来的 geo 文件的属主。内核二进制可被内核用户改写，
 	// root 不能直接运行它，因此降权到内核用户；为 nil 时以当前身份运行（尚未创建内核用户，或测试）。
 	RunAs *fsutil.Owner
-	// Timeout 为零时使用 defaultTestTimeout。
+	// Timeout 为零时使用 defaultTestTimeout，要下载 geo 文件时使用 geoTestTimeout。
 	Timeout time.Duration
 }
 
@@ -69,39 +75,51 @@ func (e *CheckError) Unwrap() error {
 // ErrNotInstalled 表示用于校验的内核不存在。
 var ErrNotInstalled = errors.New("mihomo is not installed")
 
-// Validate 准备配置所需的 geo 数据，然后运行 mihomo -t。geo 是配置需要的 geo 数据（如合成时
-// 提取的 config.Facts.Geo），为 nil 时解析 cfg 判断。
-// 配置有误时返回 *CheckError；内核不存在时返回 ErrNotInstalled；
-// 准备数据失败或无法运行内核时返回其他错误。
+// Validate 运行 mihomo -t。geo 是配置需要的 geo 数据（如合成时提取的 config.Facts.Geo），为 nil 时解析 cfg
+// 判断，只用于决定时限：要现场下载时放宽。
+// 配置有误时返回 *CheckError；内核不存在时返回 ErrNotInstalled；无法运行内核时返回其他错误。
 func (v *Validator) Validate(ctx context.Context, cfg []byte, geo *config.GeoNeeds) error {
 	if _, err := os.Stat(v.Binary); errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("%w (expected at %s)", ErrNotInstalled, v.Binary)
 	}
-	if v.Download != nil {
-		if geo == nil {
-			// 解析失败的配置交给 mihomo -t 报告，这里不提前返回。
-			if needs, err := config.DetectGeo(cfg); err == nil {
-				geo = &needs
-			}
-		}
-		if geo != nil {
-			if _, err := EnsureGeo(ctx, v.Download, v.HomeDir, GeoFilesFor(*geo), geo.URLs, v.RunAs); err != nil {
-				return err
-			}
+	if geo == nil {
+		// 解析失败的配置交给 mihomo -t 报告。
+		if needs, err := config.DetectGeo(cfg); err == nil {
+			geo = &needs
 		}
 	}
-	return v.test(ctx, cfg)
+	timeout := v.Timeout
+	if timeout == 0 {
+		timeout = defaultTestTimeout
+		if geo != nil && v.downloads(*geo) {
+			timeout = geoTestTimeout
+		}
+	}
+	return v.test(ctx, cfg, timeout)
+}
+
+// downloads 报告 mihomo -t 是否要现场下载 geo 文件：配置用到的文件有缺失的，或来源变了。
+func (v *Validator) downloads(geo config.GeoNeeds) bool {
+	for _, f := range GeoFilesFor(geo) {
+		if hasGeo(v.Fresh, f) {
+			return true
+		}
+		if p, err := findGeo(v.HomeDir, f); err == nil && p == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // test 在临时工作目录中运行 mihomo -t。不直接使用内核的工作目录，因为 -t 可能写入缓存，
 // 与运行中的内核冲突；工作目录中已有的 geo 文件以符号链接提供。
-func (v *Validator) test(ctx context.Context, cfg []byte) error {
+func (v *Validator) test(ctx context.Context, cfg []byte, timeout time.Duration) error {
 	tmp, err := os.MkdirTemp("", "tunlr-check-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmp)
-	if err := linkGeo(v.Staged, v.HomeDir, tmp); err != nil {
+	if err := linkGeo(v.HomeDir, tmp, v.Fresh); err != nil {
 		return err
 	}
 	cfgPath := filepath.Join(tmp, "config.yaml")
@@ -112,10 +130,6 @@ func (v *Validator) test(ctx context.Context, cfg []byte) error {
 		return err
 	}
 
-	timeout := v.Timeout
-	if timeout == 0 {
-		timeout = defaultTestTimeout
-	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, v.Binary, "-t", "-d", tmp, "-f", cfgPath)
@@ -124,6 +138,10 @@ func (v *Validator) test(ctx context.Context, cfg []byte) error {
 		return err
 	}
 	out, err := cmd.CombinedOutput()
+	// 校验没通过也保留下载到的文件：与配置写法无关，下次不必再下载。
+	if kerr := v.keep(tmp); kerr != nil {
+		return fmt.Errorf("keep the geo data mihomo downloaded: %w", kerr)
+	}
 	if err == nil {
 		return nil
 	}
@@ -137,19 +155,62 @@ func (v *Validator) test(ctx context.Context, cfg []byte) error {
 	return parseTestOutput(string(out), ee.ExitCode())
 }
 
-// linkGeo 把 home 中的 geo 文件以符号链接放进 dst，staged 中有的同类文件优先；文件系统不支持符号链接时复制。
-func linkGeo(staged, home, dst string) error {
+// keep 把 mihomo -t 在 tmp 中下载的 geo 文件存下来（见 Keep、Staged）。符号链接是 HomeDir 中原有的文件。
+func (v *Validator) keep(tmp string) error {
 	for _, f := range AllGeoFiles {
-		var p string
-		for _, dir := range []string{staged, home} {
-			if dir == "" || p != "" {
+		p, err := findGeo(tmp, f)
+		if err != nil || p == "" {
+			continue
+		}
+		if fi, err := os.Lstat(p); err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		var dst string
+		switch {
+		case hasGeo(v.Fresh, f):
+			if v.Staged == "" {
 				continue
 			}
-			if found, err := findGeo(dir, f); err == nil {
-				p = found
+			if err := os.MkdirAll(v.Staged, 0o755); err != nil {
+				return err
 			}
+			dst = filepath.Join(v.Staged, f.Name)
+		case v.Keep:
+			// 文件系统不支持符号链接时 HomeDir 中的文件被复制进来，不是下载的。
+			if have, err := findGeo(v.HomeDir, f); err != nil || have != "" {
+				continue
+			}
+			if err := EnsureHome(v.HomeDir, v.RunAs); err != nil {
+				return err
+			}
+			dst = filepath.Join(v.HomeDir, f.Name)
+		default:
+			continue
 		}
-		if p == "" {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if err := fsutil.WriteFileOwned(dst, data, 0o644, v.RunAs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hasGeo 报告 files 中有没有 f。
+func hasGeo(files []GeoFile, f GeoFile) bool {
+	return slices.ContainsFunc(files, func(g GeoFile) bool { return g.Name == f.Name })
+}
+
+// linkGeo 把 home 中的 geo 文件以符号链接放进 dst，skip 中的除外；文件系统不支持符号链接时复制。
+func linkGeo(home, dst string, skip []GeoFile) error {
+	for _, f := range AllGeoFiles {
+		if hasGeo(skip, f) {
+			continue
+		}
+		p, err := findGeo(home, f)
+		if err != nil || p == "" {
 			continue
 		}
 		abs, err := filepath.Abs(p)

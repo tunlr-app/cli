@@ -126,7 +126,7 @@ func (c *Client) ConnectionsBySource(ctx context.Context) (map[string]int, error
 const geoUpdateTimeout = 10 * time.Minute
 
 // UpdateGeo 让内核按 geox-url 下载并加载配置用到的 geo 数据（POST /configs/geo）。请求同步执行；
-// 内容与磁盘上相同的文件内核不做任何事。内核下载时不做任何校验，见 VerifyGeo。
+// 内容与磁盘上相同的文件内核不做任何事。内核下载时不做任何校验。
 func (c *Client) UpdateGeo(ctx context.Context) error {
 	return c.do(ctx, geoUpdateTimeout, http.MethodPost, "/configs/geo", nil, nil)
 }

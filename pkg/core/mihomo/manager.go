@@ -622,11 +622,7 @@ func (m *Manager) validate(ctx context.Context, binary string) error {
 	if err != nil {
 		return err
 	}
-	d, err := m.downloader()
-	if err != nil {
-		return err
-	}
-	v := &Validator{Binary: binary, HomeDir: m.Layout.CoreDir(), Download: d, RunAs: m.Owner}
+	v := &Validator{Binary: binary, HomeDir: m.Layout.CoreDir(), Keep: true, RunAs: m.Owner}
 	if err := v.Validate(ctx, cfg, nil); err != nil {
 		return fmt.Errorf("the published configuration does not work with the new kernel: %w", err)
 	}

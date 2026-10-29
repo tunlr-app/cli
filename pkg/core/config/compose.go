@@ -13,8 +13,8 @@ import (
 // subscriptionKeys 是从订阅中采用的顶层键：路由，以及和规则配套的解析与数据（DNS、hosts、嗅探、
 // geo 数据的来源和自动更新）。其余的键（端口、监听地址、API、TUN、运行参数）一律丢弃，避免机场配置
 // 打开端口、改监听地址或设置 API；内核新增的键在评估之前也丢弃，用户在 config plan 中看得到。
-// 采用的键整个替换模板中的同名键。dns.listen 例外：它决定 DNS 是否暴露在外，订阅里的一律丢弃，
-// 由受管 mixin 提供（见 Compose）。
+// 采用的键整个替换模板和 tunlr.defaults 中的同名键，geox-url 例外：订阅没有写的文件用兜底的地址。
+// dns.listen 不采用：它决定 DNS 是否暴露在外，订阅里的一律丢弃，由受管 mixin 提供（见 Compose）。
 var subscriptionKeys = map[string]bool{
 	"proxies":             true,
 	"proxy-groups":        true,
@@ -44,8 +44,8 @@ type Layers struct {
 	Template []byte
 	// Subscription 是机场提供的完整配置，只采用 subscriptionKeys 列出的部分。
 	Subscription []byte
-	// Managed 是 tunlr 的交互功能生成的受管 mixin，语义见 Managed：提供默认值的在用户的 mixin
-	// 之前应用，独占键的在之后应用。
+	// Managed 是 tunlr 的交互功能生成的受管 mixin，语义见 Managed：提供默认值的在用户的 mixin 之前应用，
+	// 独占键的在之后应用。
 	Managed []Managed
 	// Mixins 是用户的 mixin 文件，按顺序逐个应用，语义见 Mixin。
 	Mixins []Mixin
@@ -67,10 +67,12 @@ type Result struct {
 	ProxyFilter *ProxyFilterResult
 	// Facts 是从 Config 中提取的信息，与 Inspect(Config) 的结果相同。
 	Facts *Facts
+	// GeoSources 是 GeoKeys 中各键的值和来源。
+	GeoSources []KeySource
 }
 
-// Compose 按 模板 → 订阅 → 提供默认值的受管 mixin → 用户的 mixin → 独占键的受管 mixin → 受管 mixin 的改写
-// 的顺序合成最终配置。合并基于 yaml.Node，保留模板的键顺序与注释；模板中没有的键追加在末尾。
+// Compose 按 模板 → mixin 中的 tunlr.defaults → 订阅 → 提供默认值的受管 mixin → 用户的 mixin → 独占键的受管 mixin
+// → 受管 mixin 的改写 的顺序合成最终配置。合并基于 yaml.Node，保留模板的键顺序与注释；模板中没有的键追加在末尾。
 // mixin 有错，或用户的 mixin 动了受管 mixin 独占的键时返回 *MixinError。
 func Compose(l Layers) (*Result, error) {
 	doc, err := parseDocument("template", l.Template)
@@ -82,33 +84,6 @@ func Compose(l Layers) (*Result, error) {
 	}
 	root := doc.Content[0]
 	res := &Result{}
-
-	sub, err := parseDocument("subscription", l.Subscription)
-	if err != nil {
-		return nil, fmt.Errorf("%w (only full mihomo configs are supported as subscriptions)", err)
-	}
-	m := &mixer{root: root, subKeys: map[string]bool{}, setBy: map[string]string{}}
-	if sub != nil {
-		s := sub.Content[0]
-		for i := 0; i < len(s.Content); i += 2 {
-			k, v := s.Content[i].Value, s.Content[i+1]
-			if !subscriptionKeys[k] {
-				res.Dropped = append(res.Dropped, k)
-				continue
-			}
-			// 订阅的 DNS 整段替换模板的，但不采用监听地址：机场常写 0.0.0.0:53，在公网服务器上
-			// 就是开放的 DNS 解析器（见 CheckExposure）。监听地址由受管 mixin 提供。
-			if k == "dns" && v.Kind == yaml.MappingNode {
-				var dropped bool
-				if v, dropped = withoutKey(v, "listen"); dropped {
-					res.Dropped = append(res.Dropped, "dns.listen")
-				}
-			}
-			// 用新的键节点，不带入订阅里附在键上的注释。
-			setValue(root, k, v)
-			m.subKeys[k] = true
-		}
-	}
 
 	// 受管 mixin 是工具自己生成的，内容有错是程序的错误，不当作用户 mixin 的错误报告。
 	var defaults, exclusive []Mixin
@@ -124,8 +99,10 @@ func Compose(l Layers) (*Result, error) {
 	}
 	keys := ownedKeys(l.Managed)
 
-	// 先检查所有 mixin 并合并其中的 tunlr.proxy-filter：订阅的节点按合并后的筛选处理，
-	// 然后才应用 mixin，mixin 自己加的节点不受筛选影响。
+	// 先检查所有 mixin，合并其中的 tunlr.proxy-filter（订阅的节点按合并后的筛选处理，然后才应用 mixin，
+	// mixin 自己加的节点不受筛选影响），并把 tunlr.defaults 合并进模板：它是兜底值，订阅采用的同名顶层键
+	// 随后整个替换它。
+	m := &mixer{root: root, subKeys: map[string]bool{}, setBy: map[string]string{}, fallback: map[string]bool{}, filled: map[string]bool{}}
 	user := append(defaults, l.Mixins...)
 	srcs := make([]*yaml.Node, len(user))
 	ns := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
@@ -143,7 +120,48 @@ func Compose(l Layers) (*Result, error) {
 		if err := m.takeFilter(ns, srcs[i]); err != nil {
 			return nil, err
 		}
+		if err := m.applyDefaults(root, srcs[i]); err != nil {
+			return nil, err
+		}
 	}
+
+	sub, err := parseDocument("subscription", l.Subscription)
+	if err != nil {
+		return nil, fmt.Errorf("%w (only full mihomo configs are supported as subscriptions)", err)
+	}
+	if sub != nil {
+		s := sub.Content[0]
+		for i := 0; i < len(s.Content); i += 2 {
+			k, v := s.Content[i].Value, s.Content[i+1]
+			if !subscriptionKeys[k] {
+				res.Dropped = append(res.Dropped, k)
+				continue
+			}
+			// 订阅的 DNS 整段替换模板的，但不采用监听地址：机场常写 0.0.0.0:53，在公网服务器上
+			// 就是开放的 DNS 解析器（见 CheckExposure）。监听地址由受管 mixin 提供。
+			if k == "dns" && v.Kind == yaml.MappingNode {
+				var dropped bool
+				if v, dropped = withoutKey(v, "listen"); dropped {
+					res.Dropped = append(res.Dropped, "dns.listen")
+				}
+			}
+			// geox-url 的各文件互不相干：订阅没有写的文件仍用兜底的地址，而不是内核内置的（不经镜像）。
+			if k == "geox-url" {
+				v = m.fillFiles(lookup(root, []string{k}), v, k)
+			}
+			// 用新的键节点，不带入订阅里附在键上的注释。
+			setValue(root, k, v)
+			m.subKeys[k] = true
+		}
+		// 被订阅替换掉的兜底值不再有来源，补全进去的除外。
+		for p := range m.setBy {
+			if top, _, _ := strings.Cut(p, "."); m.subKeys[top] && !m.filled[p] {
+				delete(m.setBy, p)
+				delete(m.fallback, p)
+			}
+		}
+	}
+
 	var removedGroups []string
 	if pf := proxyFilterOf(ns); pf != nil && sub != nil {
 		if res.ProxyFilter, err = m.filterProxies(root, pf); err != nil {
@@ -159,12 +177,7 @@ func Compose(l Layers) (*Result, error) {
 		if src == nil {
 			continue
 		}
-		before := make([]*yaml.Node, len(keys))
-		for i, k := range keys {
-			if n := lookup(root, k.path); n != nil {
-				before[i] = clone(n)
-			}
-		}
+		before := snapshot(root, keys)
 		m.file = mx.Name
 		first := len(m.warnings)
 		if err := m.applyFile(root, src); err != nil {
@@ -188,6 +201,7 @@ func Compose(l Layers) (*Result, error) {
 			mergeMapping(root, mihomoOf(doc.Content[0]))
 		}
 	}
+	res.GeoSources = m.geoSources()
 	for _, mg := range l.Managed {
 		if mg.RewriteGeoxURL != nil {
 			for _, k := range rewriteGeoxURL(root, mg.RewriteGeoxURL) {
@@ -203,6 +217,25 @@ func Compose(l Layers) (*Result, error) {
 	}
 	res.Config = spaceSections(out)
 	return res, nil
+}
+
+// fillFiles 返回订阅的映射 sub 补上兜底的映射 prev 中有、sub 中没有的键之后的拷贝（不改动 sub），
+// 补上的键记在 m.filled 中（path 是映射的路径）。两者有一个不是映射时返回 sub。
+func (m *mixer) fillFiles(prev, sub *yaml.Node, path string) *yaml.Node {
+	if prev == nil || prev.Kind != yaml.MappingNode || sub.Kind != yaml.MappingNode {
+		return sub
+	}
+	c := *sub
+	c.Content = slices.Clone(sub.Content)
+	for i := 0; i+1 < len(prev.Content); i += 2 {
+		k := prev.Content[i].Value
+		if valueIndex(sub, k) >= 0 {
+			continue
+		}
+		c.Content = append(c.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: k}, clone(prev.Content[i+1]))
+		m.filled[path+"."+k] = true
+	}
+	return &c
 }
 
 // withoutKey 返回去掉了 key 的映射 m 的拷贝（不改动 m），dropped 报告 m 原来是否有 key。

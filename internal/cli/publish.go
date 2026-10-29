@@ -34,6 +34,8 @@ type planView struct {
 	Rewrites []config.Rewrite `json:"rewrites,omitempty"`
 	// ProxyFilter 是节点筛选（tunlr.proxy-filter）的结果，没有设置时省略。
 	ProxyFilter *config.ProxyFilterResult `json:"proxy_filter,omitempty"`
+	// GeoSources 是 geo 数据的自动更新和来源的各键来自哪一层（template、subscription 或 mixin 文件）。
+	GeoSources []config.KeySource `json:"geo_sources,omitempty"`
 	// Managed 是 tunlr 的交互功能生成的受管 mixin。
 	Managed    []managedView    `json:"managed,omitempty"`
 	Warnings   []config.Warning `json:"warnings,omitempty"`
@@ -90,7 +92,7 @@ func newPlanView(p *pipeline.Plan, full bool) planView {
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
 		Subscription: p.Subscription, Dropped: p.Dropped, Mixins: p.Mixins,
 		Overrides: p.Overrides, Rewrites: p.Rewrites, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, GeoReplaced: p.GeoReplaced, Proxies: p.Proxies, Diff: hideSecretInDiff(p.Diff),
-		DiffSections: p.DiffSections, ProxyFilter: p.ProxyFilter,
+		DiffSections: p.DiffSections, ProxyFilter: p.ProxyFilter, GeoSources: p.GeoSources,
 	}
 	if p.Managed != nil {
 		v.Managed = newManagedViews(p.Managed)
@@ -127,6 +129,18 @@ func describeProxyFilter(f *config.ProxyFilterResult) string {
 		parts = append(parts, "filtered by mihomo in providers: "+strings.Join(f.Providers, ", "))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// describeGeoOverrides 列出不是兜底值（tunlr.defaults，或哪里都没写）的 geo 设置及其来源，如
+// "geox-url.geosite (subscription), geo-update-interval (home/20-geo.yaml)"；都是兜底值时为空。
+func describeGeoOverrides(sources []config.KeySource) string {
+	var parts []string
+	for _, s := range sources {
+		if !s.Fallback {
+			parts = append(parts, s.Path+" ("+s.From+")")
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // writeRewrites 按受管 mixin 分组列出它在合成的最后改写的值，如 "Rewritten by tunlr:mirror: geox-url.geoip, geox-url.mmdb"。
@@ -186,6 +200,9 @@ func (a *app) writePlan(w io.Writer, v planView) {
 		if len(defaults) > 0 {
 			fmt.Fprintf(w, "Defaults from tunlr: %s (mixins can override them; see: tunlr config)\n", strings.Join(defaults, ", "))
 		}
+	}
+	if s := describeGeoOverrides(v.GeoSources); s != "" {
+		fmt.Fprintf(w, "Geo data settings not from the fallbacks: %s (see: tunlr update)\n", s)
 	}
 	writeRewrites(w, v.Rewrites)
 	if len(v.Warnings) > 0 {

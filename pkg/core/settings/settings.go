@@ -29,8 +29,8 @@ const Version = 1
 // Settings 是工具设置。
 type Settings struct {
 	Version int `yaml:"version"`
-	// GitHubMirror 是 GitHub 下载镜像的前缀，例如 "https://gh-proxy.com/"，用于下载内核、
-	// geo 数据和面板。为空时直连。无论经哪个镜像下载，都按官方 sha256 校验。
+	// GitHubMirror 是 GitHub 下载镜像的前缀，例如 "https://gh-proxy.com/"，用于下载内核和面板（按官方 sha256
+	// 校验），配置中 geox-url 的 GitHub 地址也改为经它下载。为空时直连。
 	GitHubMirror string `yaml:"github-mirror,omitempty"`
 	// UserAgent 是抓取订阅时默认使用的 User-Agent，单个订阅设置了自己的 User-Agent 时以订阅为准。
 	// 为空时使用内置默认值。
@@ -157,7 +157,7 @@ type Entry struct {
 func (s *Settings) Entries(defaultUA string) []Entry {
 	return []Entry{
 		{Key: "github-mirror", Value: s.GitHubMirror, Default: s.GitHubMirror == "",
-			Help: "GitHub mirror for mihomo, geo data and the panel (checked against the official sha256); published with the configuration"},
+			Help: "GitHub mirror for downloading mihomo and the panel (checked against the official sha256); GitHub addresses in geox-url go through it too, published with the configuration"},
 		{Key: "user-agent", Value: cmp.Or(s.UserAgent, defaultUA), Default: s.UserAgent == "",
 			Help: "User-Agent for fetching subscriptions without their own; used from the next fetch"},
 	}

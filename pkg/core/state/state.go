@@ -60,13 +60,9 @@ type State struct {
 
 	// Filter 是全局过滤项，零值为都关闭。只由 tunlr filter 修改。
 	Filter Filter `json:"filter,omitzero"`
-
-	// Updates 记录定时更新任务（键为任务名，目前只有 geo；订阅的记在各自的 FetchedAt、LastErrorAt 中）
-	// 最近一次执行的情况，用来判断下次何时到期。只记最近一次，历次的情况在 journal 中。
-	Updates map[string]UpdateRun `json:"updates,omitempty"`
 }
 
-// UpdateRun 是一次定时更新任务的执行情况。
+// UpdateRun 是一次更新的执行情况（订阅的由抓取记录得出，见 setup.Schedules）。
 type UpdateRun struct {
 	At time.Time `json:"at"`
 	// Status 是 ok、skipped 或 failed，Message 是说明。

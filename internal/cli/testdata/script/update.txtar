@@ -24,7 +24,7 @@ stdout '^sub spare\s+never \(off\)\s+\S+ \S+ ok\s+-$'
 exec tunlr status
 stdout '^Updates:\s+sub main daily, last ok '
 stdout '^\s+sub spare never$'
-stdout '^\s+geo weekly by mihomo, not verified yet$'
+stdout '^\s+geo weekly by mihomo, no files yet$'
 
 # update set sub 改订阅的周期，保存在订阅列表中；default 恢复默认值
 exec tunlr update set sub main 6h
@@ -53,24 +53,80 @@ exec tunlr sub set main --update default
 exitcode 1 tunlr update set sub nope off
 stderr 'subscription not found: nope'
 
-# geo 数据的周期在配置中，用 mixin 修改；发布后 update 和 status 随之改变
-exitcode 2 tunlr update set geo 1d
-stderr 'change geo-auto-update and geo-update-interval \(hours\) with a mixin'
+# geo 数据的设置按订阅调整：订阅没有写的用 tunlr 内置的兜底值（tunlr:defaults）；
+# update set geo <订阅> 写进订阅的 geo mixin（mixin.d/<订阅>/20-geo.yaml），启用的订阅随即发布
 install-mihomo
 exec tunlr config apply --yes
-mkdir root/etc/tunlr/mixin.d
-cp geo.yaml root/etc/tunlr/mixin.d/10-geo.yaml
-exec tunlr config apply --yes
-stdout '^-geo-update-interval: 168$'
+exec tunlr update
+stdout '^Geo data settings with "main" active \(tunlr update set geo main changes them\):$'
+stdout '^  geo-update-interval\s+168\s+fallback \(tunlr:defaults\)$'
+exec tunlr update set geo main 2d --url geosite=https://cdn.example/geosite.dat --yes
+stdout '^Wrote geo-auto-update, geo-update-interval, geox-url.geosite for "main" to .*20-geo\.yaml\.$'
 stdout '^\+geo-update-interval: 48$'
 grep '^geo-update-interval: 48$' root/var/lib/tunlr/core/config.yaml
+grep '^  geo-update-interval: 48$' root/etc/tunlr/mixin.d/main/20-geo.yaml
+grep '^    geosite: https://cdn.example/geosite.dat$' root/etc/tunlr/mixin.d/main/20-geo.yaml
 exec tunlr update
 stdout '^geo\s+every 2 days \(2d\)\s+never\s+-$'
+stdout '^  geox-url.geosite\s+https://cdn.example/geosite.dat\s+mixin main/20-geo.yaml$'
+stdout '^  geox-url.mmdb\s+https://github.com/\S+\s+fallback \(tunlr:defaults\)$'
+exec tunlr config plan
+stdout '^Geo data settings not from the fallbacks: geo-auto-update \(main/20-geo.yaml\), geo-update-interval \(main/20-geo.yaml\), geox-url.geosite \(main/20-geo.yaml\) \(see: tunlr update\)$'
 exec tunlr status
-stdout '^\s+geo every 2 days by mihomo, not verified yet$'
+stdout '^\s+geo every 2 days by mihomo, no files yet$'
 ! stdout 'not published|outside tunlr|cannot compose'
+
+# 没有启用的订阅：只写文件，它启用时生效
+exec tunlr update set geo spare 1d --yes
+stdout '^"spare" is not the active subscription; the change applies when it is \(tunlr sub use spare\)\.$'
+grep '^  geo-update-interval: 24$' root/etc/tunlr/mixin.d/spare/20-geo.yaml
+grep '^geo-update-interval: 48$' root/var/lib/tunlr/core/config.yaml
+exec tunlr update set geo spare default --yes
+! exists root/etc/tunlr/mixin.d/spare/20-geo.yaml
+
+# 订阅写了的键：订阅的 geo mixin 覆盖它；恢复默认后用订阅写的值
+cp airport-geo.yaml provider/airport.yaml
+exec tunlr update run sub
+grep '^geo-update-interval: 48$' root/var/lib/tunlr/core/config.yaml
+exec tunlr update set geo main default --url geosite=default --yes
+stdout '^Removed .*20-geo\.yaml: "main" uses what it sets, or else tunlr''s fallbacks\.$'
+! exists root/etc/tunlr/mixin.d/main/20-geo.yaml
+grep '^geo-update-interval: 12$' root/var/lib/tunlr/core/config.yaml
+exec tunlr update
+stdout '^  geo-update-interval\s+12\s+the subscription$'
+stdout '^  geo-auto-update\s+true\s+fallback \(tunlr:defaults\)$'
+exec tunlr config plan
+stdout '^Geo data settings not from the fallbacks: geo-update-interval \(subscription\) \(see: tunlr update\)$'
+
+# 订阅的 mixin 中排在 20-geo.yaml 之后的文件写了的键：拒绝修改，改了也不生效；共用的 mixin 不影响
+cp geo.yaml root/etc/tunlr/mixin.d/main/50-geo.yaml
+exitcode 2 tunlr update set geo main 3d --yes
+stderr 'geo-update-interval is set by the mixin main/50-geo.yaml, which is applied after main/20-geo.yaml; change it there \(tunlr config edit main/50-geo\)'
+rm root/etc/tunlr/mixin.d/main/50-geo.yaml
+cp geo.yaml root/etc/tunlr/mixin.d/10-geo.yaml
+exec tunlr update set geo main 3d --yes
+grep '^geo-update-interval: 72$' root/var/lib/tunlr/core/config.yaml
+exec tunlr update set geo main default --yes
 rm root/etc/tunlr/mixin.d/10-geo.yaml
-exec tunlr config apply --yes
+
+# 用法错误
+exitcode 2 tunlr update set geo
+stderr 'update set geo needs the subscription and a period or --url'
+exitcode 2 tunlr update set geo 3d --yes
+stderr 'update set geo takes the subscription first, e.g. tunlr update set geo main 3d'
+exitcode 1 tunlr update set geo nope 3d --yes
+stderr 'subscription not found: nope'
+exitcode 2 tunlr update set geo main --url other=https://x/ --yes
+stderr 'unknown geo file "other"'
+exitcode 2 tunlr update set geo main --url geosite --yes
+stderr '--url takes <file>=<url>'
+exitcode 2 tunlr update set geo main 2w --yes
+stderr 'invalid update period "2w"'
+exitcode 2 tunlr update set sub main 1d --url geosite=https://x/
+stderr '--url is only for update set geo'
+
+cp airport.yaml provider/airport.yaml
+exec tunlr update run sub
 # status 报告漂移：mixin 改了还没发布
 cp log.yaml root/etc/tunlr/mixin.d/10-log.yaml
 exec tunlr status
@@ -82,9 +138,9 @@ rm root/etc/tunlr/mixin.d/10-log.yaml
 exec tunlr status
 ! stdout 'not published'
 
-# 用法错误：目标不是 sub、非交互时省略参数、--dry-run
+# 用法错误：目标不是 sub 或 geo、非交互时省略参数、--dry-run
 exitcode 2 tunlr update set 1d
-stderr 'update set takes sub first'
+stderr 'update set takes sub or geo first'
 exitcode 2 tunlr update set
 stderr 'update set sub needs the name of a subscription and the period'
 exitcode 2 tunlr update set sub main 1d --dry-run
@@ -94,13 +150,22 @@ stderr 'unknown update "bogus"'
 exitcode 2 tunlr update run --dry-run
 stderr 'does not support --dry-run'
 
-# 刚抓取的订阅没有到期，还没有 geo 文件要核对：_update 什么都不输出
+# 刚抓取的订阅没有到期，内核也没有换过：_update 什么都不输出
 exec tunlr _update
 ! stdout .
 
 -- geo.yaml --
 mihomo:
   geo-update-interval: 48
+-- airport-geo.yaml --
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+  - {name: b, type: ss, server: b.example.net, port: 2, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: g, type: select, proxies: [a, b]}
+rules:
+  - MATCH,g
+geo-update-interval: 12
 -- log.yaml --
 mihomo:
   log-level: warning

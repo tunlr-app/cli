@@ -24,10 +24,11 @@ func (a *app) newSettingsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "settings",
 		Short: "Show tunlr's own settings; edit changes them",
-		Long: "tunlr's own settings live in /etc/tunlr/settings.yaml: the GitHub mirror, the default\n" +
-			"User-Agent for subscriptions. They are not part of the mihomo configuration (change that,\n" +
-			"including how often mihomo updates the geo data, with tunlr config edit). tunlr settings edit opens the file in an\n" +
-			"editor, checks it, and applies the configuration when a change affects it.",
+		Long: "tunlr's own settings live in /etc/tunlr/settings.yaml: the GitHub mirror and the default\n" +
+			"User-Agent for subscriptions. The mihomo configuration is changed with tunlr config edit,\n" +
+			"and a subscription's geo data settings with tunlr update set geo <sub>. tunlr settings edit\n" +
+			"opens the file in an editor, checks it, and applies the configuration when a change\n" +
+			"affects it.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			entries, err := a.installer().SettingsEntries()
@@ -36,6 +37,10 @@ func (a *app) newSettingsCommand() *cobra.Command {
 			}
 			v := settingsView{File: a.layout.SettingsFile(), Settings: entries}
 			return a.render(v, func() error {
+				width := 0
+				for _, e := range entries {
+					width = max(width, len(e.Key))
+				}
 				for _, e := range entries {
 					value := e.Value
 					switch {
@@ -44,8 +49,8 @@ func (a *app) newSettingsCommand() *cobra.Command {
 					case e.Default:
 						value += a.style.dim(" (default)")
 					}
-					fmt.Fprintf(a.stdout, "%-13s %s\n", e.Key, value)
-					fmt.Fprintf(a.stdout, "%-13s %s\n", "", a.style.dim(e.Help))
+					fmt.Fprintf(a.stdout, "%-*s %s\n", width, e.Key, value)
+					fmt.Fprintf(a.stdout, "%-*s %s\n", width, "", a.style.dim(e.Help))
 				}
 				fmt.Fprintf(a.stdout, "\n(file %s; tunlr settings edit changes it)\n", v.File)
 				return nil

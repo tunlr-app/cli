@@ -79,6 +79,29 @@ rules:
 	}
 }
 
+// TestBuiltinDefaults 确认内置的兜底值 tunlr:defaults 有效，给出全部 geo 数据设置和 DNS，模板中没有这些键。
+func TestBuiltinDefaults(t *testing.T) {
+	for _, k := range []string{"\ngeox-url:", "\ngeo-auto-update:", "\ngeo-update-interval:", "\ndns:"} {
+		if strings.Contains(string(templates.Config), k) {
+			t.Errorf("template still has %s", strings.TrimSpace(k))
+		}
+	}
+	res, err := Compose(Layers{Template: templates.Config, Managed: []Managed{builtinDefaults}})
+	if err != nil || len(res.Warnings) > 0 {
+		t.Fatalf("%v %v", err, res.Warnings)
+	}
+	for _, s := range res.GeoSources {
+		if s.From != builtinDefaults.Name || !s.Fallback || s.Value == "" {
+			t.Errorf("%+v", s)
+		}
+	}
+	for _, want := range []string{"\ndns:\n  enable: true\n", "\n  enhanced-mode: fake-ip\n", "\n    - https://dns.alidns.com/dns-query\n"} {
+		if !strings.Contains(string(res.Config), want) {
+			t.Errorf("config lacks %q:\n%s", want, res.Config)
+		}
+	}
+}
+
 func TestMixinFileName(t *testing.T) {
 	for in, want := range map[string]string{"20-rules": "20-rules.yaml", "dns.yaml": "dns.yaml", "a_b.c": "a_b.c.yaml",
 		"home/10-filter": "home/10-filter.yaml", "home/10-filter.yaml": "home/10-filter.yaml"} {

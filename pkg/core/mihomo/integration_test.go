@@ -11,21 +11,20 @@ import (
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/config"
-	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/templates"
 )
 
 // 集成测试使用真实的 mihomo 与 GitHub，只在设置了 TUNLR_TEST_MIHOMO（内核路径）时运行，
-// 例如在测试机上：TUNLR_TEST_MIHOMO=/var/tmp/tunlr-dev/mihomo TUNLR_TEST_GITHUB_MIRROR=https://gh-proxy.com/
+// 例如在测试机上：TUNLR_TEST_MIHOMO=/var/tmp/tunlr-dev/mihomo。geo 文件由 mihomo -t 按默认的 geox-url 下载。
 func realValidator(t *testing.T) *Validator {
 	bin := os.Getenv("TUNLR_TEST_MIHOMO")
 	if bin == "" {
 		t.Skip("TUNLR_TEST_MIHOMO not set")
 	}
 	return &Validator{
-		Binary:   bin,
-		HomeDir:  t.TempDir(),
-		Download: &download.Client{Mirror: os.Getenv("TUNLR_TEST_GITHUB_MIRROR")},
+		Binary:  bin,
+		HomeDir: t.TempDir(),
+		Keep:    true,
 	}
 }
 
@@ -79,7 +78,7 @@ func TestIntegrationValidate(t *testing.T) {
 
 func TestIntegrationMissingData(t *testing.T) {
 	v := realValidator(t)
-	v.Download = nil
+	v.Keep = false
 	// 让内核现场下载的地址立即失败，避免等待直连 GitHub 超时。
 	cfg := "geox-url:\n  mmdb: http://127.0.0.1:1/geoip.metadb\n" +
 		"rules:\n  - GEOIP,CN,DIRECT\n  - MATCH,DIRECT\n"

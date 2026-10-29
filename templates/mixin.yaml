@@ -13,7 +13,11 @@
 #   mihomo:  mihomo 的原生配置，写法与 mihomo 文档相同，原样合并进生成的配置：
 #              映射逐层合并，标量和列表整体替换，键: null 删除这个键
 #   tunlr:   tunlr 的操作，不写入配置：
-#              proxy-filter                        筛选订阅的节点（规则同 mihomo 的 proxy-providers）
+#              defaults                            兜底值，写法同 mihomo:，但在订阅之前应用：订阅写了的
+#                                                  顶层键（dns 等）整个替换它，没写的才用它；geox-url 按
+#                                                  文件替换。tunlr 内置的兜底值是 tunlr:defaults，这里写的
+#                                                  排在它之后
+#              proxy-filter                       筛选订阅的节点（规则同 mihomo 的 proxy-providers）
 #              proxies / proxy-groups / rules      对订阅的这几个列表做操作，各有四种：
 #                prepend / append                  在前面插入 / 后面追加（规则追加在最后的 MATCH 之前）
 #                patch                             按 name 修改已有的项；项里用 prepend-proxies 等改其中的列表

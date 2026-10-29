@@ -467,13 +467,13 @@ func (a *app) menuItems(group string, d menuData) (title, note string, items []m
 	}
 	groups := []menuItem{
 		{label: groupConfig, group: groupConfig, note: a.configNote(s, d.subs),
-			desc: "Add, switch and change subs; mixins; publish or roll back the config"},
+			desc: "Add, switch and change subs; geo data; mixins; publish or roll back the config"},
 		{label: groupTraffic, group: groupTraffic, note: a.trafficNote(s),
 			desc: "What goes through mihomo: TUN, gateway mode, the proxy port and filters"},
 		{label: groupDevices, group: groupDevices, note: a.describeDevicesNote(s.Devices),
 			desc: "Devices on the LAN that use this server: names and how each one goes"},
 		{label: groupCore, group: groupCore, note: a.coreNote(s),
-			desc: "Start, stop, logs, upgrades and geo data; how to open the panel"},
+			desc: "Start, stop, logs and upgrades; how to open the panel"},
 		{label: groupMaintain, group: groupMaintain, note: a.describeBackups(d.backups),
 			desc: "Backups, tool settings, diagnostics and repair"},
 	}
@@ -528,6 +528,10 @@ func (a *app) configItems(d menuData) []menuItem {
 	if len(d.subs) > 1 {
 		items = append(items, op("Remove a sub", "Any but the active one", "sub", "remove"))
 	}
+	if len(d.subs) > 0 {
+		items = append(items, op("Geo data settings", "Per sub: how often mihomo updates the geo data and where from; the rest comes from tunlr's fallbacks", "update", "set", "geo"))
+	}
+	items = append(items, op("Update geo data now", "Have mihomo download the geo data from geox-url now (it does so by itself on its period)", "update", "run", "geo"))
 	items = append(items,
 		op("Edit a mixin", "Your own changes on top of the sub; checked with mihomo -t, then published", "config", "edit"),
 		op("Publish config", "Compose and check the config, show the diff, publish after you confirm", "config", "apply"))
@@ -592,7 +596,6 @@ func (a *app) coreItems(s *setup.Status) []menuItem {
 		items = append(items, op("Roll back mihomo", "To the previous known-good version kept on disk", "core", "rollback"))
 	}
 	return append(items,
-		op("Update geo data now", "Fetch the geo databases again, whether or not they are due", "update", "run", "geo"),
 		op("Open the panel", "How to reach it: the SSH tunnel and the link", "panel"),
 		toggle(s.PanelLAN,
 			op("Close panel to LAN", "Only this server can reach the panel again; mihomo restarts", "panel", "lan", "off"),
@@ -602,7 +605,7 @@ func (a *app) coreItems(s *setup.Status) []menuItem {
 }
 
 // attention 是第一级最上面需要处理的事项，每项对应一个命令：有还没发布的改动、内核服务失败或没有运行
-// （发布过配置时）、最近一次定时更新失败。
+// （发布过配置时）、订阅最近一次抓取失败。
 func (a *app) attention(d menuData) []menuItem {
 	s := d.status
 	mark := a.style.warn("!") + " "
@@ -617,25 +620,11 @@ func (a *app) attention(d menuData) []menuItem {
 		}
 		items = append(items, op(mark+"Start mihomo ("+why+")", "Then check that it is healthy", "core", "start"))
 	}
-	var failed []string
-	for _, sc := range s.Updates {
-		if sc.Last == nil || sc.Last.Status != setup.StepFailed {
-			continue
-		}
-		task := "sub"
-		if sc.Task == setup.TaskGeo {
-			task = "geo"
-		}
-		if !slices.Contains(failed, task) {
-			failed = append(failed, task)
-		}
-	}
-	switch len(failed) {
-	case 0:
-	case 1:
-		items = append(items, op(mark+"Run the failed update again", "", "update", "run", failed[0]))
-	default:
-		items = append(items, op(mark+"Run the failed updates again", "", "update", "run"))
+	// geo 数据由内核更新，失败只记在内核的日志中；这里只看订阅。
+	if slices.ContainsFunc(s.Updates, func(sc setup.Schedule) bool {
+		return sc.Task == setup.TaskSubscription && sc.Last != nil && sc.Last.Status == setup.StepFailed
+	}) {
+		items = append(items, op(mark+"Fetch subs again (the last fetch failed)", "Fetch every sub; the last good copy is kept if it fails again", "update", "run", "sub"))
 	}
 	return items
 }

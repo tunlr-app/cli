@@ -40,6 +40,51 @@ var geoSettingKeys = map[string]bool{
 	"geo-update-interval": true,
 }
 
+// GeoKeys 是 geo 数据的自动更新和来源的设置（点分路径），geox-url 按文件分开，按展示的顺序。
+var GeoKeys = []string{"geo-auto-update", "geo-update-interval", "geox-url.geoip", "geox-url.geosite", "geox-url.mmdb", "geox-url.asn"}
+
+// 键的来源（KeySource.From）。此外还可以是 mixin 的文件名或受管 mixin 的名称。
+const (
+	FromTemplate     = "template"
+	FromSubscription = "subscription"
+)
+
+// KeySource 是合成的配置中一个键的值和它来自哪一层。
+type KeySource struct {
+	// Path 是点分路径，如 geox-url.geosite。
+	Path string `json:"path"`
+	// Value 是合成的值（经镜像改写之前）；配置中没有这个键时为空，内核用它的默认值。
+	Value string `json:"value,omitempty"`
+	From  string `json:"from"`
+	// Fallback 为 true 时值是兜底值：来自模板，或 From 这个 mixin 的 tunlr.defaults，订阅没有写它。
+	Fallback bool `json:"fallback,omitempty"`
+}
+
+// geoSources 返回 GeoKeys 中各键的值和来源：最后写它的 mixin（mihomo: 或没有被订阅替换的 tunlr.defaults），
+// 否则订阅（采用了它所在的顶层键，补全进去的键除外），否则模板。在应用完用户的 mixin 之后、改写之前调用。
+func (m *mixer) geoSources() []KeySource {
+	out := make([]KeySource, 0, len(GeoKeys))
+	for _, k := range GeoKeys {
+		path := strings.Split(k, ".")
+		s := KeySource{Path: k, From: FromTemplate, Fallback: true}
+		v := lookup(m.root, path)
+		if v != nil && v.Kind == yaml.ScalarNode {
+			s.Value = v.Value
+		}
+		switch {
+		case m.setBy[k] != "":
+			s.From, s.Fallback = m.setBy[k], m.fallback[k]
+		case len(path) > 1 && m.setBy[path[0]] != "":
+			s.From, s.Fallback = m.setBy[path[0]], m.fallback[path[0]]
+		// 订阅的 geox-url 没写、前面也没有的文件用内核的默认地址，不算订阅的。
+		case m.subKeys[path[0]] && !m.filled[k] && v != nil:
+			s.From, s.Fallback = FromSubscription, false
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // DetectGeo 判断配置需要哪些 geo 数据。判断按名称宽松匹配（规则、DNS 设置中出现 geoip、
 // geosite、ip-asn 即视为需要）：多判只会多准备一个文件，漏判则会让 mihomo -t 现场下载。
 // 已经有 Facts 时用其中的 Geo，不必再次解析。

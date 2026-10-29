@@ -2,23 +2,16 @@ package mihomo
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/config"
-	"github.com/tunlr-app/cli/pkg/core/download"
 )
 
 // fakeMihomoEnv 置位时，测试二进制扮演 mihomo：只实现 -t -d <dir> -f <file>。
@@ -32,7 +25,8 @@ func TestMain(m *testing.M) {
 }
 
 // fakeMihomo 按配置内容模拟 mihomo -t 的输出：引用不存在的策略组时报配置错误；
-// 有 GEOIP 规则而工作目录中没有 MMDB 时报下载失败；含 HANG 时挂起。
+// 有 GEOIP 规则而工作目录中没有 MMDB 时，配置含 DOWNLOAD 则像真实内核一样下载到工作目录，否则报下载失败；
+// 含 HANG 时挂起。
 func fakeMihomo(args []string) int {
 	if len(args) != 5 || args[0] != "-t" || args[1] != "-d" || args[3] != "-f" {
 		fmt.Println("unexpected args", args)
@@ -52,7 +46,12 @@ func fakeMihomo(args []string) int {
 		return 1
 	case strings.Contains(s, "GEOIP"):
 		// 与真实内核一样，按文件名不区分大小写查找。
-		if p, _ := findGeo(args[2], GeoMMDB); p == "" {
+		if p, _ := findGeo(args[2], GeoMMDB); p == "" && strings.Contains(s, "DOWNLOAD") {
+			if err := os.WriteFile(filepath.Join(args[2], GeoMMDB.Name), []byte("downloaded"), 0o644); err != nil {
+				fmt.Println(err)
+				return 2
+			}
+		} else if p == "" {
 			fmt.Println(`time="2026-10-26T17:00:00+08:00" level=error msg="can't initial GeoIP: can't download MMDB: Get \"https://github.com/x\": context deadline exceeded"`)
 			return 1
 		}
@@ -89,7 +88,7 @@ func TestValidate(t *testing.T) {
 		t.Errorf("messages = %q", ce.Messages)
 	}
 
-	// 没有 MMDB 且不下载：报告为数据缺失，而不是配置错误。
+	// 没有 MMDB 且内核下载失败：报告为数据缺失，而不是配置错误。
 	err = v.Validate(ctx, []byte("rules:\n  - GEOIP,CN,DIRECT\n"), nil)
 	if !errors.As(err, &ce) || !ce.MissingData || errors.Is(err, core.ErrCheckFailed) {
 		t.Fatalf("missing geo: err = %v", err)
@@ -130,48 +129,60 @@ func TestValidateMissingBinary(t *testing.T) {
 	}
 }
 
-// TestValidateDownloadsGeo 验证缺失的 geo 文件会先下载到工作目录，再交给校验。
-func TestValidateDownloadsGeo(t *testing.T) {
-	content := []byte("fake mmdb")
-	sum := sha256.Sum256(content)
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/" + geoRepo + "/releases/tags/" + geoTag:
-			json.NewEncoder(w).Encode(map[string]any{"assets": []download.Asset{{
-				Name: GeoMMDB.Asset, Size: int64(len(content)),
-				Digest: "sha256:" + hex.EncodeToString(sum[:]), URL: srv.URL + "/dl/" + GeoMMDB.Asset,
-			}}})
-		case "/dl/" + GeoMMDB.Asset:
-			w.Write(content)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+// TestValidateKeepsGeo 验证 mihomo -t 下载的 geo 文件：Keep 时存进工作目录，否则丢弃；
+// 来源变了的文件不提供旧的，下载到的存进 Staged，工作目录中的旧文件不动。
+func TestValidateKeepsGeo(t *testing.T) {
+	ctx := context.Background()
+	cfg := []byte("DOWNLOAD: true\nrules:\n  - GEOIP,CN,DIRECT\n")
+	mmdb := func(dir string) string {
+		data, _ := os.ReadFile(filepath.Join(dir, GeoMMDB.Name))
+		return string(data)
+	}
 
 	v := fakeValidator(t)
-	v.Download = &download.Client{APIBase: srv.URL}
-	// 调用方给出 geo 需求时以它为准，不再解析配置。
-	if err := v.Validate(context.Background(), []byte("rules:\n  - MATCH,DIRECT\n"), &config.GeoNeeds{GeoIP: true}); err != nil {
+	if err := v.Validate(ctx, cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(v.HomeDir, "geoip.metadb")); err != nil {
-		t.Fatalf("geo given by the caller not downloaded: %v", err)
+	if got := mmdb(v.HomeDir); got != "" {
+		t.Fatalf("read-only check kept %q", got)
 	}
-	if err := os.Remove(filepath.Join(v.HomeDir, "geoip.metadb")); err != nil {
+
+	v.Keep = true
+	if err := v.Validate(ctx, cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.Validate(context.Background(), []byte("rules:\n  - GEOIP,CN,DIRECT\n"), nil); err != nil {
+	if got := mmdb(v.HomeDir); got != "downloaded" {
+		t.Fatalf("home = %q", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(v.HomeDir, GeoMMDB.Name), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(filepath.Join(v.HomeDir, "geoip.metadb")); err != nil || string(got) != "fake mmdb" {
-		t.Fatalf("geo not downloaded into home: %q, %v", got, err)
+	v.Fresh, v.Staged = []GeoFile{GeoMMDB}, filepath.Join(t.TempDir(), "staged")
+	if err := v.Validate(ctx, cfg, nil); err != nil {
+		t.Fatal(err)
 	}
-	// 已有的文件不重复下载。
-	srv.Close()
-	if err := v.Validate(context.Background(), []byte("rules:\n  - GEOIP,CN,DIRECT\n"), nil); err != nil {
-		t.Fatalf("second validate should not download: %v", err)
+	if home, staged := mmdb(v.HomeDir), mmdb(v.Staged); home != "old" || staged != "downloaded" {
+		t.Fatalf("home = %q, staged = %q", home, staged)
+	}
+}
+
+// TestValidateTimeoutForDownloads 验证要现场下载时放宽时限：文件缺失或来源变了。
+func TestValidateTimeoutForDownloads(t *testing.T) {
+	v := &Validator{HomeDir: t.TempDir()}
+	needs := config.GeoNeeds{GeoIP: true}
+	if !v.downloads(needs) {
+		t.Error("missing file: no download expected")
+	}
+	if err := os.WriteFile(filepath.Join(v.HomeDir, GeoMMDB.Name), []byte("mmdb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if v.downloads(needs) || v.downloads(config.GeoNeeds{}) {
+		t.Error("present file: download expected")
+	}
+	v.Fresh = []GeoFile{GeoMMDB}
+	if !v.downloads(needs) {
+		t.Error("changed source: no download expected")
 	}
 }
 
@@ -222,62 +233,6 @@ func TestGeoFileSource(t *testing.T) {
 	}
 }
 
-// TestVerifyGeo 验证核对 geo 文件：与官方 sha256 一致的保留，不一致的换成校验过的文件，来源不是 GitHub
-// release 资产的不核对；EnsureGeo 原样下载这样的来源。
-func TestVerifyGeo(t *testing.T) {
-	good := []byte("good mmdb")
-	sum := sha256.Sum256(good)
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/a/b/releases/latest":
-			json.NewEncoder(w).Encode(map[string]any{"assets": []download.Asset{{
-				Name: "c.mmdb", Size: int64(len(good)),
-				Digest: "sha256:" + hex.EncodeToString(sum[:]), URL: srv.URL + "/dl/c.mmdb",
-			}}})
-		case "/dl/c.mmdb":
-			w.Write(good)
-		case "/custom/geosite.dat":
-			w.Write([]byte("custom geosite"))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-	d := &download.Client{APIBase: srv.URL}
-	home := t.TempDir()
-	urls := map[string]string{
-		"mmdb":    "https://github.com/a/b/releases/latest/download/c.mmdb",
-		"geosite": srv.URL + "/custom/geosite.dat",
-	}
-	ctx := context.Background()
-	got, err := EnsureGeo(ctx, d, home, []GeoFile{GeoSite}, urls, nil)
-	if err != nil || len(got) != 1 {
-		t.Fatalf("EnsureGeo = %v, %v", got, err)
-	}
-	if data, _ := os.ReadFile(filepath.Join(home, "GeoSite.dat")); string(data) != "custom geosite" {
-		t.Fatalf("custom source downloaded as %q", data)
-	}
-	if err := os.WriteFile(filepath.Join(home, "Country.mmdb"), []byte("tampered"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	check, err := VerifyGeo(ctx, d, home, AllGeoFiles, urls, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(check.Replaced, []string{"Country.mmdb"}) || len(check.Verified) != 0 || !slices.Equal(check.Unverified, []string{"GeoSite.dat"}) {
-		t.Fatalf("first check = %+v", check)
-	}
-	if data, _ := os.ReadFile(filepath.Join(home, "Country.mmdb")); string(data) != string(good) {
-		t.Fatalf("not replaced: %q", data)
-	}
-	check, err = VerifyGeo(ctx, d, home, AllGeoFiles, urls, nil)
-	if err != nil || !slices.Equal(check.Verified, []string{"Country.mmdb"}) || len(check.Replaced) != 0 {
-		t.Fatalf("second check = %+v, %v", check, err)
-	}
-}
-
 func TestGeoSourceSame(t *testing.T) {
 	gh := "https://github.com/a/b/releases/download/v1/geosite.dat"
 	for _, tt := range []struct {
@@ -298,13 +253,9 @@ func TestGeoSourceSame(t *testing.T) {
 	}
 }
 
-// TestStageGeo 验证来源变化的 geo 文件：只列出已有、来源变了的；暂存后发布时换进工作目录，可以换回；
+// TestStageGeo 验证来源变化的 geo 文件：只列出已有、来源变了的；暂存的文件发布时换进工作目录，可以换回；
 // 暂存的文件被改过时拒绝替换。
 func TestStageGeo(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("new " + r.URL.Path))
-	}))
-	defer srv.Close()
 	home, stage := t.TempDir(), filepath.Join(t.TempDir(), "staged")
 	for name, data := range map[string]string{"geosite.dat": "old geosite", "Country.mmdb": "old mmdb"} {
 		if err := os.WriteFile(filepath.Join(home, name), []byte(data), 0o644); err != nil {
@@ -312,22 +263,32 @@ func TestStageGeo(t *testing.T) {
 		}
 	}
 	old := map[string]string{"mmdb": "https://m.example/" + GeoMMDB.URL()}
-	new := map[string]string{"mmdb": GeoMMDB.URL(), "geosite": srv.URL + "/geosite.dat", "asn": srv.URL + "/asn.mmdb"}
+	new := map[string]string{"mmdb": GeoMMDB.URL(), "geosite": "https://cdn.example/geosite.dat", "asn": "https://cdn.example/asn.mmdb"}
 	changed, err := GeoSourceChanges(home, AllGeoFiles, old, new)
 	if err != nil || len(changed) != 1 || changed[0].Name != GeoSite.Name {
 		t.Fatalf("changes = %v, %v", changed, err)
 	}
 
-	sums, err := StageGeo(context.Background(), &download.Client{}, stage, changed, new, nil)
+	// mihomo -t 没有下载成功的文件不列出。
+	if sums, err := StagedGeo(stage, changed); err != nil || len(sums) != 0 {
+		t.Fatalf("nothing staged: %v, %v", sums, err)
+	}
+	if err := os.MkdirAll(stage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stage, GeoSite.Name), []byte("new geosite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sums, err := StagedGeo(stage, changed)
 	if err != nil || len(sums) != 1 {
-		t.Fatalf("StageGeo = %v, %v", sums, err)
+		t.Fatalf("StagedGeo = %v, %v", sums, err)
 	}
 	undo, err := InstallStagedGeo(stage, home, sums)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// 替换的是已有的文件（文件名不区分大小写），不另建一份。
-	if data, _ := os.ReadFile(filepath.Join(home, "geosite.dat")); string(data) != "new /geosite.dat" {
+	if data, _ := os.ReadFile(filepath.Join(home, "geosite.dat")); string(data) != "new geosite" {
 		t.Fatalf("not replaced: %q", data)
 	}
 	if err := undo(); err != nil {
@@ -337,10 +298,7 @@ func TestStageGeo(t *testing.T) {
 		t.Fatalf("not put back: %q", data)
 	}
 
-	if sums, err = StageGeo(context.Background(), &download.Client{}, stage, changed, new, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(stage, "GeoSite.dat"), []byte("other"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(stage, GeoSite.Name), []byte("other"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := InstallStagedGeo(stage, home, sums); !errors.Is(err, ErrStagedGeoChanged) {
@@ -351,21 +309,20 @@ func TestStageGeo(t *testing.T) {
 	}
 }
 
-func TestLinkGeoPrefersStaged(t *testing.T) {
-	home, staged, dst := t.TempDir(), t.TempDir(), t.TempDir()
-	for _, f := range []struct{ dir, name, data string }{
-		{home, "GeoSite.dat", "old"}, {home, "geoip.metadb", "mmdb"}, {staged, "GeoSite.dat", "new"},
-	} {
-		if err := os.WriteFile(filepath.Join(f.dir, f.name), []byte(f.data), 0o644); err != nil {
+func TestLinkGeoSkips(t *testing.T) {
+	home, dst := t.TempDir(), t.TempDir()
+	for _, name := range []string{"GeoSite.dat", "geoip.metadb"} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte(name), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := linkGeo(staged, home, dst); err != nil {
+	if err := linkGeo(home, dst, []GeoFile{GeoSite}); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]string{"GeoSite.dat": "new", "geoip.metadb": "mmdb"} {
-		if data, err := os.ReadFile(filepath.Join(dst, name)); err != nil || string(data) != want {
-			t.Errorf("%s = %q, %v", name, data, err)
-		}
+	if _, err := os.Stat(filepath.Join(dst, "GeoSite.dat")); err == nil {
+		t.Error("skipped file linked")
+	}
+	if data, err := os.ReadFile(filepath.Join(dst, "geoip.metadb")); err != nil || string(data) != "geoip.metadb" {
+		t.Errorf("geoip.metadb = %q, %v", data, err)
 	}
 }

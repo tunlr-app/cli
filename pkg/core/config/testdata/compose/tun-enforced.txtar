@@ -22,6 +22,7 @@ mihomo:
 -- want.yaml --
 # 本文件由 tunlr 生成，直接修改会在下次 apply 时被覆盖。
 # 自定义设置请写在 mixin 中（tunlr config edit）。
+# 订阅没有写时使用的 geo 数据设置和 DNS 是 tunlr 内置的兜底值（tunlr:defaults，tunlr config 列出）。
 
 # 代理端口默认只给本机用；tunlr proxy lan on 让局域网设备使用。
 mixed-port: 7890
@@ -62,37 +63,6 @@ profile:
   store-selected: true
   store-fake-ip: true
 
-# geo 数据由内核自己按 geo-update-interval（小时）更新；订阅或 mixin 中写了的以它们为准。
-# 每次更新后 tunlr-update.timer 按官方 sha256 核对来自 GitHub release 的文件。
-geo-auto-update: true
-geo-update-interval: 168
-
-# geo 数据的下载地址；订阅或 mixin 中写了的以它们为准。设置了 github-mirror 时，
-# 无论来自哪一层，https://github.com/ 开头的地址都由 tunlr 改为经镜像下载。
-geox-url:
-  geoip: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat
-  geosite: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat
-  mmdb: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
-  asn: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb
-
-# 订阅带有 dns 时整段换成订阅的，但不采用订阅的 listen：由 tunlr:dns 设为下面的值（mixin 可以改）；
-# 开启 TUN 时 tunlr 强制 enable: true。
-dns:
-  enable: true
-  listen: 127.0.0.1:1053
-  ipv6: true
-  enhanced-mode: fake-ip
-  fake-ip-range: 198.18.0.1/16
-  fake-ip-filter:
-    - "*.lan"
-    - "*.local"
-  default-nameserver:
-    - 223.5.5.5
-    - 119.29.29.29
-  nameserver:
-    - https://dns.alidns.com/dns-query
-    - https://doh.pub/dns-query
-
 # 透明代理（TUN），用 tunlr tun on/off 开关。enable、auto-route、auto-redirect、strict-route、
 # device 和 iproute2 的索引由 tunlr 决定，mixin 改不了。不要用 route-exclude-address 排除整个
 # 私有地址段：直连网段本来就不进 TUN，排除后局域网中的 DNS 服务器会绕过劫持。
@@ -111,3 +81,27 @@ tun:
   device: tunlr0
   iproute2-table-index: 2022
   iproute2-rule-index: 9000
+
+geo-auto-update: true
+geo-update-interval: 168
+
+geox-url:
+  geoip: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat
+  geosite: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat
+  mmdb: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
+  asn: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb
+
+dns:
+  enable: true
+  ipv6: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query

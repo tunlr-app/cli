@@ -150,16 +150,6 @@ func (c *Client) Get(ctx context.Context, asset *Asset) ([]byte, error) {
 	return data, nil
 }
 
-// GetUnverified 下载 url 的内容，不做任何校验，name 用于进度和错误信息。只用于没有官方校验值的来源，
-// 例如配置中自定义的 geo 数据地址；地址原样使用，不经镜像。
-func (c *Client) GetUnverified(ctx context.Context, name, url string) ([]byte, error) {
-	data, err := c.get(ctx, name, url, 0)
-	if err != nil {
-		return nil, fmt.Errorf("download %s: %w", name, err)
-	}
-	return data, nil
-}
-
 func releaseName(tag string) string {
 	if tag == "" {
 		return "latest release"

@@ -5,11 +5,7 @@
 package mihomo
 
 import (
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,7 +15,6 @@ import (
 	"time"
 
 	"github.com/tunlr-app/cli/pkg/core/config"
-	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/fsutil"
 )
 
@@ -66,8 +61,8 @@ type GeoSource struct {
 	Repo, Tag, Asset string
 }
 
-// Verifiable 报告来源能否按 GitHub 提供的 sha256 校验：只有 GitHub release 的资产有官方校验值。
-func (s GeoSource) Verifiable() bool { return s.Repo != "" }
+// release 报告来源是不是 GitHub release 的资产。
+func (s GeoSource) release() bool { return s.Repo != "" }
 
 // releaseAsset 匹配 GitHub release 资产的下载地址：releases/download/<tag>/<名称> 或
 // releases/latest/download/<名称>。
@@ -97,14 +92,14 @@ func withoutMirror(url string) string {
 // Same 报告 s 与 o 是否为同一份数据：同一个 GitHub release 资产，或去掉镜像前缀后地址相同。只换了镜像
 // 不算来源变化。
 func (s GeoSource) Same(o GeoSource) bool {
-	if s.Verifiable() || o.Verifiable() {
+	if s.release() || o.release() {
 		return s.Repo == o.Repo && s.Tag == o.Tag && s.Asset == o.Asset
 	}
 	return withoutMirror(s.URL) == withoutMirror(o.URL)
 }
 
 // GeoSourceChanges 返回 home 中已有的 files 里，geox-url 从 old 变为 new 后来源不同的文件。缺失的文件
-// 不在其中：它们本来就按 new 下载（见 EnsureGeo）。
+// 不在其中：mihomo -t 本来就按 new 下载它们（见 Validator）。
 func GeoSourceChanges(home string, files []GeoFile, old, new map[string]string) ([]GeoFile, error) {
 	var changed []GeoFile
 	for _, f := range files {
@@ -120,46 +115,27 @@ func GeoSourceChanges(home string, files []GeoFile, old, new map[string]string) 
 	return changed, nil
 }
 
-// fetchGeo 按 geox-url（urls）下载 f：来源是 GitHub release 资产的按官方 sha256 校验，其他来源原样下载。
-func fetchGeo(ctx context.Context, d *download.Client, f GeoFile, urls map[string]string) ([]byte, error) {
-	if src := f.Source(urls); src.Verifiable() {
-		return d.Fetch(ctx, src.Repo, src.Tag, src.Asset)
-	}
-	return d.GetUnverified(ctx, f.Name, f.Source(urls).URL)
-}
+// ErrStagedGeoChanged 表示暂存的 geo 文件与计划时下载的不同（期间又生成了别的计划）。
+var ErrStagedGeoChanged = errors.New("the geo data downloaded for this plan has changed; plan again")
 
-// StageGeo 清空 dir，把 files 按 geox-url（urls）下载到其中（文件名为 GeoFile.Name，属主为 owner），
-// 返回各文件的 sha256。用于来源变化的 geo 文件：校验时代替工作目录中的旧文件（见 Validator.Staged），
-// 发布时换进工作目录（见 InstallStagedGeo）。
-func StageGeo(ctx context.Context, d *download.Client, dir string, files []GeoFile, urls map[string]string, owner *fsutil.Owner) (map[string]string, error) {
-	if err := os.RemoveAll(dir); err != nil {
-		return nil, err
-	}
-	if len(files) == 0 {
-		return nil, nil
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
+// StagedGeo 返回 dir 中暂存的 files（mihomo -t 按新来源下载的，见 Validator.Staged）的 sha256，文件名为键；
+// 没有暂存的不在其中。
+func StagedGeo(dir string, files []GeoFile) (map[string]string, error) {
 	sums := map[string]string{}
 	for _, f := range files {
-		data, err := fetchGeo(ctx, d, f, urls)
-		if err != nil {
-			return nil, fmt.Errorf("download %s from its new source: %w", f.Name, err)
+		sum, err := FileChecksum(filepath.Join(dir, f.Name))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
 		}
-		if err := fsutil.WriteFileOwned(filepath.Join(dir, f.Name), data, 0o644, owner); err != nil {
+		if err != nil {
 			return nil, err
 		}
-		sum := sha256.Sum256(data)
-		sums[f.Name] = hex.EncodeToString(sum[:])
+		sums[f.Name] = sum
 	}
 	return sums, nil
 }
 
-// ErrStagedGeoChanged 表示暂存的 geo 文件与计划时下载的不同（期间又生成了别的计划）。
-var ErrStagedGeoChanged = errors.New("the geo data downloaded for this plan has changed; plan again")
-
-// InstallStagedGeo 把 StageGeo 暂存在 dir 中的文件（sums 是计划时记下的 sha256）换进 home：替换已有的
+// InstallStagedGeo 把暂存在 dir 中的文件（sums 是计划时记下的 sha256，见 StagedGeo）换进 home：替换已有的
 // 同类文件（文件名可能是别名，原样保留），原来的文件移到 dir 中。返回的 undo 把原来的文件换回去。
 // 先核对全部暂存文件，有不一致时什么都不动，返回 ErrStagedGeoChanged。
 func InstallStagedGeo(dir, home string, sums map[string]string) (undo func() error, err error) {
@@ -222,100 +198,6 @@ func GeoFilesFor(needs config.GeoNeeds) []GeoFile {
 		files = append(files, GeoASN)
 	}
 	return files
-}
-
-// EnsureGeo 确保 home 中有 files 列出的 geo 文件，缺失的按 geox-url（urls，见 GeoFile.Source）经 d
-// 下载：来源是 GitHub release 资产的按官方 sha256 校验，其他来源原样下载、不校验。属主设为 owner
-// （内核要能原地更新它们），返回新下载的文件名。已有的文件不在这里更新，见 VerifyGeo。
-func EnsureGeo(ctx context.Context, d *download.Client, home string, files []GeoFile, urls map[string]string, owner *fsutil.Owner) ([]string, error) {
-	var downloaded []string
-	for _, f := range files {
-		if p, err := findGeo(home, f); err != nil {
-			return downloaded, err
-		} else if p != "" {
-			continue
-		}
-		if err := EnsureHome(home, owner); err != nil {
-			return downloaded, err
-		}
-		data, err := fetchGeo(ctx, d, f, urls)
-		if err != nil {
-			return downloaded, fmt.Errorf("prepare %s: %w", f.Name, err)
-		}
-		if err := fsutil.WriteFileOwned(filepath.Join(home, f.Name), data, 0o644, owner); err != nil {
-			return downloaded, err
-		}
-		downloaded = append(downloaded, f.Name)
-	}
-	return downloaded, nil
-}
-
-// GeoCheck 是 VerifyGeo 的结果。
-type GeoCheck struct {
-	// Verified 是与官方 sha256 一致的文件，Replaced 是不一致、已换成校验过的文件的，Unverified 是
-	// 来源不是 GitHub release 资产、无从校验的。都是工作目录中的文件名。
-	Verified, Replaced, Unverified []string
-}
-
-// VerifyGeo 按 geox-url（urls）所指的 GitHub release 资产的官方 sha256 核对 home 中已有的 files。
-// 不一致的下载校验过的文件替换（经镜像下载校验不通过时改为直连）。替换用 rename，运行中的内核仍使用
-// 原来的文件，重启后才加载新文件：内核的 geo 数据只能由它自己的更新器重新加载。来源不是 GitHub
-// release 资产的不核对，原样保留。
-func VerifyGeo(ctx context.Context, d *download.Client, home string, files []GeoFile, urls map[string]string, owner *fsutil.Owner) (*GeoCheck, error) {
-	res := &GeoCheck{}
-	releases := map[string]*download.Release{}
-	for _, f := range files {
-		path, err := findGeo(home, f)
-		if err != nil {
-			return res, err
-		}
-		if path == "" {
-			continue
-		}
-		name := filepath.Base(path)
-		src := f.Source(urls)
-		if !src.Verifiable() {
-			res.Unverified = append(res.Unverified, name)
-			continue
-		}
-		rel := releases[src.Repo+"@"+src.Tag]
-		if rel == nil {
-			if rel, err = d.Release(ctx, src.Repo, src.Tag); err != nil {
-				return res, err
-			}
-			releases[src.Repo+"@"+src.Tag] = rel
-		}
-		asset, err := rel.Asset(src.Asset)
-		if err != nil {
-			return res, err
-		}
-		want, err := asset.SHA256()
-		if err != nil {
-			return res, err
-		}
-		have, err := FileChecksum(path)
-		if err != nil {
-			return res, err
-		}
-		if have == want {
-			res.Verified = append(res.Verified, name)
-			continue
-		}
-		data, err := d.Get(ctx, asset)
-		if errors.Is(err, download.ErrChecksumMismatch) && d.Mirror != "" {
-			direct := *d
-			direct.Mirror = ""
-			data, err = direct.Get(ctx, asset)
-		}
-		if err != nil {
-			return res, fmt.Errorf("replace %s: %w", name, err)
-		}
-		if err := fsutil.WriteFileOwned(path, data, 0o644, owner); err != nil {
-			return res, err
-		}
-		res.Replaced = append(res.Replaced, name)
-	}
-	return res, nil
 }
 
 // EnsureHome 创建内核的工作目录，属主设为 owner，权限收紧到 0750：其中有内核的 API socket

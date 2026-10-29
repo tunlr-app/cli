@@ -48,7 +48,7 @@
 - **TUN 开关**：面板可以在运行时切换，但不会写回配置文件，也不处理系统前置条件。持久化的开关以工具为准；工具读取实际状态，并提供“把当前运行状态保存到配置”的操作。
 - **内核升级**：面板可以通过内核自带接口升级；工具负责兜底——保留已知可用版本，内核启动失败时自动回滚，并在定时任务中核对面板升级来的二进制（见第 7 节）。工具自己升级时会先做兼容性校验，没有断网窗口。
 - **重载配置**：面板重载读的是工具生成的文件，不冲突。
-- **geo 更新**：由内核按配置自己更新（面板手动刷新同样可以），工具的 `_update` 在更新后按官方 sha256 核对结果（见第 7 节）。
+- **geo 更新**：由内核按配置自己下载和更新（面板手动刷新同样可以），工具不下载也不校验；兜底的地址和周期是 tunlr 内置的受管 mixin `tunlr:defaults`，订阅写了的以订阅为准，按订阅用 `update set geo <订阅>` 调整（见第 7 节）。
 - **订阅更新**：订阅是完整配置，由工具的 timer（`tunlr _update`）拉取并走完整的配置流水线；配置中的 rule-providers 等仍由内核按 `interval` 刷新。
 
 ### 3.4 明确不做
@@ -213,23 +213,24 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - `sub update <名称> --source <来源>` 换一个来源（地址、文件或 `-`），与 `--user-agent` 相同，只在读取成功时保存。换机场地址也不必再删了重加。
   - 本地文件和标准输入没有流量与到期信息，也没有 User-Agent（`--user-agent` 报用法错误）。内容的要求与地址相同。`sub` 的来源一栏显示路径或 `stdin`。
 - **分层合成，各层职责固定**（`pkg/core/config.Compose`）：
-  1. 模板：工具内置的系统部分，如端口、DNS、geo 数据的自动更新与下载地址、面板、profile。
+  1. 模板：工具内置的系统部分，如端口、面板、profile、TUN。
+     随后合并兜底值（见下文“mixin 的兜底值”）：先是受管 mixin `tunlr:defaults` 提供的 DNS 和 geo 数据的设置，再是用户的 mixin 中的 `tunlr.defaults`。它在订阅之前，订阅采用的同名顶层键整个替换它（`geox-url` 按文件替换）。
   2. 订阅：**只取白名单中的键**（`config.subscriptionKeys`），其余键一律丢弃并在 `config plan` 中列出。订阅是不可信输入，不能让机场配置打开端口、改监听地址或设置 API。随后按 mixin 中的 `tunlr.proxy-filter` 筛选订阅的节点，见下文“节点筛选”。白名单：
      - 路由：`proxies`、`proxy-groups`、`rules`、`proxy-providers`、`rule-providers`、`sub-rules`。
-     - DNS：`dns`、`hosts`、`sniffer`。机场的规则常与它的 DNS 配合（`nameserver-policy`、fake-ip 过滤、按 geosite 分流的上游），换成模板的 DNS 可能让规则失效，所以整段采用订阅的 `dns`，替换模板的。例外是 `dns.listen`：它决定 DNS 是否暴露在外（见下文“端口安全”），订阅里的一律丢弃，在 `config plan` 中列为丢弃了 `dns.listen`；监听地址由提供默认值的 `tunlr:dns` 设为 `127.0.0.1:1053`，用户的 mixin 可以改（如换端口），非回环地址仍由端口安全检查拒绝。开启 TUN 时 `tunlr:tun` 独占 `dns.enable: true`：TUN 劫持 DNS，内核的 DNS 必须开着。
-     - geo 数据：`geox-url`、`geodata-mode`、`geodata-loader`、`geo-auto-update`、`geo-update-interval`。订阅的规则要用它指定来源的数据（如自己维护的 geosite 分类），见第 7 节“geo 数据更新”。
+     - DNS：`dns`、`hosts`、`sniffer`。机场的规则常与它的 DNS 配合（`nameserver-policy`、fake-ip 过滤、按 geosite 分流的上游），换成兜底的 DNS 可能让规则失效，所以整段采用订阅的 `dns`，替换兜底的。例外是 `dns.listen`：它决定 DNS 是否暴露在外（见下文“端口安全”），订阅里的一律丢弃，在 `config plan` 中列为丢弃了 `dns.listen`；监听地址由提供默认值的 `tunlr:dns` 设为 `127.0.0.1:1053`，用户的 mixin 可以改（如换端口），非回环地址仍由端口安全检查拒绝。开启 TUN 时 `tunlr:tun` 独占 `dns.enable: true`：TUN 劫持 DNS，内核的 DNS 必须开着。
+     - geo 数据：`geox-url`、`geodata-mode`、`geodata-loader`、`geo-auto-update`、`geo-update-interval`。订阅的规则要用它指定来源的数据（如自己维护的 geosite 分类），见第 7 节“geo 数据更新”。`geox-url` 只替换订阅写了的文件，其余的仍用兜底的地址：只写了 geosite 的订阅不该让其他文件退回内核的默认地址（不经镜像时国内下载不了）。
      - 订阅的 DNS 是为桌面客户端写的，可能在服务器上不成立。合成后检查（`config.DNSWarnings`），作为警告列在 `config plan` 中、不阻止发布：开启 DNS 却没有 `nameserver`；`dhcp://<网卡>` 指向本机没有的网卡（如 macOS 的 `en0`）。要改用 mixin 覆盖 `dns` 下的键。
-  3. 提供默认值的受管 mixin（`tunlr:dns`、`tunlr:mirror`、`tunlr:filter`），见下文“受管 mixin”。
+  3. 提供默认值的受管 mixin（`tunlr:dns`、`tunlr:mirror`、`tunlr:filter`；`tunlr:defaults` 只有兜底值，已在第 1 步合并），见下文“受管 mixin”。
   4. 用户的 mixin：先是共用的 `mixin.d/*.yaml`，再是启用订阅的 `mixin.d/<订阅名>/*.yaml`，见下文。
   5. 独占键的受管 mixin（`tunlr:core`、`tunlr:tun`、`tunlr:panel`、`tunlr:proxy`），最后写入。
-  6. 受管 mixin 的改写：设置了 `github-mirror` 时，`tunlr:mirror` 把 `geox-url` 中 `https://github.com/` 开头的地址改为经镜像（`Managed.RewriteGeoxURL`），不论来自模板、订阅还是 mixin：这样订阅自定义的来源也能在国内服务器上下载，工具的核对（见第 7 节）去掉镜像前缀后仍认得出是哪个 GitHub release 资产。其他地址原样保留。改写的键在 `config plan` 中列出（`Rewritten by tunlr:mirror: geox-url.geoip, …`，`--json` 中为 `rewrites`）。
+  6. 受管 mixin 的改写：设置了 `github-mirror` 时，`tunlr:mirror` 把 `geox-url` 中 `https://github.com/` 开头的地址改为经镜像（`Managed.RewriteGeoxURL`），不论来自兜底值、订阅还是 mixin：这样订阅自定义的来源也能在国内服务器上下载；比较 geo 来源是否变化时（见第 7 节）去掉镜像前缀，只换镜像不算变化。其他地址原样保留。改写的键在 `config plan` 中列出（`Rewritten by tunlr:mirror: geox-url.geoip, …`，`--json` 中为 `rewrites`）。
 - **tunlr 对配置的改动只有三条途径**（2026-10-29 整理）。每一处改动都能在 `config plan` 或 `tunlr config` 中看到出自哪里，新增功能必须归入其中一类，不在 `Compose` 里另写特例：
 
   | 途径 | 是什么 | 例子 | 在哪里看到 |
   |---|---|---|---|
-  | 模板 | 基底，不是叠加层 | 端口、profile、DNS 和 geo 的默认设置 | 模板本身（注释说明哪些会被替换） |
+  | 模板 | 基底，不是叠加层 | 端口、面板、profile、TUN 的默认设置 | 模板本身 |
   | 合成规则 | 对不可信输入的过滤，不是对配置的修改 | 订阅的白名单、丢弃订阅的 `dns.listen` | `config plan` 列为 “Ignored from the subscription” |
-  | 受管 mixin | 交互功能和工具运行所需的设置，见下文 | `tunlr:tun`、`tunlr:dns`、`tunlr:mirror` | `tunlr config` 列出键或内容，`config plan` 列出名称、覆盖和改写 |
+  | 受管 mixin | 交互功能、兜底值和工具运行所需的设置，见下文 | `tunlr:tun`、`tunlr:defaults`、`tunlr:dns`、`tunlr:mirror` | `tunlr config` 列出键或内容，`config plan` 列出名称、覆盖和改写，`tunlr update` 列出 geo 设置的来源 |
 
   - 原来 `dns.listen` 由合成流程直接换回模板的值、`geox-url` 经镜像是合成流程里的一步，都绕开了受管 mixin，plan 中看不出是谁改的、能不能改。现在前者是 `tunlr:dns`，后者登记在 `tunlr:mirror` 名下。
   - 为什么不把程序的改动都放进 `tunlr:` 命名空间：两个命名空间按操作的类型划分，而不是按谁写的（见下文“mixin”）。`mihomo:` 写值，`tunlr:` 是 mihomo 的写法表达不了的操作，tunlr 和用户都同时用到两种（`tunlr:tun` 写值，`tunlr:filter` 插入规则）。按“程序 / 用户”划分就得在 `tunlr:` 下再造一套写值的语法，与 `mihomo:` 重复。
@@ -240,13 +241,13 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
     | 种类 | 成员 | 应用时机 | 用户的 mixin 动了它的键 |
     |---|---|---|---|
     | 独占 | `tunlr:core`（`external-controller-unix`，工具经它访问 API）<br>`tunlr:tun`（`tun.enable` 等，见 8.3）<br>`tunlr:panel`（`external-controller`、`secret`）<br>`tunlr:proxy`（`allow-lan`、`lan-allowed-ips`，见第 10 节“代理端口的局域网访问”） | 用户的 mixin 之后 | 报错，不发布 |
-    | 默认值 | `tunlr:dns`（`dns.listen`）<br>`tunlr:mirror`（配置了 `github-mirror` 时：`external-ui-url` 和让镜像直连的规则；另在合成的最后改写 `geox-url`，见上面第 6 步，用户的 mixin 不能取消，只能改用其他地址）<br>`tunlr:filter`（流量过滤的规则，见 8.13） | 用户的 mixin 之前 | 允许，`config plan` 中记为“覆盖 tunlr:dns”等 |
+    | 默认值 | `tunlr:defaults`（DNS 和 geo 数据的兜底值，写在 `tunlr.defaults` 下，在订阅之前合并，见下文“mixin 的兜底值”）<br>`tunlr:dns`（`dns.listen`）<br>`tunlr:mirror`（配置了 `github-mirror` 时：`external-ui-url` 和让镜像直连的规则；另在合成的最后改写 `geox-url`，见上面第 6 步，用户的 mixin 不能取消，只能改用其他地址）<br>`tunlr:filter`（流量过滤的规则，见 8.13） | 用户的 mixin 之前 | 允许，`config plan` 中记为“覆盖 tunlr:dns”等 |
 
   - 冲突：用户的 mixin 在 `mihomo:` 下写了独占的键（即使值相同）、用 `null` 删除它，或把它的上级整个替换掉。报告为 mixin 错误（`*config.MixinError`，退出码 3），指出文件、行和改用的命令，例如 `mixin 20-x.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); remove it from the mixin`。同一映射中的其他键照常可改（如 `tun.stack`、`tun.route-exclude-address`）。
   - 为什么拒绝而不是像原来那样忽略并警告：被忽略的设置让人以为生效了，交互命令和手改的 mixin 各说各的；拒绝时用户立刻知道该用哪个命令。代价是工具升级新增独占的键后，已经写了它的 mixin 会让定时更新保持当前配置（与 mixin 出错相同），`doctor` 的 `install.mixins` 列出这种冲突。
   - `secret` 也是独占的，不支持自定义：换 secret 用 `tunlr panel reset-secret`。
-  - 受管 mixin 只在内存中合成，不写入 `mixin.d`：写成文件会让用户以为可以编辑它，改了又被工具覆盖；设置变化时还要同步文件。`tunlr config` 列出用户的 mixin 文件和全部受管 mixin（独占的列出键和命令，默认值的列出内容和改写，`secret` 的值不出现），`config plan` 只列出受管 mixin 的名称（每次都打印默认值的内容太啰嗦）、用户 mixin 覆盖了哪些默认值和改写了哪些键。
-  - 默认值放在订阅之后而不是紧接模板：插入规则需要订阅的 `rules` 已经就位，`dns.listen` 要补在订阅的 `dns` 之上。这一层的键模板中都有，合并后位置不变，输出稳定；只有订阅带 `dns` 时，`listen` 排在订阅的 `dns` 段末尾。
+  - 受管 mixin 只在内存中合成，不写入 `mixin.d`：写成文件会让用户以为可以编辑它，改了又被工具覆盖；设置变化时还要同步文件。这条禁止的是由 tunlr 维护、会被它覆盖的文件；命令替用户写的文件（`update set geo` 写的 `<订阅>/20-geo.yaml`、`sub add` 写的节点筛选 `<订阅>/10-filter.yaml`）归用户所有，tunlr 只在用户执行命令时修改，用户也可以自己改或删，不在此列。`tunlr config` 列出用户的 mixin 文件和全部受管 mixin（独占的列出键和命令，默认值的列出内容和改写，`secret` 的值不出现），`config plan` 只列出受管 mixin 的名称（每次都打印默认值的内容太啰嗦）、用户 mixin 覆盖了哪些默认值和改写了哪些键。
+  - 默认值放在订阅之后而不是紧接模板：插入规则需要订阅的 `rules` 已经就位，`dns.listen` 要补在订阅的 `dns` 之上。这一层的键大多在模板或兜底值中已有，合并后位置不变，输出稳定；`dns.listen` 排在 `dns` 段末尾。
   - 回滚和自动关闭透明代理不重新合成，只把独占的受管 mixin 按当前状态重新写入生效的配置（`config.Enforce`），包括面板的监听地址和 `secret`。
 - **mixin**（`pkg/core/config/mixin.go`）。参考了 clashctl（单个 mixin.yaml，嵌套的 `prepend`/`append`/`override`/`inject`）和 ShellCrash（按类别分文件、文本拼接、`-t` 失败时静默丢弃全部自定义）后的设计：
   - 场景：改通用设置；加自己的节点、策略组、规则、rule-providers、listeners；改订阅里已有的策略组和节点（塞入自己的节点、改 interval、加 dialer-proxy）；去掉机场的信息节点和不要的组或规则；按用途分文件、可以单独停用。
@@ -278,6 +279,11 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
     - 为什么不做成只有 `tunlr:` 的一套语言：mihomo 的配置面很大且一直在加，建模一部分就有改不了的东西，全部建模等于永远追着上游重写 schema，mihomo 的文档和示例也用不上了。`mihomo:` 就是这个兜底：tunlr 没覆盖到的，照样能改。
     - 为什么操作只针对几个列表：tunlr 的操作只对订阅带来的三个列表（节点、策略组、规则）有意义，它们是 mihomo 配置里仅有的“用户必须在机场的内容上增删改”的地方；其余键都来自模板或用户自己，整体写一遍就够。所以 `tunlr:` 下按这几个对象分组，而不是对任意一层都提供增删改。
     - 顶层出现这两个键（和 `x-`）之外的键时报错，不猜测用户的意图。
+  - **mixin 的兜底值：`tunlr.defaults`**（2026-10-30 讨论后定）。写法同 `mihomo:`，但在订阅之前合并进模板：订阅采用的顶层键（`dns`、`hosts`、`sniffer`、`geo-auto-update`、`geo-update-interval` 等）整个替换它，订阅没写的才用它；`geox-url` 按文件替换（订阅只写了部分文件时，其余的用兜底的地址）。tunlr 内置的兜底值 `tunlr:defaults` 最先合并，各文件的 `tunlr.defaults` 按 mixin 的顺序在它之后合并，`mihomo:` 可以覆盖它们（`config plan` 记为覆盖）。它的优先级最低，写了独占键不报错，独占的值总是生效（例如兜底的 DNS 写了 `enable`，开启 TUN 时 `tunlr:tun` 强制 `dns.enable: true`）。
+    - 为什么需要：`mihomo:` 在订阅之后应用，写了就压过订阅；只想在订阅没写时生效（例如自己的 geo 数据地址、订阅不带 DNS 时用的 DNS），需要一个排在订阅之前的写法。
+    - 为什么放在 mixin 而不是工具设置：它改的是配置，与其他对配置的修改在同一个地方、用同一套写法和检查，`tunlr config edit` 就能改；工具设置只放工具自己的行为（镜像、User-Agent）。为什么是通用的 `defaults` 而不是专用的 `geo`：盘点下来，会被订阅整段替换的模板值只有 DNS 和 geo 两类，一个通用的机制覆盖全部，以后订阅白名单加了键也不用再加语法。`tunlr:dns`、`tunlr:mirror`、`tunlr:filter` 不是兜底值（订阅的 `dns.listen` 总是丢弃；镜像和过滤是工具的策略），在订阅之后应用。
+    - **tunlr 的兜底值是受管 mixin `tunlr:defaults`**（2026-10-30 定）。DNS 和 geo 数据的兜底值写在它的 `tunlr.defaults` 下（内容是 `templates/defaults.yaml`），不在模板中，模板只留系统部分（端口、面板、profile、TUN）。它是提供默认值的受管 mixin，与其他受管 mixin 一样只在内存中合成；`tunlr config` 列出它的内容（`Fallbacks from tunlr:defaults`），`tunlr update`、`config plan` 显示来源时指向它，`mihomo:` 覆盖它时 `config plan` 记为 `overrides tunlr:defaults`。
+      - 为什么不留在模板：模板是基底，合成后看不出一个值是模板给的兜底值还是订阅没替换的系统设置；作为受管 mixin，它与用户的 `tunlr.defaults` 走同一个机制，来源能逐键报告（`KeySource.Fallback`）。为什么不写成文件：见上文“受管 mixin 只在内存中合成”。兜底值随 tunlr 升级更新；用户要改的放在订阅的 geo mixin（`update set geo`）或自己的 mixin（`tunlr.defaults` 或 `mihomo:`）中。
 
   - **`mihomo:` 的合并语义**：与 mihomo 配置完全一致的写法，按 RFC 7386 JSON Merge Patch 合并：
 
@@ -310,7 +316,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - **一个文件内的执行顺序**固定，与书写顺序无关：先 `mihomo:`（替换与合并），再 `tunlr:` 的 删除 → 修改 → 插入。这样先删掉订阅的 `MATCH` 再追加自己的 `MATCH`、删除信息节点不会误删自己追加的节点；`patch` 也能改到 `mihomo:` 里刚替换的内容。`proxy-filter` 不在这个顺序里：它在任何 mixin 之前执行（见下文）。
   - 顶层以 `x-` 开头的键不写入配置，用来放 YAML 锚点；锚点不能跨文件。mixin 中的注释不带入生成的配置。
   - 多个文件时两个命名空间都是“后面的文件作用在前面的结果上”：`mihomo:` 逐键覆盖，`tunlr:` 的操作逐个执行（后面文件前插的规则排得更靠前，后面的文件可以 `patch` 前面文件加入的组），`proxy-filter` 逐字段覆盖。
-  - 受管 mixin 在内部用同一种写法表达（独占的键和 `tunlr:dns` 写在 `mihomo:` 下，`tunlr:mirror`、`tunlr:filter` 插入的规则写在 `tunlr.rules.prepend` 下），走同一套引擎。命名空间按操作的类型划分，不按谁写的划分，见上文“tunlr 对配置的改动只有三条途径”。
+  - 受管 mixin 在内部用同一种写法表达（独占的键和 `tunlr:dns` 写在 `mihomo:` 下，`tunlr:defaults` 写在 `tunlr.defaults` 下，`tunlr:mirror`、`tunlr:filter` 插入的规则写在 `tunlr.rules.prepend` 下），走同一套引擎。命名空间按操作的类型划分，不按谁写的划分，见上文“tunlr 对配置的改动只有三条途径”。
   - **正则与 mihomo 相同**（2026-10-29）：所有正则（`/正则/` 和 `proxy-filter`）都用 `github.com/dlclark/regexp2`，即 mihomo 筛选节点所用的库（.NET 语法，支持前后查找）。同一个字符串既由 tunlr 执行、又原样写给内核，两边的结果必须一致；只有一种正则语义，也不必记哪里支持什么。原来用 Go 的 `regexp`（RE2），常见写法两者相同。
 - **节点筛选（`tunlr.proxy-filter`）**（2026-10-29）：mihomo 没有全局的节点筛选，只有 provider 和策略组上的 `filter`、`exclude-filter`、`exclude-type`，而且策略组上的 `filter` 对 `proxies:` 中按名称列出的节点不生效。机场的完整配置绝大多数是顶层列出节点、策略组按名称引用，原生的筛选一个也去不掉，所以由 tunlr 实现：
 
@@ -359,10 +365,10 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 编辑器取 `$VISUAL`、`$EDITOR`，否则依次尝试 `vim`、`nano`、`vi`（有 vim 就用 vim，不经 Debian 的 `editor` 替代项，它常指向 nano）；需要终端，非交互模式下报用法错误，直接改文件后用 `config plan`/`config apply` 即可。
   - 打开编辑器前只说明 tunlr 自己的规则（保存退出后校验并显示差异、确认后才发布；不保存退出则不做改动），不讲编辑器本身的用法。
 - 合成前展开订阅中的 YAML 锚点与别名（被引用的锚点可能位于被丢弃的键里），并限制展开后的节点数，防止恶意订阅放大。
-- **校验前必须备好 geo 数据**。`mihomo -t` 会加载规则用到的 GeoIP/GeoSite 数据，缺失时现场从 GitHub 下载；在国内服务器上实测下载耗时 84 秒，超过 90 秒即判定校验失败，与配置本身无关。因此：
-  - 工具从配置判断需要哪些 geo 数据（规则、DNS 设置中出现 geoip、geosite、ip-asn 即视为需要；宁可多备一个文件，不能漏），缺失的按生效的 `geox-url` 下载到内核工作目录：来源是 GitHub release 资产的按官方 sha256 校验（见第 7 节的镜像与校验），其他来源（订阅或 mixin 自定义的 CDN 等）原样下载、无从校验。已有的文件不在这里更新，由内核自己更新、`_update` 核对（见第 7 节）。预先备好后实测校验耗时 49 毫秒。
-  - **geo 来源变化**：geo 文件全部订阅共用一份（内核只认工作目录中的固定文件名），切换到自带 `geox-url` 的订阅、或 mixin 改了它之后，已有的文件仍是旧来源的，内核要等到它们比一个更新间隔还旧才重新下载；新订阅的规则引用的自定义分类在旧文件中没有，`-t` 会失败或分流出错。所以 plan 比较生效的与新的配置中、配置用到的每个已有 geo 文件的来源（`mihomo.GeoSource.Same`：同一个 GitHub release 资产，或去掉镜像前缀后地址相同；只换镜像不算），有变化的按新来源下载到 `/var/lib/tunlr/geo-staged`（下载方式同上），`-t` 用暂存的文件代替旧文件；plan 中列出这些文件并说明会重启内核。apply 在锁内先核对暂存文件仍是计划时下载的（期间又生成了别的计划时要求重新 plan），用 rename 换进工作目录（原来的文件留作回退），写入配置后重启内核：内核的 geo 数据只在启动时加载。内核加载失败时文件与配置一起换回。下载失败与配置写法无关，同校验未能完成：保持当前配置不发布。
-  - `-t` 在临时工作目录中运行，内核工作目录中的 geo 文件以符号链接提供：`-t` 可能写入缓存，直接用内核的工作目录会与运行中的内核冲突。
+- **校验时的 geo 数据**。`mihomo -t` 会加载规则用到的 GeoIP/GeoSite 数据，缺失时按配置中的 `geox-url` 现场下载。tunlr 不下载 geo 数据（2026-10-29 决定，见第 7 节“geo 数据更新”），交给 `-t`：
+  - `-t` 在临时工作目录中运行，内核工作目录中已有的 geo 文件以符号链接提供：`-t` 可能写入缓存，直接用内核的工作目录会与运行中的内核冲突。已有文件时实测校验耗时 49 毫秒。
+  - 配置用到的文件有缺失（判断按名称宽松匹配：规则、DNS 设置中出现 geoip、geosite、ip-asn 即视为需要）或来源变了时，时限从 60 秒放宽到 5 分钟（内核下载单个文件的时限是 90 秒；设置镜像后通常十几秒）。`-t` 下载到的文件（临时目录中的普通文件，不是符号链接）保留下来：plan 和 apply 时存进内核工作目录，下次校验和内核启动时不必再下载；`doctor` 的只读检查丢弃它们。校验没通过也保留：下载与配置写法无关。
+  - **geo 来源变化**：geo 文件全部订阅共用一份（内核只认工作目录中的固定文件名），切换到自带 `geox-url` 的订阅、或 mixin 改了它之后，已有的文件仍是旧来源的，内核要等到它们比一个更新间隔还旧才重新下载；新订阅的规则引用的自定义分类在旧文件中没有，`-t` 会失败或分流出错。所以 plan 比较生效的与新的配置中、配置用到的每个已有 geo 文件的来源（`mihomo.GeoSource.Same`：同一个 GitHub release 资产，或去掉镜像前缀后地址相同；只换镜像不算），有变化的不提供旧文件，由 `-t` 按新来源下载，存到 `/var/lib/tunlr/geo-staged`；plan 记下暂存文件的 sha256，列出这些文件并说明会重启内核。apply 在锁内先核对暂存文件仍是计划时下载的（期间又生成了别的计划时要求重新 plan），用 rename 换进工作目录（原来的文件留作回退），写入配置后重启内核：内核的 geo 数据只在启动时加载。内核加载失败时文件与配置一起换回。下载失败与配置写法无关，同校验未能完成：保持当前配置不发布。
   - 校验失败时区分“配置错误”和“依赖下载失败”：mihomo 的错误消息含 `can't download` 时属于后者，不报告为配置问题（不映射到退出码 3）。
   - 实测 `-t` 不会抓取远程的 proxy-providers 和 rule-providers，它们暂时不可达不影响校验。
   - 内核自己的 geo 定时更新（`geox-url`）同样受网络影响：设置了镜像时，`tunlr:mirror` 在合成的最后把其中 github.com 的地址改为经镜像（见上文合成的第 6 步）。
@@ -370,18 +376,19 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 
   | 下载 | 发起者 | 路径 | 校验 |
   |---|---|---|---|
-  | 内核、校验前补齐的 geo 数据、面板（首次） | tunlr | 直连或经镜像 | 官方 sha256 |
+  | 内核、面板（首次） | tunlr | 直连或经镜像 | 官方 sha256 |
+  | 校验时缺失或来源变了的 geo 数据 | `mihomo -t` | 直连 `geox-url`，github.com 的地址经镜像 | 无 |
   | 订阅 | tunlr | 直连 | 无（机场内容无从校验） |
   | 面板手动更新、面板上手动更新 geo | 内核 | 按规则分流，地址经镜像 | 无 |
-  | geo 自动更新（`geo-auto-update`）、`update run geo` | 内核 | 按规则分流，github.com 的地址经镜像 | 事后由 `_update` 按官方 sha256 核对（GitHub release 资产） |
+  | geo 自动更新（`geo-auto-update`）、`update run geo` | 内核 | 按规则分流，github.com 的地址经镜像 | 无 |
   | 订阅中的 proxy-providers、rule-providers | 内核 | 按规则分流，或 provider 的 `proxy` 字段 | 无 |
   | 面板触发的内核升级 | 内核 | 按规则分流，直连 github.com | 无，事后由工具核对（见第 7 节） |
 
   - 读 mihomo 源码（`component/http`）确认：内核自己的 HTTP 请求交给内部 tunnel，按目标域名匹配规则，失败时才退回直连。所以策略组选中不可用的节点时，面板和 geo 下载全部失败（实测）。
   - **镜像直连规则**：配置了 `github-mirror` 时，工具在订阅规则前插入 `DOMAIN,<镜像域名>,DIRECT`（镜像是 IP 时用 `IP-CIDR`/`IP-CIDR6`）。镜像本来就是为直连准备的；实测选中不可用的节点时，加上这条规则后面板经镜像下载成功。它属于提供默认值的 `tunlr:mirror` 而不是独占的：用户有理由让镜像也走代理，可以用 `tunlr.rules.delete` 去掉。没有配置镜像时不加，直连 github.com 在国内很慢，交给规则决定。将来 TUN 阶段需要直连的主机（如订阅域名）也放在这一层。
-  - **信任边界**：镜像可以篡改它转发的内容。工具的下载有官方 sha256 兜底，内核的下载没有。其中面板在浏览器中运行并持有 API secret，geo 数据决定分流，被篡改的后果都很严重，因此改由工具下载并校验：
+  - **信任边界**：镜像可以篡改它转发的内容。工具的下载有官方 sha256 兜底，内核的下载没有。面板在浏览器中运行并持有 API secret，被篡改的后果很严重，因此由工具下载并校验；geo 数据交给内核（见下）：
     - 面板：apply 时若面板目录不存在，工具从 zashboard 最新发布下载 `dist.zip`，按官方 sha256 校验，解压（拒绝指向目录外的路径和非普通文件，限制解压后大小）后原子地放到位。实测内核启动时发现面板目录已存在就跳过下载。只处理 `external-ui-url` 仍是 zashboard 官方地址或其镜像地址的配置，用户在 mixin 中换了面板时交给内核。面板不是必需的：下载失败（时限 5 分钟）照常发布，由内核按 `external-ui-url` 自己下载；下载在加锁之前进行，不阻塞定时任务。
-    - geo 数据：校验前缺失的文件由工具校验下载；之后由内核按配置自己更新，`_update` 在每次更新后按官方 sha256 核对，不一致的换成校验过的文件并重启内核（见第 7 节“geo 数据更新”）。来源不是 GitHub release 资产的无从校验，`update run geo` 的结果中注明。
+    - geo 数据：不校验（2026-10-29 决定）。内核每次更新都不校验，事后核对只能在被篡改的文件用过之后才发现，还要另写一套下载、替换和重启；订阅自定义的来源本来也无从校验。选用可信的镜像是用户的事。
     - `external-ui-url`、`geox-url` 仍写成经镜像的地址，用于内核自己的更新和用户在面板上主动点“更新”。
   - 实测：zashboard 与 meta-rules-dat 的发布资产都带有 GitHub 提供的 sha256 digest。
 - **充分利用内核已有能力**，由工具写入模板默认开启：
@@ -391,7 +398,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - `ntp`：时间同步（或交给系统的 timesyncd）
 - 工具经 `external-controller-unix` 访问内核 API，路径由 `tunlr:core` 写为相对路径 `api.sock`。内核相对于工作目录解析它，所以在临时目录中运行的 `-t` 不受影响。实测内核以 0666 创建这个 socket，访问也不需要 secret，因此只能靠工作目录的权限（0750）阻止其他本地用户。每次发布都会把工作目录的权限收紧到 0750。面板走 `external-controller`（HTTP，只监听本机），由 secret 保护：实测不带 secret 时返回 401。
 - **发布分两步：预览（plan）与发布（apply）**（`pkg/core/pipeline`）：
-  - plan：合成配置，与生效的配置比较，生成统一格式的 diff，并用 `mihomo -t` 校验。plan 不改动状态，只可能补齐校验需要的 geo 数据。内核未安装时 plan 仍可预览，但标明未校验；apply 则拒绝发布。
+  - plan：合成配置，与生效的配置比较，生成统一格式的 diff，并用 `mihomo -t` 校验。plan 不改动状态，只可能留下 `-t` 下载的 geo 数据（见上）。内核未安装时 plan 仍可预览，但标明未校验；apply 则拒绝发布。
   - apply 先输出 plan 的结果，经确认后在文件锁内发布：原子写入 → 通知内核加载 → 记录历史。
     - 确认等待期间不持有锁，避免阻塞 timer 触发的任务。代价是加锁后要核对生效的配置与预览时一致，否则拒绝发布并要求重新预览，不覆盖用户没看过的变化。
     - 非交互模式下必须带 `--yes`，否则在开始工作前报用法错误。`--dry-run` 只预览。
@@ -460,23 +467,28 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   | 类别 | 机制 | 可否关闭、改周期 |
   |---|---|---|
   | 护栏：保证不失联、不带病运行 | `tunlr-rescue.service`（启动失败后换回已知可用内核）、`tunlr-tun-guard`（开启 TUN 后的回滚定时器）、`tunlr-check.timer`（见 8.5）、面板升级的善后 | 不能。它们是“应用 → 确认，失败则回滚”的一部分 |
-  | 资源更新：内容会过期 | 订阅（更新后发布）；geo 数据（内核按配置自己更新，`_update` 事后核对） | 能：订阅各自设周期，geo 数据在配置中设（mixin），都可以关闭 |
+  | 资源更新：内容会过期 | 订阅（更新后发布）；geo 数据（内核按配置自己更新） | 能：订阅各自设周期，geo 数据按订阅用 `update set geo <订阅>` 设，都可以关闭 |
   | 不做定时 | tunlr 自身的升级 | 只能手动执行，不进 timer |
-  - 资源更新只用一个 timer：`tunlr-update.timer` 每小时唤醒一次（`OnCalendar=hourly`、`RandomizedDelaySec=15min`），`_update` 读状态文件，对每个订阅判断“上次执行之后是否已过一个周期”，对 geo 数据判断“内核更新之后是否核对过”，到期才执行，执行后把时间和结果记下来。没有到期的更新时什么都不做，也不输出，journal 中只留真正执行过的更新。与每种资源一个 timer 相比：改周期只改设置、不用重写 unit 和 `daemon-reload`；新增资源只加一个设置项；下次执行的时间由工具自己算，`status` 和菜单直接显示；各更新顺序执行、不会同时运行；关机错过的更新在开机后的第一次唤醒时补上，不需要 `Persistent=`。代价是不能指定在某个时刻执行，服务器上的更新不在乎几点，可以接受。
+  - 资源更新只用一个 timer：`tunlr-update.timer` 每小时唤醒一次（`OnCalendar=hourly`、`RandomizedDelaySec=15min`），`_update` 读状态文件，对每个订阅判断“上次执行之后是否已过一个周期”（geo 数据由内核自己更新，从不到期），到期才执行，执行后把时间和结果记下来。没有到期的更新时什么都不做，也不输出，journal 中只留真正执行过的更新。与每种资源一个 timer 相比：改周期只改设置、不用重写 unit 和 `daemon-reload`；新增资源只加一个设置项；下次执行的时间由工具自己算，`status` 和菜单直接显示；各更新顺序执行、不会同时运行；关机错过的更新在开机后的第一次唤醒时补上，不需要 `Persistent=`。代价是不能指定在某个时刻执行，服务器上的更新不在乎几点，可以接受。
   - 周期的值为小时或天数（`6h`、`1d`、`7d`，1 小时到 365 天）或 `off`。用户通过命令或菜单修改，不需要编辑文件。
     - **订阅**：周期是每个订阅自己的属性，存在订阅列表中（`update`，默认 `1d`），添加时指定（`sub add --update`，交互时从列表选），之后用 `update set sub <name> <period>` 或 `sub set <name> --update <period>` 修改。未启用的订阅也按自己的周期更新（切换过去时内容是新的，机场的流量和到期信息也是新的），只有启用的订阅更新成功后才发布配置。下次到期 = 上次抓取（成功或失败，取较晚者；从未抓取过时为添加时间）+ 周期；上次失败时最多 6 小时后再试，不必等满一个周期。
-    - **geo 数据**：周期是配置的一部分（`geo-auto-update`、`geo-update-interval`，单位小时），模板中为 `true`、`168`（上游每周更新一次），订阅或 mixin 写了的以它们为准，`tunlr update` 中显示生效的值（`168` 显示为 `7d`）。见下面的“geo 数据更新”。
-    - `tunlr-update.timer` 安装后总是启用：即使没有订阅定时更新、配置中也关闭了 geo 数据的自动更新，面板仍可随时让内核更新 geo 数据或升级内核，之后都要核对；没有要做的事时它什么都不做。
-  - `tunlr update run [sub|geo]` 不看周期立即执行：`sub` 抓取全部订阅（包括设为 `off` 的），`geo` 先调用 `POST /configs/geo` 让内核立即更新（内核没有运行时只核对已有的文件），再核对；输出与定时执行相同。`tunlr update` 列出每个订阅和 geo 数据的周期、上次执行的时间和结果、下次到期的时间；geo 数据的“上次执行”是上次核对，“下次到期”是内核下一次更新的大致时间（最新的 geo 文件的修改时间 + 周期，由内核决定），表格下另有一行说明最新的 geo 文件的时间。
-  - 执行顺序：先逐个抓取到期的订阅（失败时保留上一次的内容，原因记在订阅上），启用的订阅抓取成功后按它和 mixin 合成并发布（同 `config apply --yes`；有变化才发布，检查不通过则保持当前配置）；再核对 geo 数据（结果记入状态文件）。执行了任何任务时最后做面板升级的善后（见上）：它只核对校验值，不单独设周期。
+    - **geo 数据**：周期是配置的一部分（`geo-auto-update`、`geo-update-interval`，单位小时），兜底值在受管 mixin `tunlr:defaults` 中（`7d`：上游每周更新一次），订阅写了的以订阅为准；`tunlr update` 中显示启用的订阅下生效的值（`168` 显示为 `7d`）和每个键的来源。按订阅用 `update set geo <订阅> <period>` 修改，见下面的“geo 数据更新”。
+    - `tunlr-update.timer` 安装后总是启用：即使没有订阅定时更新，面板仍可随时升级内核，之后要核对（面板升级的善后）；没有要做的事时它什么都不做。
+  - `tunlr update run [sub|geo]` 不看周期立即执行：`sub` 抓取全部订阅（包括设为 `off` 的），`geo` 调用 `POST /configs/geo` 让内核立即更新（内核没有运行时跳过：它启动时自己下载缺失的文件）；输出与定时执行相同。`tunlr update` 列出每个订阅和 geo 数据的周期、上次执行的时间和结果、下次到期的时间；geo 数据没有“上次执行”，“下次到期”是内核下一次更新的大致时间（最新的 geo 文件的修改时间 + 周期，由内核决定），表格下列出 geo 数据各项设置的值和来源，另有一行说明最新的 geo 文件的时间。
+  - 执行顺序：先逐个抓取到期的订阅（失败时保留上一次的内容，原因记在订阅上），启用的订阅抓取成功后按它和 mixin 合成并发布（同 `config apply --yes`；有变化才发布，检查不通过则保持当前配置）；手动执行时再让内核更新 geo 数据。最后做面板升级的善后（见上）：每次唤醒都做，只核对校验值，不单独设周期；没有发现面板换过内核、也没有执行其他任务时不输出。
   - 任何一步失败都记录在日志中，继续后面的步骤，最后以非零退出码结束，让 systemd 记为失败。每一步的结果（ok、skipped、failed 和说明）输出到 journal。
 - **geo 数据更新**（读源码 `component/updater/update_geo.go` 并实测）：
   - 内核的 geo 数据只能由内核自己的更新器重新加载（`mmdb.ReloadIP` 等只在更新器中调用）；工具替换文件后要重启内核才生效。
   - `POST /configs/geo` 同步执行：内容与磁盘上的相同时直接返回 204，不写文件也不记日志（之前“没有结果”的原因）；单个文件的下载时限 90 秒，经 gh-proxy 实测一次 64 秒成功、一次 90 秒超时。
   - 内核自己的定时更新（`geo-auto-update`）只在启动时注册；启动时 GeoIP 文件的修改时间早于一个间隔就立即更新。它下载后不做任何校验。
-  - 设计（2026-10-29 讨论后决定）：geo 数据的来源和更新频率是配置的事，订阅可以指定自己的来源（规则依赖它），所以都交给配置和内核，工具不再用自己的设置覆盖它们。原来的 `geo-update`/`geo-updater` 设置、`update set geo --by`、独占的 `tunlr:geo` 全部删除，不做兼容。工具只做内核做不到的事——核对：
-    - `_update` 每小时比较最新的 geo 文件的修改时间与上次核对的时间，文件更新过才核对；上次核对失败的，6 小时后再试。
-    - 核对按生效的配置中的 `geox-url`：地址（去掉镜像前缀后）是 GitHub release 资产（`releases/download/<tag>/<名称>` 或 `releases/latest/download/<名称>`）的，从 GitHub API 取官方 sha256 比对工作目录中内核正在使用的文件；不一致时下载校验过的文件（经镜像校验不通过时改为直连）替换并重启内核（内核没有运行时不启动它）。其他来源无从校验，结果中注明 “from a custom source, not verified”。没有写 `geox-url` 的文件按内核的默认地址（meta-rules-dat 的 `latest`）。
+  - 设计（2026-10-29 讨论后决定）：tunlr 下载管理的只有内核和订阅；geo 数据由内核按配置自己下载和更新，tunlr 不下载、不校验，`init` 也不预先下载（校验时由 `mihomo -t` 下载，见第 6 节）。订阅可以指定自己的来源（规则依赖它），所以订阅写了的以订阅为准，tunlr 只提供兜底：
+    - 兜底值是受管 mixin `tunlr:defaults` 中的 `geo-auto-update`、`geo-update-interval`、`geox-url`（每周、官方的 meta-rules-dat `latest`），内置在 tunlr 中，随 tunlr 升级（见第 5 节“tunlr 的兜底值”）。订阅写了 `geox-url` 时按文件替换：只写了部分文件的，其余的仍用兜底的地址。
+    - **按订阅调整**（2026-10-30 定）：`update set geo <订阅> [<period>|off|default] [--url <file>=<url>|default ...]` 写进这个订阅的 geo mixin（`mixin.d/<订阅>/20-geo.yaml` 的 `mihomo:`），覆盖订阅写的值，只在它启用时生效；没写的键仍按订阅、兜底值的顺序取值（`geox-url` 按文件）。`default` 删除这一项，文件空了就删除。订阅的 mixin 中排在 `20-geo.yaml` 之后的文件写了的键拒绝修改（改了也不生效），指出该改哪个文件；共用的 mixin 排在订阅的之前，不影响。周期对应两个键。改启用的订阅时随后发布（非交互时要 `--yes`）；改没有启用的只写文件，提示它启用时生效。
+      - 为什么只按订阅调整：geo 数据是给订阅的规则用的，订阅自带来源（如自己维护的 geosite 分类）时改兜底值不起作用；兜底值是“订阅没写时”的选择，随 tunlr 升级。按订阅写一个覆盖订阅的 mixin，结果确定，不必先判断每个键来自哪里、该写到哪个文件。这个文件由命令替用户写，归用户所有（见第 5 节“受管 mixin 只在内存中合成”）。
+      - 用法：第一个参数是订阅（给了周期却漏了订阅时，用法错误提示正确的写法）；还没有订阅时报错，提示先添加。菜单的“Geo data settings”先选订阅（只有一个时直接用它），列出当前的值和来源，再选改周期、某个文件的下载地址，或撤销这个订阅的全部修改（删除 `20-geo.yaml`）。
+    - 来源可见：`tunlr update` 按启用的订阅列出每个键的值和来源（兜底值注明来自 `tunlr:defaults` 还是某个 mixin 的 `tunlr.defaults`；订阅；某个 mixin 的 `mihomo:`，如订阅的 geo mixin；哪里都没写时为内核的默认值）；`config plan` 在有键不是兜底值时列出它们（`Geo data settings not from the fallbacks: geo-update-interval (subscription)`），`--json` 中为 `geo_sources`。
+    - 设置了 `github-mirror` 时，`geox-url` 中 github.com 的地址仍在合成的最后改为经镜像（`tunlr:mirror`），不论来自哪一层（包括订阅没写、用兜底值补上的文件）。
+    - 原来 tunlr 校验下载缺失的文件、`_update` 在内核更新后按官方 sha256 核对并替换的做法删除：内核每次更新都不校验，事后核对发现时被篡改的文件已经用过，还要维护一套下载、替换、重启的逻辑；订阅自定义的来源本来也无从校验。
 - **状态以实际为准**：版本、TUN 状态等一律通过 API 查询内核实际情况；工具自己的记录只作为“已知可用的历史”。
 - 注意：内核 API 并不稳定（例如曾有标注为 break 的 `/proxies` 行为变更），API 调用集中封装在 `pkg/core/mihomo` 的 client 中，并随 mihomo 发版做兼容性测试。
 
@@ -826,6 +838,7 @@ tunlr sub remove | update | use   删除、立即抓取（--source 换来源）�
 tunlr update              定时更新：每个订阅和 geo 数据的周期、上次执行、下次到期
 tunlr update run [sub|geo]   立即执行订阅、geo 数据的更新（不看周期；只抓某个订阅用 sub update）
 tunlr update set sub [name] [period]   修改一个订阅的自动更新周期（6h、1d、off、default）
+tunlr update set geo [sub] [period] [--url <file>=<url>]   按订阅调整 geo 数据的更新周期和下载地址（写进订阅的 geo mixin）
 tunlr settings            工具设置（settings.yaml：GitHub 镜像、订阅的 User-Agent）
 tunlr settings edit       用 $EDITOR 编辑设置，校验通过才保存，涉及配置时随即发布
 tunlr backup              列出 backup restore 前留下的自动备份
@@ -876,7 +889,7 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
 - `config`：工具自己的设置（`/etc/tunlr/settings.yaml`：`github-mirror`、`user-agent`），与 mihomo 配置（mixin）分开。
   - `tunlr settings` 列出每项生效的值、是否为默认值和一句说明（何时生效），`--json` 中为 `file` 与 `settings`（`key`、`value`、`default`、`help`）。文件有错时报告错误。
   - `settings edit` 同 `config edit` 的流程：在临时副本上编辑（文件不存在时从带说明、默认值全部注释掉的模板开始）→ 解析校验（未知的键、取值不合法），不通过时可以回到编辑器或放弃 → 保存（编辑期间文件被改过时不覆盖，保留副本并给出位置）→ 合成配置，有变化（镜像）时 diff、确认、发布；还没有发布过时提示由 `config apply` 生效。不发布时设置仍保存，与 mixin 一致，`status` 的漂移会提示。`--dry-run` 只预览，不保存。需要终端，非交互时提示直接改文件再 `config apply`。
-  - 不做 `config set/unset <key>`：只有两项，编辑器配合模板中的说明足够；不常改，命令越多越难记。geo 数据的更新频率在 mihomo 配置中，用 mixin 改。
+  - 不做 `config set/unset <key>`：只有两项，编辑器配合模板中的说明足够；不常改，命令越多越难记。geo 数据有专门的命令（`update set geo <订阅>`），因为要写进订阅的 geo mixin、检查订阅中后面的 mixin 会不会压过它，再发布，编辑器做不到。
 - `backup`：与 `settings`、`config` 一致，不带子命令时只列出（自动备份），`create`、`restore` 才有动作。主要用于换服务器（VPS 重装、迁移），其次是同一台机器重装后恢复；只改配置时用 `config rollback`。
   - 不直接打包 `/etc/tunlr` 与 `/var/lib/tunlr`：状态文件中混有只对本机有意义的内容（实例 ID、已知可用的内核、TUN 的检测期限、网关开启前的转发设置），原样搬过去会出错。
   - 备份是一个 tar.gz（`pkg/core/backup`）：`backup.json`（格式版本、tunlr 版本、主机名、时间，以及状态中的 API secret、设备、过滤项和备份时开着的开关）、`settings.yaml`、`subscriptions.yaml`（订阅列表）、`mixin.d/*.yaml` 与 `mixin.d/<订阅名>/*.yaml`、`subscriptions/<名称>.yaml`（最近一次抓取的内容，新机器暂时抓不到订阅也能立即发布）。不含内核、geo 数据、面板和配置历史（还原后要回滚的是还原前的配置，在本机历史中）。文件 0600，输出提示它含订阅地址与 API secret；不加密：要么引入依赖，要么自己实现，用户把文件放在哪里工具也管不了。
@@ -927,15 +940,15 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
 
   | 分类 | 状态 | 第二级 |
   |---|---|---|
-  | Subs & config | 启用的订阅 · 共几个 · 修订号（有没发布的改动、无法合成、在 tunlr 之外改过时标出） | 添加、切换（多于一个时）、修改（`sub set`）、立即抓取、删除（多于一个时）；编辑 mixin、发布、回滚（有历史时）；列出订阅、配置详情 |
+  | Subs & config | 启用的订阅 · 共几个 · 修订号（有没发布的改动、无法合成、在 tunlr 之外改过时标出） | 添加、切换（多于一个时）、修改（`sub set`）、立即抓取、删除（多于一个时）；geo 数据设置（按订阅，`update set geo <订阅>`）、立即更新 geo 数据；编辑 mixin、发布、回滚（有历史时）；列出订阅、配置详情 |
   | Traffic | TUN 与网关 · 代理端口的局域网访问 · 过滤摘要 | TUN 开关、网关开关、代理端口的局域网开关、QUIC 开关、只代理部分端口（开启时为改端口、恢复全部两项）、网段直连的添加与删除（有时）；TUN、代理端口、过滤三项详情 |
   | LAN devices | 在线、空闲的设备数；网关和代理端口都只对本机时说明没有设备使用本机 | 列出、列出全部、起名、设备走法（`filter device`）、删除记录 |
-  | mihomo & panel | 运行中 · 版本 / 未运行 / 失败 · 面板的局域网访问 | 启动或重启、停止，最近的日志，升级，换回已知可用版本（有时），立即更新 geo 数据；面板的打开方式、局域网开关、更换 secret；内核详情 |
+  | mihomo & panel | 运行中 · 版本 / 未运行 / 失败 · 面板的局域网访问 | 启动或重启、停止，最近的日志，升级，换回已知可用版本（有时）；面板的打开方式、局域网开关、更换 secret；内核详情 |
   | Maintenance | 自动备份的份数 | 备份到文件、还原备份、编辑工具设置、诊断（`doctor`）、修复安装（`init`） |
 
   “Traffic”管“什么流量经过 mihomo”（规则），“LAN devices”管“具体是哪台设备”（对象）；二者合成一组会超过十项，huh 的 Select 又没有不可选的小节标题，所以分开。
 
-  需要处理的事项以 `!` 开头，各对应一个命令，只有三种：有还没发布的改动（`config apply`）；内核服务失败或没有运行，且发布过配置（`core start`）；最近一次定时更新失败（`update run`，只有订阅或只有 geo 数据失败时带上 `sub` 或 `geo`）。只列“现在就该做、做什么很明确”的事：在 tunlr 之外改过的配置要用户先看 diff 再决定，留在 Subs & config 分类里；没有订阅、没发布过配置时状态行已经说明。光标起始于第一项，有事项时就停在它上面。
+  需要处理的事项以 `!` 开头，各对应一个命令，只有三种：有还没发布的改动（`config apply`）；内核服务失败或没有运行，且发布过配置（`core start`）；最近一次抓取订阅失败（`update run sub`；geo 数据由内核更新，tunlr 看不到它的结果）。只列“现在就该做、做什么很明确”的事：在 tunlr 之外改过的配置要用户先看 diff 再决定，留在 Subs & config 分类里；没有订阅、没发布过配置时状态行已经说明。光标起始于第一项，有事项时就停在它上面。
 
   第二级末尾是“← Back”，查看类的项（“… details”“List …”）排在动作之后。没安装时第一级只有“Install tunlr”“Show status”“Diagnose”“Quit”。菜单项随状态变化：有订阅才有修改、抓取；订阅多于一个才有切换、删除；有历史才有回滚；开关类的项只出现与当前状态相反的那个动作。标签用短写（sub、config），说明写在下方。
 - 列表下方两行：光标所在那一项的说明（会发生什么、有什么前提），和等价命令（`$ tunlr …`）。分类只有说明。没有时留空行，列表不跳动。
@@ -952,7 +965,7 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
 **输出样式**：标准输出是终端、且没有设置 `NO_COLOR` 或 `TERM=dumb` 时，用 lipgloss 加样式，只用 16 色：
 
 - 耗时的步骤（合成与校验、发布、抓取订阅、启动与升级内核、`init` 与 `tun on` 的各步）前显示 spinner，完成后换成 ✓ 或 ✗ 加耗时。步骤进行中的日志经由同一个输出写在 spinner 上方，不会和它挤在一行。
-- 下载内核、geo 数据时，spinner 的那一行带进度条、已下载/总大小和速度（用 bubbles `progress` 的 `ViewAs` 只渲染字符串，不起 Bubble Tea 程序）。进度经 context 传给 `pkg/core/download`（`download.WithProgress`），core 不依赖任何界面库。
+- 下载内核时，spinner 的那一行带进度条、已下载/总大小和速度（用 bubbles `progress` 的 `ViewAs` 只渲染字符串，不起 Bubble Tea 程序）。进度经 context 传给 `pkg/core/download`（`download.WithProgress`），core 不依赖任何界面库。
 - diff 中增加的行绿色、删除的行红色、段头青色；检查结果用 ✓ ✗ –；状态值按好坏上色。
 - 长输出（`config plan`、`config apply` 的计划与 diff，`core logs`）超过一屏时像 git 一样交给分页器：`$PAGER`，默认 `less`，未设置 `LESS` 时用 `FRX`（不足一屏直接输出、保留颜色、退出后内容留在屏幕上）。只在标准输入输出都是终端时分页。
 - 确认发布时，问题下方给出节点变化的一行摘要，不必回头翻 diff。

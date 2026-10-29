@@ -16,7 +16,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
-// installedAt 把状态文件的安装时间改为 at，清掉更新记录，并加上订阅 home（启用，最近一次抓取在
+// installedAt 把状态文件的安装时间改为 at，并加上订阅 home（启用，最近一次抓取在
 // fetched）和 spare（不自动更新）。
 func installedAt(t *testing.T, i *Installer, at, fetched time.Time) {
 	t.Helper()
@@ -24,7 +24,7 @@ func installedAt(t *testing.T, i *Installer, at, fetched time.Time) {
 	airport := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(airport.Close)
 	st := tunSwitch(t, i)
-	st.CreatedAt, st.Updates = at, nil
+	st.CreatedAt = at
 	st.Fetches = map[string]state.Fetch{"home": {AddedAt: at, FetchedAt: fetched}, "spare": {AddedAt: at, FetchedAt: fetched}}
 	if err := state.Save(i.Layout.StateFile(), st); err != nil {
 		t.Fatal(err)
@@ -86,33 +86,13 @@ func TestSchedules(t *testing.T) {
 		t.Errorf("after a failure: %+v", s)
 	}
 
-	// geo 数据由内核更新：下次更新是最新的 geo 文件之后再过一个周期；文件比上次核对新时到期核对。
-	mtime := testNow.Add(-3 * 24 * time.Hour)
+	// geo 数据由内核更新：下次更新是最新的 geo 文件之后再过一个周期，tunlr 不执行，从不到期。
+	mtime := testNow.Add(-8 * 24 * time.Hour)
 	writeGeoFile(t, i, "geosite.dat", mtime)
 	geo = geoSchedule(t, i)
-	if !geo.Updated.Equal(mtime) || !geo.Next.Equal(mtime.Add(7*24*time.Hour)) || !geo.Due(testNow) {
+	if !geo.Updated.Equal(mtime) || !geo.Next.Equal(mtime.Add(7*24*time.Hour)) || geo.Due(testNow) {
 		t.Errorf("with a geo file: %+v", geo)
 	}
-	for _, tt := range []struct {
-		name string
-		run  state.UpdateRun
-		due  bool
-	}{
-		{"verified after the update", state.UpdateRun{At: testNow.Add(-24 * time.Hour), Status: StepOK}, false},
-		{"verified before the update", state.UpdateRun{At: mtime.Add(-time.Hour), Status: StepOK}, true},
-		{"failed recently", state.UpdateRun{At: testNow.Add(-time.Hour), Status: StepFailed}, false},
-		{"failed long ago", state.UpdateRun{At: testNow.Add(-7 * time.Hour), Status: StepFailed}, true},
-	} {
-		st := tunSwitch(t, i)
-		st.Updates = map[string]state.UpdateRun{TaskGeo: tt.run}
-		if err := state.Save(i.Layout.StateFile(), st); err != nil {
-			t.Fatal(err)
-		}
-		if geo := geoSchedule(t, i); geo.Due(testNow) != tt.due || geo.Last == nil {
-			t.Errorf("%s: %+v", tt.name, geo)
-		}
-	}
-
 	// 周期取自发布的配置：关闭自动更新时为 off，没有下次更新。
 	writeCoreConfig(t, i, "geo-auto-update: false\n")
 	if geo := geoSchedule(t, i); geo.Period != settings.PeriodOff || !geo.Next.IsZero() {
@@ -182,25 +162,19 @@ func TestUpdateRunsDueTasks(t *testing.T) {
 		t.Errorf("second run: %+v, %v", res, err)
 	}
 
-	// 内核更新过 geo 数据后到期核对；来源不是 GitHub release 资产的不核对（也不访问网络）。
-	writeCoreConfig(t, i, "geox-url:\n  geosite: http://127.0.0.1:1/geosite.dat\n")
-	writeGeoFile(t, i, "GeoSite.dat", testNow.Add(-time.Hour))
-	res, err = i.Update(ctx, UpdateOptions{})
-	if err != nil || len(res.Tasks) != 1 || res.Tasks[0] != TaskGeo || stepNames(res) != "geo,kernel" ||
-		res.Steps[0].Status != StepOK || res.Steps[0].Message != "GeoSite.dat from a custom source, not verified" {
-		t.Fatalf("geo due: %+v, %v", res, err)
-	}
-	if res, err = i.Update(ctx, UpdateOptions{}); err != nil || len(res.Tasks) != 0 {
-		t.Errorf("geo verified twice: %+v, %v", res, err)
+	// geo 数据从不到期；内核没有运行时手动执行 geo 任务跳过（测试中没有运行的内核）。
+	writeGeoFile(t, i, "GeoSite.dat", testNow.Add(-30*24*time.Hour))
+	if res, err = i.Update(ctx, UpdateOptions{}); err != nil || len(res.Tasks) != 0 || len(res.Steps) != 0 {
+		t.Errorf("geo due: %+v, %v", res, err)
 	}
 
-	// 手动执行不看周期：订阅任务抓取全部订阅（包括不自动更新的），geo 任务记入状态文件。
+	// 手动执行不看周期：订阅任务抓取全部订阅（包括不自动更新的）。
 	res, _ = i.Update(ctx, UpdateOptions{Tasks: []string{TaskSubscription, TaskGeo}})
 	if got := stepNames(res); got != "sub home,sub spare,geo,kernel" {
 		t.Errorf("manual: %+v", res.Steps)
 	}
-	if run, ok := tunSwitch(t, i).Updates[TaskGeo]; !ok || !run.At.Equal(testNow) {
-		t.Errorf("geo run not recorded: %+v", tunSwitch(t, i).Updates)
+	if s := res.Steps[2]; s.Status != StepSkipped {
+		t.Errorf("geo without a kernel: %+v", s)
 	}
 	if _, err := i.Update(ctx, UpdateOptions{Tasks: []string{"self"}}); err == nil {
 		t.Error("unknown task accepted")
@@ -236,7 +210,7 @@ func TestSyncTimers(t *testing.T) {
 		t.Errorf("calls = %q", h.calls)
 	}
 	// 全部订阅都不自动更新、配置中也关闭了 geo 数据的自动更新时，tunlr-update.timer 仍然启用：面板随时
-	// 可以让内核更新 geo 数据，之后要核对。
+	// 可以升级内核，之后要核对。
 	editList(t, i, func(l *subscription.List) { l.Subscriptions[0].Update = settings.PeriodOff })
 
 	writeCoreConfig(t, i, "geo-auto-update: false\n")
