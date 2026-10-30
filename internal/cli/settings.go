@@ -26,7 +26,7 @@ func (a *app) newSettingsCommand() *cobra.Command {
 		Short: "Show tunlr's own settings; edit changes them",
 		Long: "tunlr's own settings live in /etc/tunlr/settings.yaml: the GitHub mirror and the default\n" +
 			"User-Agent for subscriptions. The mihomo configuration is changed with tunlr config edit,\n" +
-			"and a subscription's geo data settings with tunlr update set geo <sub>. tunlr settings edit\n" +
+			"and a subscription's geo data settings with tunlr sub set <sub> --geo-update. tunlr settings edit\n" +
 			"opens the file in an editor, checks it, and applies the configuration when a change\n" +
 			"affects it.",
 		Args: usageArgs(cobra.NoArgs),

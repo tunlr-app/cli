@@ -19,7 +19,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
-// deviceEditView 是 devices name/forget、filter device 在 --json 输出中的形式。
+// deviceEditView 是 devices name/route/forget 在 --json 输出中的形式。
 type deviceEditView struct {
 	Device   setup.Device     `json:"device"`
 	Plan     *planView        `json:"plan,omitempty"`
@@ -31,18 +31,18 @@ func (a *app) newDevicesCommand() *cobra.Command {
 	var all bool
 	cmd := &cobra.Command{
 		Use:   "devices",
-		Short: "List the LAN devices that use this server; name them",
+		Short: "List the LAN devices that use this server; name, route, forget",
 		Long: "Devices that use this server as their gateway or HTTP/SOCKS5 proxy are recorded as they send\n" +
 			"traffic (nftables table inet " + netfilter.DevicesTable + ") and forgotten after 24 hours without any.\n" +
 			"A device is online if it sent traffic in the last 5 minutes. Names come from tunlr devices name,\n" +
 			"or from the router's reverse DNS. The list starts empty after a reboot.\n\n" +
 			"All their traffic goes through mihomo and follows the rules (proxy), unless the device is set\n" +
-			"to go direct for everything with tunlr filter device.",
+			"to go direct for everything with tunlr devices route.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.listDevices(cmd.Context(), all) },
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "also list other devices on the LAN (from the neighbor table)")
-	cmd.AddCommand(a.newDevicesNameCommand(), a.withFullDiff(a.newDevicesForgetCommand()))
+	cmd.AddCommand(a.newDevicesNameCommand(), a.withFullDiff(a.newDevicesRouteCommand()), a.withFullDiff(a.newDevicesForgetCommand()))
 	return cmd
 }
 
@@ -83,10 +83,10 @@ func (a *app) listDevices(ctx context.Context, all bool) error {
 		for _, d := range list.Devices {
 			if d.RuleIP != "" && d.Route == setup.RouteDirect {
 				fmt.Fprintf(&b, "\n%s %s now has the address %s, but its rule still matches %s;\n"+
-					"tunlr filter device %s direct updates it.", a.style.warn("Warning:"), deviceLabel(d), d.IP, d.RuleIP, deviceRef(d))
+					"tunlr devices route %s direct updates it.", a.style.warn("Warning:"), deviceLabel(d), d.IP, d.RuleIP, deviceRef(d))
 			}
 		}
-		fmt.Fprintln(&b, "\n(tunlr filter device <device> direct sends a device's traffic directly; --all also lists other LAN devices)")
+		fmt.Fprintln(&b, "\n(tunlr devices route <device> direct sends a device's traffic directly; --all also lists other LAN devices)")
 		_, err := a.stdout.Write(b.Bytes())
 		return err
 	})
@@ -235,6 +235,60 @@ func (a *app) newDevicesNameCommand() *cobra.Command {
 				}
 				return fmt.Sprintf("%s is now called %s.", d.IP, name)
 			})
+		},
+	}
+}
+
+func (a *app) newDevicesRouteCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "route [device] [proxy|direct]",
+		Short: "Set whether a device follows the rules (proxy) or goes direct for everything",
+		Long: "The device is an address, a MAC address or a name (see tunlr devices). An address no device\n" +
+			"has used yet can be set in advance. The rule matches the device's address (mihomo cannot match\n" +
+			"by MAC address), so reserve the address for the device on your router. Setting it to proxy\n" +
+			"again removes the rule. The configuration is published after the diff is confirmed. The rule\n" +
+			"goes before all others (tunlr filter lists it with the other filters).",
+		Args: usageArgs(cobra.MaximumNArgs(2)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 2 && args[1] != setup.RouteProxy && args[1] != setup.RouteDirect {
+				return usageErrorf("the route must be proxy or direct, got %q", args[1])
+			}
+			if len(args) < 2 && !a.interactive() {
+				return usageErrorf("devices route needs the device and the route (proxy or direct)")
+			}
+			if err := a.requireConfirmation("devices route"); err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			d, err := a.chooseDevice(ctx, "devices route", args)
+			if stop, err := a.cancelled(err); stop {
+				return err
+			}
+			route := ""
+			if len(args) == 2 {
+				route = args[1]
+			} else {
+				routes := []string{setup.RouteProxy, setup.RouteDirect}
+				initial := 1
+				if d.Route == setup.RouteDirect {
+					initial = 0
+				}
+				k, err := a.prompt.Choose(ctx, "How should "+deviceLabel(*d)+" go out?", []string{
+					"proxy   follow the rules (default)", "direct  everything direct, no proxies"}, initial)
+				if stop, err := a.cancelled(err); stop {
+					return err
+				}
+				route = routes[k]
+			}
+			return a.editDevice(ctx, d, setup.DeviceEdit{Route: &route}, "Publish the configuration with this device's route?",
+				func(d setup.Device) string {
+					if route == setup.RouteDirect {
+						return fmt.Sprintf("%s now goes direct for everything.\n"+
+							"The rule matches %s: reserve this address for the device on your router (DHCP reservation)\n"+
+							"so it keeps it.", deviceLabel(d), d.IP)
+					}
+					return fmt.Sprintf("%s follows the rules again.", deviceLabel(d))
+				})
 		},
 	}
 }

@@ -59,7 +59,7 @@ type State struct {
 	// 开关都关闭时保留，下次开启时作为默认的选择。只由 proxy lan on、panel lan on 修改。
 	LANAccess *LANAccess `json:"lan_access,omitempty"`
 
-	// Devices 是用户起过名称或设置过走法的局域网设备。只由 tunlr devices、tunlr filter device 修改。
+	// Devices 是用户起过名称或设置过走法的局域网设备。只由 tunlr devices 修改。
 	Devices []Device `json:"devices,omitempty"`
 
 	// Filter 是全局过滤项，零值为都关闭。只由 tunlr filter 修改。

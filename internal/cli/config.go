@@ -72,7 +72,7 @@ func writeDefaults(w io.Writer, vs []managedView) {
 		kind, how := "Defaults", "a mixin can override these"
 		switch {
 		case v.Name == pipeline.ManagedDefaults:
-			kind, how = "Fallbacks", "used where the subscription does not set them; per subscription: tunlr update set geo <sub>; "+how
+			kind, how = "Fallbacks", "used where the subscription does not set them; per subscription: tunlr sub set <sub> --geo-update, --geo-url; "+how
 		case strings.Contains(v.Content, "\n  rules:"):
 			how += ", remove rules with tunlr.rules.delete"
 		}

@@ -7,9 +7,11 @@ stdout 'Usage:'
 
 # 按分组显示；completion 和 help 子命令可用但不显示
 stdout '^Overview:$'
+stdout '^Setup:$'
 stdout '^Configuration:$'
 stdout '^Network:$'
-stdout '^Kernel:$'
+stdout '^Kernel and panel:$'
+stdout '^Maintenance:$'
 ! stdout '^\s+(completion|help)\s'
 ! stdout 'Additional Commands'
 exec tunlr completion bash
@@ -44,3 +46,5 @@ exitcode 2 tunlr update show
 exitcode 2 tunlr update sub
 exitcode 2 tunlr config rollback --list
 stderr 'unknown flag: --list'
+exitcode 2 tunlr update set sub main 1d
+exitcode 2 tunlr filter device 192.168.1.50 direct

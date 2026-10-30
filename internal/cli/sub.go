@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/settings"
+	"github.com/tunlr-app/cli/pkg/core/setup"
 	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
@@ -560,18 +562,30 @@ const (
 )
 
 func (a *app) newSubSetCommand() *cobra.Command {
-	var source, userAgent, update string
+	var source, userAgent, update, geoUpdate string
+	var geoURLs []string
 	cmd := &cobra.Command{
 		Use:   "set [name]",
 		Short: "Change a subscription: its source, User-Agent, fetch period, proxy filter or geo data",
 		Long: "Change a saved subscription. --source and --user-agent fetch it again and are saved only\n" +
-			"if that succeeds (the same as tunlr sub update <name> --source/--user-agent); --update sets\n" +
-			"how often it is fetched (the same as tunlr update set sub). Without flags, choose the\n" +
-			"subscription and what to change (needs a terminal); the proxy filter opens\n" +
-			"tunlr config edit <name>/10-filter, and the geo data goes on as tunlr update set geo <name>.",
+			"if that succeeds (the same as tunlr sub update <name> --source/--user-agent).\n\n" +
+			"--update sets how often it is fetched: a number of hours or days such as 6h, 1d or 7d, off\n" +
+			"for never, or default (" + subscription.DefaultUpdate + "). Every saved subscription is fetched on its own period;\n" +
+			"only the active one's configuration is published.\n\n" +
+			"--geo-update and --geo-url change its geo data settings: how often mihomo itself updates the\n" +
+			"geo data (off for never) and, with --geo-url geoip|geosite|mmdb|asn=<url>, where it downloads\n" +
+			"each file; default undoes the change. They are written to mixin.d/<name>/" + setup.GeoMixinFile + ",\n" +
+			"override what the subscription sets and apply only while it is active. What is not set there\n" +
+			"comes from the subscription, or else from tunlr's built-in fallbacks (tunlr:defaults:\n" +
+			setup.GeoDefaultUpdate + ", the official files). The configuration is then published if the\n" +
+			"subscription is active (--yes when there is no terminal).\n\n" +
+			"Without flags, choose the subscription and what to change (needs a terminal); the proxy\n" +
+			"filter opens tunlr config edit <name>/10-filter.",
 		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			flags := cmd.Flags().Changed("source") || cmd.Flags().Changed("user-agent") || cmd.Flags().Changed("update")
+			changed := cmd.Flags().Changed
+			geo := changed("geo-update") || changed("geo-url")
+			flags := changed("source") || changed("user-agent") || changed("update") || geo
 			if (!flags || len(args) == 0) && !a.interactive() {
 				return usageErrorf("sub set needs the name of a subscription and what to change, e.g. tunlr sub set home --update 6h")
 			}
@@ -588,8 +602,13 @@ func (a *app) newSubSetCommand() *cobra.Command {
 			if !flags {
 				return a.changeSubscription(cmd, name)
 			}
-			if cmd.Flags().Changed("update") {
-				if err := a.setSubUpdate(cmd, []string{name, update}); err != nil {
+			if changed("update") {
+				if err := a.setSubUpdate(cmd, name, cmp.Or(update, "default")); err != nil {
+					return err
+				}
+			}
+			if geo {
+				if err := a.setGeoUpdate(cmd, name, geoUpdate, geoURLs); err != nil {
 					return err
 				}
 			}
@@ -615,6 +634,8 @@ func (a *app) newSubSetCommand() *cobra.Command {
 	cmd.Flags().StringVar(&source, "source", "", "a new source: a URL, a file, or - (standard input)")
 	cmd.Flags().StringVar(&userAgent, "user-agent", "", "the User-Agent sent when fetching it (\"\" restores the default)")
 	cmd.Flags().StringVar(&update, "update", "", updateFlagHelp+", or default")
+	cmd.Flags().StringVar(&geoUpdate, "geo-update", "", "how often mihomo updates the geo data while this subscription is active: hours or days, off, or default")
+	cmd.Flags().StringArrayVar(&geoURLs, "geo-url", nil, "where mihomo downloads a geo file, as <file>=<url> or <file>=default (repeatable)")
 	return cmd
 }
 
@@ -652,11 +673,11 @@ func (a *app) changeSubscription(cmd *cobra.Command, name string) error {
 	var opts subscription.UpdateOptions
 	switch what, _, _ := strings.Cut(options[k], " ("); what {
 	case setPeriod:
-		return a.setSubUpdate(cmd, []string{name})
+		return a.setSubUpdate(cmd, name, "")
 	case setFilter:
 		return a.editMixin(cmd, name+"/"+config.FilterMixinFile)
 	case setGeo:
-		return a.setGeoUpdate(cmd, []string{name}, nil)
+		return a.setGeoUpdate(cmd, name, "", nil)
 	case setSource:
 		s, err := a.prompt.Input(ctx, "New URL or file for "+strconv.Quote(name),
 			"It is fetched now and saved only if that works.", "", checkSource)

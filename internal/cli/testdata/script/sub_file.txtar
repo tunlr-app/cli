@@ -49,7 +49,7 @@ stdout '^ok      home: 1 proxies'
 stdin airport2.yaml
 exec tunlr sub add piped -
 stdout 'not updated automatically \(it was read from standard input\)'
-exitcode 2 tunlr update set sub piped 1d
+exitcode 2 tunlr sub set piped --update 1d
 stderr 'cannot be updated automatically'
 exec tunlr sub update
 stdout '^ok      home'

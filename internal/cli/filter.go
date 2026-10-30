@@ -26,9 +26,10 @@ type filterEditView struct {
 func (a *app) newFilterCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "filter",
-		Short: "Show and set which traffic skips the subscription's rules (devices, QUIC, ports)",
+		Short: "Show and set which traffic skips the subscription's rules (networks, QUIC, ports)",
 		Long: "Filters are rules placed before all others (the managed mixin tunlr:filter), in this order:\n" +
-			"  device   a LAN device set to direct goes direct for everything, unaffected by the rest\n" +
+			"  device   a LAN device set to direct (tunlr devices route) goes direct for everything,\n" +
+			"           unaffected by the rest\n" +
 			"  source   so does traffic from an address range (e.g. a Docker network, a VPN subnet)\n" +
 			"  quic     UDP port 443 is rejected, so browsers use TCP instead of QUIC (which many proxies\n" +
 			"           carry poorly); sites that go direct fall back to TCP too\n" +
@@ -53,7 +54,7 @@ func (a *app) newFilterCommand() *cobra.Command {
 	}
 	ports.AddCommand(a.withFullDiff(a.newFilterPortsCommand(true)), a.withFullDiff(a.newFilterPortsCommand(false)),
 		a.withFullDiff(a.newFilterPortsSetCommand()))
-	cmd.AddCommand(a.withFullDiff(a.newFilterDeviceCommand()), a.newFilterSourceCommand(), quic, ports)
+	cmd.AddCommand(a.newFilterSourceCommand(), quic, ports)
 	return cmd
 }
 
@@ -65,7 +66,7 @@ func (a *app) showFilter() error {
 	return a.render(s, func() error {
 		w := a.stdout
 		if len(s.Direct) == 0 {
-			fmt.Fprintf(w, "Direct devices:  %s (tunlr filter device <device> direct)\n", a.style.dim("none"))
+			fmt.Fprintf(w, "Direct devices:  %s (tunlr devices route <device> direct)\n", a.style.dim("none"))
 		} else {
 			names := make([]string, len(s.Direct))
 			for i, d := range s.Direct {
@@ -74,7 +75,7 @@ func (a *app) showFilter() error {
 					names[i] = fmt.Sprintf("%s (%s)", d.Name, d.IP)
 				}
 			}
-			fmt.Fprintf(w, "Direct devices:  %s (tunlr filter device <device> proxy)\n", a.style.warn(strings.Join(names, ", ")))
+			fmt.Fprintf(w, "Direct devices:  %s (tunlr devices route <device> proxy)\n", a.style.warn(strings.Join(names, ", ")))
 		}
 		if len(s.Sources) == 0 {
 			fmt.Fprintf(w, "Direct sources:  %s (tunlr filter source add <network>)\n", a.style.dim("none"))
@@ -130,59 +131,6 @@ func (a *app) describeFilter(s *setup.FilterStatus) string {
 		return a.style.dim("none")
 	}
 	return strings.Join(parts, a.style.dim(" · "))
-}
-
-func (a *app) newFilterDeviceCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "device [device] [proxy|direct]",
-		Short: "Set whether a LAN device follows the rules (proxy) or goes direct for everything",
-		Long: "The device is an address, a MAC address or a name (see tunlr devices). An address no device\n" +
-			"has used yet can be set in advance. The rule matches the device's address (mihomo cannot match\n" +
-			"by MAC address), so reserve the address for the device on your router. Setting it to proxy\n" +
-			"again removes the rule. The configuration is published after the diff is confirmed.",
-		Args: usageArgs(cobra.MaximumNArgs(2)),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 2 && args[1] != setup.RouteProxy && args[1] != setup.RouteDirect {
-				return usageErrorf("the route must be proxy or direct, got %q", args[1])
-			}
-			if len(args) < 2 && !a.interactive() {
-				return usageErrorf("filter device needs the device and the route (proxy or direct)")
-			}
-			if err := a.requireConfirmation("filter device"); err != nil {
-				return err
-			}
-			ctx := cmd.Context()
-			d, err := a.chooseDevice(ctx, "filter device", args)
-			if stop, err := a.cancelled(err); stop {
-				return err
-			}
-			route := ""
-			if len(args) == 2 {
-				route = args[1]
-			} else {
-				routes := []string{setup.RouteProxy, setup.RouteDirect}
-				initial := 1
-				if d.Route == setup.RouteDirect {
-					initial = 0
-				}
-				k, err := a.prompt.Choose(ctx, "How should "+deviceLabel(*d)+" go out?", []string{
-					"proxy   follow the rules (default)", "direct  everything direct, no proxies"}, initial)
-				if stop, err := a.cancelled(err); stop {
-					return err
-				}
-				route = routes[k]
-			}
-			return a.editDevice(ctx, d, setup.DeviceEdit{Route: &route}, "Publish the configuration with this device's route?",
-				func(d setup.Device) string {
-					if route == setup.RouteDirect {
-						return fmt.Sprintf("%s now goes direct for everything.\n"+
-							"The rule matches %s: reserve this address for the device on your router (DHCP reservation)\n"+
-							"so it keeps it.", deviceLabel(d), d.IP)
-					}
-					return fmt.Sprintf("%s follows the rules again.", deviceLabel(d))
-				})
-		},
-	}
 }
 
 func (a *app) newFilterSourceCommand() *cobra.Command {

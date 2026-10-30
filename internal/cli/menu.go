@@ -20,12 +20,16 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
-// 主菜单的分类（第二级），按用户要做的事划分，不按命令树。
+// 主菜单的分类（第二级），按用户要做的事划分，不按命令树。每个分类不超过 7 项，第一级连同状态和
+// 退出共 10 行。
 const (
-	groupConfig   = "Subs & config"
+	groupSubs     = "Subscriptions"
+	groupConfig   = "Config"
 	groupTraffic  = "Traffic"
+	groupFilters  = "Filters"
 	groupDevices  = "LAN devices"
-	groupCore     = "mihomo & panel"
+	groupCore     = "mihomo"
+	groupPanel    = "Panel"
 	groupMaintain = "Maintenance"
 )
 
@@ -50,6 +54,8 @@ type menuItem struct {
 	// note 是分类右侧的当前状态，也是进入分类后标题下的说明。
 	note  string
 	group string
+	// nouns 是分类对应的顶层命令，显示在光标停在分类上时的命令行。
+	nouns []string
 	args  []string
 	back  bool
 	quit  bool
@@ -217,8 +223,11 @@ func (m *menuModel) hint() string {
 	if i, ok := m.list.Hovered(); ok && i < len(m.items) {
 		it := m.items[i]
 		desc = it.desc
-		if it.args != nil {
+		switch {
+		case it.args != nil:
 			line = commandLine(it.args)
+		case len(it.nouns) > 0:
+			line = "$ tunlr " + strings.Join(it.nouns, "  ·  tunlr ")
 		}
 	}
 	if m.size.Width > 1 {
@@ -466,15 +475,21 @@ func (a *app) menuItems(group string, d menuData) (title, note string, items []m
 			status, diagnose, {label: menuQuit, quit: true}}
 	}
 	groups := []menuItem{
-		{label: groupConfig, group: groupConfig, note: a.configNote(s, d.subs),
-			desc: "Add, switch and change subs; mixins; publish or roll back the config"},
-		{label: groupTraffic, group: groupTraffic, note: a.trafficNote(s),
-			desc: "What goes through mihomo: TUN, gateway mode, the proxy port and filters"},
-		{label: groupDevices, group: groupDevices, note: a.describeDevicesNote(s.Devices),
+		{label: groupSubs, group: groupSubs, note: a.describeSubscriptions(s, d.subs), nouns: []string{"sub"},
+			desc: "Add, switch, change, fetch and remove subs"},
+		{label: groupConfig, group: groupConfig, note: a.describeRevision(s), nouns: []string{"config", "update"},
+			desc: "Your mixins on top of the sub; publish or roll back the config; geo data"},
+		{label: groupTraffic, group: groupTraffic, note: a.trafficNote(s), nouns: []string{"tun", "proxy"},
+			desc: "How traffic reaches mihomo: TUN, gateway mode and the proxy port"},
+		{label: groupFilters, group: groupFilters, note: a.describeFilterNote(s.Filter), nouns: []string{"filter"},
+			desc: "What skips mihomo: QUIC, ports and networks sent direct"},
+		{label: groupDevices, group: groupDevices, note: a.describeDevicesNote(s.Devices), nouns: []string{"devices"},
 			desc: "Devices on the LAN that use this server: names and how each one goes"},
-		{label: groupCore, group: groupCore, note: a.coreNote(s),
-			desc: "Start, stop, logs, upgrades and geo data; how to open the panel"},
-		{label: groupMaintain, group: groupMaintain, note: a.describeBackups(d.backups),
+		{label: groupCore, group: groupCore, note: a.describeService(s), nouns: []string{"core"},
+			desc: "Start, stop, logs, upgrade and roll back the kernel"},
+		{label: groupPanel, group: groupPanel, note: a.panelNote(s), nouns: []string{"panel"},
+			desc: "How to open the panel, who on the LAN can, and its API secret"},
+		{label: groupMaintain, group: groupMaintain, note: a.describeBackups(d.backups), nouns: []string{"settings", "backup", "doctor", "init"},
 			desc: "Backups, tool settings, diagnostics and repair"},
 	}
 	if group == "" {
@@ -488,20 +503,26 @@ func (a *app) menuItems(group string, d menuData) (title, note string, items []m
 	}
 	title, note = "tunlr › "+group, groups[i].note
 	switch group {
+	case groupSubs:
+		items = a.subsItems(d)
 	case groupConfig:
 		items = a.configItems(d)
 	case groupTraffic:
 		items = a.trafficItems(s)
+	case groupFilters:
+		items = a.filterItems(s)
 	case groupDevices:
 		items = []menuItem{
 			op("List devices", "Devices that use this server, their names and how they go", "devices"),
 			op("List all LAN devices", "Including those that do not use this server", "devices", "--all"),
 			op("Name a device", "Choose a device, then enter a name; an empty name removes it", "devices", "name"),
-			op("Route a device", "Through the proxies (it follows the rules) or direct for everything", "filter", "device"),
+			op("Route a device", "Through the proxies (it follows the rules) or direct for everything", "devices", "route"),
 			op("Forget a device", "Remove its name and setting; it follows the rules again", "devices", "forget"),
 		}
 	case groupCore:
 		items = a.coreItems(s)
+	case groupPanel:
+		items = a.panelItems(s)
 	case groupMaintain:
 		items = []menuItem{
 			op("Back up to a file", "Settings, mixins and subs, to restore here or on another server", "backup", "create"),
@@ -514,7 +535,7 @@ func (a *app) menuItems(group string, d menuData) (title, note string, items []m
 	return title, note, append(items, menuItem{label: menuBack, back: true})
 }
 
-func (a *app) configItems(d menuData) []menuItem {
+func (a *app) subsItems(d menuData) []menuItem {
 	var items []menuItem
 	items = append(items, op("Add a sub", "Name, URL or file, fetch period and an optional proxy filter; the first one becomes active", "sub", "add"))
 	if len(d.subs) > 1 {
@@ -528,23 +549,26 @@ func (a *app) configItems(d menuData) []menuItem {
 	if len(d.subs) > 1 {
 		items = append(items, op("Remove a sub", "Any but the active one", "sub", "remove"))
 	}
-	items = append(items,
+	return append(items, op("List subs", "Proxies, last fetch, period, usage and expiry of each sub", "sub"))
+}
+
+func (a *app) configItems(d menuData) []menuItem {
+	s := d.status
+	items := []menuItem{
 		op("Edit a mixin", "Your own changes on top of the sub; checked with mihomo -t, then published", "config", "edit"),
-		op("Publish config", "Compose and check the config, show the diff, publish after you confirm", "config", "apply"))
+		op("Publish config", "Compose and check the config, show the diff, publish after you confirm", "config", "apply"),
+	}
 	if d.revisions > 0 {
 		items = append(items, op("Roll back config", "Publish an earlier revision again", "config", "rollback"))
 	}
-	return append(items,
-		op("List subs", "Proxies, last fetch, period, usage and expiry of each sub", "sub"),
-		op("Config details", "The published config, its history and the mixins", "config"))
+	if s.Service != nil && s.Service.Active() {
+		items = append(items, op("Update geo data now", "mihomo downloads it from geox-url now; it also does so by itself on its period", "update", "run", "geo"))
+	}
+	return append(items, op("Config details", "The published config, its history and the mixins", "config"))
 }
 
 func (a *app) trafficItems(s *setup.Status) []menuItem {
 	tun := s.Tun != nil && s.Tun.Switch != "off"
-	f := s.Filter
-	if f == nil {
-		f = &setup.FilterStatus{}
-	}
 	items := []menuItem{
 		toggle(tun,
 			op("Turn TUN off", "This server's own traffic no longer goes through mihomo", "tun", "off"),
@@ -559,10 +583,21 @@ func (a *app) trafficItems(s *setup.Status) []menuItem {
 	if s.ProxyLAN {
 		items = append(items, op("Change LAN interfaces", lanInterfacesNote, "proxy", "lan", "on"))
 	}
-	items = append(items,
+	return append(items,
+		op("TUN details", "TUN, gateway mode and the checks behind them", "tun"),
+		op("Proxy port details", "The address other devices enter as their proxy", "proxy"))
+}
+
+func (a *app) filterItems(s *setup.Status) []menuItem {
+	f := s.Filter
+	if f == nil {
+		f = &setup.FilterStatus{}
+	}
+	items := []menuItem{
 		toggle(f.QUIC,
 			op("Allow QUIC", "Browsers may use QUIC (HTTP/3) again", "filter", "quic", "off"),
-			op("Block QUIC", "Browsers fall back to TCP, which proxies better", "filter", "quic", "on")))
+			op("Block QUIC", "Browsers fall back to TCP, which proxies better", "filter", "quic", "on")),
+	}
 	if f.Ports {
 		items = append(items,
 			op("Change proxied ports", "Now: "+strings.Join(f.PortList, ","), "filter", "ports", "set"),
@@ -574,10 +609,7 @@ func (a *app) trafficItems(s *setup.Status) []menuItem {
 	if len(f.Sources) > 0 {
 		items = append(items, op("Stop sending a network direct", "Traffic from that range follows the rules again", "filter", "source", "remove"))
 	}
-	return append(items,
-		op("TUN details", "TUN, gateway mode and the checks behind them", "tun"),
-		op("Proxy port details", "The address other devices enter as their proxy", "proxy"),
-		op("Filter details", "Devices and networks sent direct, QUIC and ports", "filter"))
+	return append(items, op("Filter details", "Devices and networks sent direct, QUIC and ports", "filter"))
 }
 
 func (a *app) coreItems(s *setup.Status) []menuItem {
@@ -595,20 +627,21 @@ func (a *app) coreItems(s *setup.Status) []menuItem {
 	if canRollBackKernel(s.Kernel) {
 		items = append(items, op("Roll back mihomo", "To the previous known-good version kept on disk", "core", "rollback"))
 	}
-	if s.Service != nil && s.Service.Active() {
-		items = append(items, op("Update geo data now", "mihomo downloads it from geox-url now; it also does so by itself on its period", "update", "run", "geo"))
-	}
-	items = append(items,
-		op("Open the panel", "How to reach it: the SSH tunnel and the link", "panel"),
+	return append(items, op("mihomo details", "Kernel versions kept on disk and the service", "core"))
+}
+
+func (a *app) panelItems(s *setup.Status) []menuItem {
+	items := []menuItem{
 		toggle(s.PanelLAN,
 			op("Close panel to LAN", "Only this server can reach the panel again; mihomo restarts", "panel", "lan", "off"),
-			op("Open panel to LAN", "Devices on the LAN can open the panel; mihomo restarts", "panel", "lan", "on")))
+			op("Open panel to LAN", "Devices on the LAN can open the panel; mihomo restarts", "panel", "lan", "on")),
+	}
 	if s.PanelLAN {
 		items = append(items, op("Change LAN interfaces", lanInterfacesNote, "panel", "lan", "on"))
 	}
 	return append(items,
 		op("New API secret", "Panels that are open must connect again with the new link", "panel", "reset-secret"),
-		op("mihomo details", "Kernel versions kept on disk and the service", "core"))
+		op("Open the panel", "How to reach it: the SSH tunnel and the link", "panel"))
 }
 
 // lanInterfacesNote 是菜单中修改放行网卡一项的说明。
@@ -668,12 +701,7 @@ func (a *app) menuLabels(items []menuItem) []string {
 	return labels
 }
 
-// configNote 是“Subs & config”的状态：启用的订阅和发布的修订。
-func (a *app) configNote(s *setup.Status, subs []subscription.Entry) string {
-	return a.describeSubscriptions(s, subs) + a.style.dim(" · ") + a.describeRevision(s)
-}
-
-// trafficNote 是“Traffic”的状态：TUN 与网关、代理端口、过滤。
+// trafficNote 是“Traffic”的状态：TUN 与网关、代理端口的局域网访问。
 func (a *app) trafficNote(s *setup.Status) string {
 	parts := []string{}
 	if s.Tun != nil {
@@ -683,17 +711,16 @@ func (a *app) trafficNote(s *setup.Status) string {
 	if s.ProxyLAN {
 		proxy += a.throughNote(s.LANAccess)
 	}
-	parts = append(parts, proxy, "filters "+a.describeFilterNote(s.Filter))
-	return strings.Join(parts, a.style.dim(" · "))
+	return strings.Join(append(parts, proxy), a.style.dim(" · "))
 }
 
-// coreNote 是“mihomo & panel”的状态：内核服务和面板的局域网访问。
-func (a *app) coreNote(s *setup.Status) string {
-	panel := "panel " + a.describePanelLAN(s.PanelLAN)
+// panelNote 是“Panel”的状态：面板的局域网访问。
+func (a *app) panelNote(s *setup.Status) string {
+	panel := a.describePanelLAN(s.PanelLAN)
 	if s.PanelLAN {
 		panel += a.throughNote(s.LANAccess)
 	}
-	return a.describeService(s) + a.style.dim(" · ") + panel
+	return panel
 }
 
 // throughNote 是菜单状态行中放行的入口，如 “ (ens3, containers)”。

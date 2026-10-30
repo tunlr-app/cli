@@ -198,16 +198,18 @@ func (a *app) newRootCommand() *cobra.Command {
 			return c.Help()
 		}})
 
-	// 命令树见 docs/DESIGN.md 第 10 节：顶层只放领域名词和总览命令，--help 按分组显示。
+	// 命令树见 docs/DESIGN.md 第 10 节：顶层只放领域名词和总览命令，--help 按分组显示，分组和顺序与主菜单
+	// 的分类一致。
 	groups := []struct {
 		id, title string
 		cmds      []*cobra.Command
 	}{
 		{"overview", "Overview:", []*cobra.Command{a.newStatusCommand(), a.newDoctorCommand()}},
 		{"setup", "Setup:", []*cobra.Command{a.newInitCommand(), a.newUninstallCommand()}},
-		{"config", "Configuration:", []*cobra.Command{a.newConfigCommand(), a.newSubCommand(), a.newUpdateCommand(), a.newSettingsCommand(), a.newBackupCommand()}},
-		{"network", "Network:", []*cobra.Command{a.newTunCommand(), a.newProxyCommand(), a.newPanelCommand(), a.newDevicesCommand(), a.newFilterCommand()}},
-		{"kernel", "Kernel:", []*cobra.Command{a.newCoreCommand()}},
+		{"config", "Configuration:", []*cobra.Command{a.newSubCommand(), a.newConfigCommand(), a.newUpdateCommand()}},
+		{"network", "Network:", []*cobra.Command{a.newTunCommand(), a.newProxyCommand(), a.newFilterCommand(), a.newDevicesCommand()}},
+		{"kernel", "Kernel and panel:", []*cobra.Command{a.newCoreCommand(), a.newPanelCommand()}},
+		{"maintenance", "Maintenance:", []*cobra.Command{a.newSettingsCommand(), a.newBackupCommand()}},
 	}
 	for _, g := range groups {
 		root.AddGroup(&cobra.Group{ID: g.id, Title: g.title})

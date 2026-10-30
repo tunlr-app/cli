@@ -30,7 +30,7 @@ const GeoMixinFile = "20-geo.yaml"
 // GeoURLKeys 是 geox-url 中的键，与内核相同。
 var GeoURLKeys = []string{"geoip", "geosite", "mmdb", "asn"}
 
-// GeoChange 是对一个订阅的 geo 数据设置的修改（tunlr update set geo <订阅>）。
+// GeoChange 是对一个订阅的 geo 数据设置的修改（tunlr sub set <订阅> --geo-update、--geo-url）。
 type GeoChange struct {
 	// Update 是内核更新 geo 数据的周期，写法同订阅（off 为不更新），GeoDefault 恢复默认；为空时不改。
 	Update string
@@ -135,7 +135,7 @@ func (i *Installer) SetGeo(ctx context.Context, sub string, ch GeoChange) (*GeoW
 	}
 	head := "geo data settings for subscription " + sub + ", applied only while it is active: they override\n" +
 		"what the subscription sets; what is not here comes from the subscription, or else from tunlr's fallbacks\n" +
-		"(tunlr:defaults, listed by tunlr config). Written by tunlr update set geo " + sub + "; you may edit it too."
+		"(tunlr:defaults, listed by tunlr config). Written by tunlr sub set " + sub + " --geo-update, --geo-url; you may edit it too."
 	if err := writeGeoMixin(i.Layout.MixinDir(), own, head, values); err != nil {
 		return nil, err
 	}

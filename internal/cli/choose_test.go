@@ -160,20 +160,20 @@ func TestRollbackChooses(t *testing.T) {
 	}
 }
 
-func TestUpdateSetChooses(t *testing.T) {
+func TestSubSetChoosesPeriod(t *testing.T) {
 	et := newEditTest(t)
 	addSubscriptions(t, et.a, "main", "main", "backup")
-	// 先选订阅，再选周期。
-	et.prompt.picks = []string{"backup", "every 6 hours"}
-	et.run(0, "update", "set")
+	// 先选订阅，再选改什么，再选周期。
+	et.prompt.picks = []string{"backup", setPeriod, "every 6 hours"}
+	et.run(0, "sub", "set")
 	if got := subscriptionList(t, et.a).Subscriptions[1].Update; got != "6h" {
 		t.Errorf("backup update = %q\n%s", got, et.stdout)
 	}
 
-	// 取消时什么都不改。
+	// 在选周期时取消：什么都不改。
 	et.stdout.Reset()
-	et.prompt.picks = []string{""}
-	et.run(0, "update", "set")
+	et.prompt.picks = []string{"backup", setPeriod, ""}
+	et.run(0, "sub", "set")
 	if !strings.Contains(et.stdout.String(), "Cancelled") {
 		t.Errorf("output:\n%s", et.stdout)
 	}
