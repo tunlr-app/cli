@@ -40,6 +40,9 @@ type Settings struct {
 // PeriodOff 表示不定时更新。
 const PeriodOff = "off"
 
+// SuggestedMirror 是 init 提问时预填的 GitHub 镜像（还没有设置时），与 install.sh 的默认值相同。
+const SuggestedMirror = "https://gh-proxy.com/"
+
 // maxPeriod 是更新周期的上限，防止写错单位（如把小时写成天）后几乎永不更新而不自知。
 const maxPeriod = 365 * 24 * time.Hour
 

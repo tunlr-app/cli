@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -196,6 +197,65 @@ func FetchKernel(ctx context.Context, d *download.Client, arch Arch, version str
 		return nil, fmt.Errorf("unpack %s: %w", name, err)
 	}
 	return &Kernel{Version: rel.Tag, Asset: name, Binary: bin}, nil
+}
+
+// kernelAssetPattern 匹配官方发布的内核资产名：mihomo-linux-amd64-v3-v1.19.33.gz、mihomo-linux-arm64-v1.19.33.gz。
+var kernelAssetPattern = regexp.MustCompile(`^mihomo-linux-(amd64-v([123])|arm64)-(v[0-9]+\.[0-9]+\.[0-9]+)\.gz$`)
+
+// ParseKernelAsset 从官方资产名中得出它的平台和版本（KernelAsset 的反向）。
+func ParseKernelAsset(name string) (Arch, string, error) {
+	m := kernelAssetPattern.FindStringSubmatch(name)
+	if m == nil {
+		return Arch{}, "", fmt.Errorf("%w: %q is not a mihomo release asset (expected e.g. mihomo-linux-amd64-v3-v1.19.33.gz or mihomo-linux-arm64-v1.19.33.gz)", core.ErrInvalidArgument, name)
+	}
+	if m[1] == "arm64" {
+		return Arch{GOARCH: "arm64"}, m[3], nil
+	}
+	return Arch{GOARCH: "amd64", Level: int(m[2][0] - '0')}, m[3], nil
+}
+
+// LoadKernelFile 读取事先下载好的官方内核资产 path（离线安装）。文件名必须是官方发布中的资产名，
+// 从中得知版本和平台；平台必须能在本机运行（amd64 的级别不高于本机的）。内容仍按官方 sha256 校验：
+// 只查询发布信息（直连 API，连不上时经镜像），不下载资产。
+func LoadKernelFile(ctx context.Context, d *download.Client, arch Arch, path string) (*Kernel, error) {
+	name := filepath.Base(path)
+	fileArch, version, err := ParseKernelAsset(name)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case fileArch.GOARCH != arch.GOARCH:
+		return nil, fmt.Errorf("%w: %s is built for %s, this server is %s", core.ErrInvalidArgument, name, fileArch.GOARCH, arch.GOARCH)
+	case fileArch.Level > arch.Level:
+		return nil, fmt.Errorf("%w: %s needs x86-64-v%d, this CPU is %s; use %s", core.ErrInvalidArgument, name, fileArch.Level, arch, arch.KernelAsset(version))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxKernelSize {
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, maxKernelSize)
+	}
+	rel, err := d.Release(ctx, kernelRepo, version)
+	if err != nil {
+		return nil, err
+	}
+	asset, err := rel.Asset(name)
+	if err != nil {
+		return nil, err
+	}
+	gz, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := asset.Verify(gz); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	bin, err := gunzip(gz)
+	if err != nil {
+		return nil, fmt.Errorf("unpack %s: %w", name, err)
+	}
+	return &Kernel{Version: version, Asset: name, Binary: bin}, nil
 }
 
 func gunzip(data []byte) ([]byte, error) {

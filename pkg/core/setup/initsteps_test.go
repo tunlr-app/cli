@@ -46,4 +46,13 @@ func TestInitSteps(t *testing.T) {
 	if strings.Contains(got, "Start mihomo") || strings.Contains(got, "GitHub") {
 		t.Errorf("steps:\n%s", got)
 	}
+
+	// 离线安装：版本来自文件名，名称不对时拒绝。
+	steps, err = i.InitSteps(context.Background(), InitOptions{KernelFile: "/tmp/mihomo-linux-amd64-v3-v1.19.32.gz"})
+	if err != nil || !strings.Contains(strings.Join(steps, "\n"), "Install mihomo v1.19.32 from /tmp/mihomo-linux-amd64-v3-v1.19.32.gz, verified against the official sha256") {
+		t.Errorf("steps = %q, %v", steps, err)
+	}
+	if _, err = i.InitSteps(context.Background(), InitOptions{KernelFile: "/tmp/mihomo.gz"}); err == nil || !strings.Contains(err.Error(), "is not a mihomo release asset") {
+		t.Errorf("bad file name: err = %v", err)
+	}
 }

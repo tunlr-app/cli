@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -94,7 +95,7 @@ func (u lanUsage) steps() []string {
 }
 
 func (a *app) newInitCommand() *cobra.Command {
-	var mirror, sub, version string
+	var mirror, sub, version, kernelFile string
 	var include, exclude []string
 	var usage lanUsage
 	cmd := &cobra.Command{
@@ -127,9 +128,12 @@ func (a *app) newInitCommand() *cobra.Command {
 			if usage.any() && a.opts.JSON {
 				return usageErrorf("--lan-proxy, --gateway and --lan-panel cannot be combined with --json; run init, then tunlr proxy lan on, tunlr tun gateway on or tunlr panel lan on with --json")
 			}
-			opts := setup.InitOptions{KernelVersion: version}
+			opts := setup.InitOptions{KernelVersion: version, KernelFile: kernelFile}
 			if cmd.Flags().Changed("mirror") {
 				opts.Mirror = &mirror
+			}
+			if kernelFile != "" && version != "" {
+				return usageErrorf("--kernel-file installs the version in the file's name; it cannot be combined with --version")
 			}
 			if version != "" {
 				v, err := mihomo.NormalizeVersion(version)
@@ -207,6 +211,8 @@ func (a *app) newInitCommand() *cobra.Command {
 	f.StringArrayVar(&include, "include", nil, "with --sub: keep only proxies whose names match this regular expression (repeatable)")
 	f.StringArrayVar(&exclude, "exclude", nil, "with --sub: drop proxies whose names match this regular expression (repeatable)")
 	f.StringVar(&version, "version", "", "mihomo version to install when none is installed (default: latest release)")
+	f.StringVar(&kernelFile, "kernel-file", "", "install mihomo from this downloaded release asset instead (e.g. mihomo-linux-amd64-v3-v1.19.33.gz;\n"+
+		"still verified against the official sha256)")
 	f.BoolVar(&usage.proxy, "lan-proxy", false, "then let LAN devices use the proxy port (tunlr proxy lan on)")
 	f.StringVar(&usage.gateway, "gateway", "", `then make this server the LAN gateway on this interface, or "auto" (tunlr tun gateway on; implies --lan-proxy)`)
 	f.BoolVar(&usage.panel, "lan-panel", false, "then let LAN devices open the panel (tunlr panel lan on)")
@@ -372,14 +378,10 @@ func (a *app) askInit(cmd *cobra.Command, opts *setup.InitOptions) error {
 		if err != nil {
 			return err
 		}
-		desc := "Downloads from GitHub are slow from mainland China; a mirror such as https://gh-proxy.com/\n" +
-			"only carries the bytes, tunlr still verifies the official sha256. "
-		if set.GitHubMirror != "" {
-			desc += "Current: " + set.GitHubMirror + " (leave empty to keep it; --mirror \"\" removes it)."
-		} else {
-			desc += "Leave empty to download directly."
-		}
-		m, err := a.prompt.Input(ctx, "GitHub mirror (optional)", desc, "", func(s string) error {
+		// 输入框预填当前的设置，还没有时预填建议的镜像；清空即直连。
+		desc := "Downloads from GitHub are slow from mainland China; a mirror only carries the bytes,\n" +
+			"tunlr still verifies the official sha256. Clear it to download from github.com directly."
+		m, err := a.prompt.Input(ctx, "GitHub mirror (optional)", desc, cmp.Or(set.GitHubMirror, settings.SuggestedMirror), func(s string) error {
 			if s == "" {
 				return nil
 			}
@@ -388,9 +390,7 @@ func (a *app) askInit(cmd *cobra.Command, opts *setup.InitOptions) error {
 		if err != nil {
 			return err
 		}
-		if m != "" || set.GitHubMirror == "" {
-			opts.Mirror = &m
-		}
+		opts.Mirror = &m
 	}
 	if opts.SubName == "" {
 		entries, err := a.subscriptions().List()
@@ -835,16 +835,21 @@ func (a *app) newCoreCommand() *cobra.Command {
 }
 
 func (a *app) newCoreUpgradeCommand() *cobra.Command {
-	var version string
+	var version, file string
 	cmd := &cobra.Command{
 		Use:   "upgrade",
-		Short: "Upgrade mihomo to the latest release (or --version)",
+		Short: "Upgrade mihomo to the latest release (or --version, or from --file)",
 		Long: "Download mihomo (the latest release, or --version), verify it against the official\n" +
 			"sha256, check the published configuration with it (mihomo -t) and replace the running\n" +
 			"kernel. If the new kernel does not pass the health check, the previous one is put back\n" +
-			"(exit code 4). tunlr core rollback goes back to the previous known-good version.",
+			"(exit code 4). tunlr core rollback goes back to the previous known-good version.\n\n" +
+			"--file installs a release asset downloaded elsewhere (its name gives the version, e.g.\n" +
+			"mihomo-linux-amd64-v3-v1.19.33.gz); only the release data is fetched to verify its sha256.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if file != "" && version != "" {
+				return usageErrorf("--file installs the version in the file's name; it cannot be combined with --version")
+			}
 			if version != "" {
 				v, err := mihomo.NormalizeVersion(version)
 				if err != nil {
@@ -852,10 +857,11 @@ func (a *app) newCoreUpgradeCommand() *cobra.Command {
 				}
 				version = v
 			}
-			return a.changeKernel(cmd, "core upgrade", false, version)
+			return a.changeKernel(cmd, "core upgrade", false, version, file)
 		},
 	}
 	cmd.Flags().StringVar(&version, "version", "", "install this version instead of the latest release, e.g. v1.19.33")
+	cmd.Flags().StringVar(&file, "file", "", "install this downloaded release asset instead, e.g. mihomo-linux-amd64-v3-v1.19.33.gz")
 	return cmd
 }
 
@@ -868,13 +874,14 @@ func (a *app) newCoreRollbackCommand() *cobra.Command {
 			"the same health check as an upgrade, with the current one put back if it fails (exit code 4).",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.changeKernel(cmd, "core rollback", true, "")
+			return a.changeKernel(cmd, "core rollback", true, "", "")
 		},
 	}
 }
 
 // changeKernel 是 core upgrade 与 core rollback 共同的流程：确认、替换内核、健康检查，失败时换回原来的。
-func (a *app) changeKernel(cmd *cobra.Command, name string, rollback bool, version string) error {
+// file 不为空时内核来自这个事先下载好的资产文件。
+func (a *app) changeKernel(cmd *cobra.Command, name string, rollback bool, version, file string) error {
 	if err := a.requireYes(name); err != nil {
 		return err
 	}
@@ -883,19 +890,25 @@ func (a *app) changeKernel(cmd *cobra.Command, name string, rollback bool, versi
 		return err
 	}
 	if !a.opts.Yes {
-		if ok, err := a.confirmUpgrade(cmd.Context(), k, rollback, &version); !ok {
+		if ok, err := a.confirmUpgrade(cmd.Context(), k, rollback, &version, file); !ok {
 			return err
 		}
 	}
 	var res *mihomo.UpgradeResult
 	title := "Upgrading mihomo (download, verify, check, restart)"
-	if rollback {
+	switch {
+	case rollback:
 		title = "Switching back to the previous known-good mihomo"
+	case file != "":
+		title = "Upgrading mihomo from " + file + " (verify, check, restart)"
 	}
 	err = a.spin(title, func() (err error) {
-		if rollback {
+		switch {
+		case rollback:
 			res, err = k.Rollback(cmd.Context())
-		} else {
+		case file != "":
+			res, err = k.UpgradeFrom(cmd.Context(), file)
+		default:
 			res, err = k.Upgrade(cmd.Context(), version)
 		}
 		return err
@@ -919,19 +932,28 @@ func (a *app) changeKernel(cmd *cobra.Command, name string, rollback bool, versi
 
 // confirmUpgrade 在替换内核前确认，问题中给出现在和将换成的版本。升级时先查询目标版本并写回 version，
 // 确认的是哪个版本就装哪个；已经是该版本时不问，交给 Upgrade 报告。
-func (a *app) confirmUpgrade(ctx context.Context, k *mihomo.Manager, rollback bool, version *string) (bool, error) {
+func (a *app) confirmUpgrade(ctx context.Context, k *mihomo.Manager, rollback bool, version *string, file string) (bool, error) {
 	ks, err := k.Status()
 	if err != nil {
 		return false, err
 	}
 	var target string
-	if rollback {
+	switch {
+	case rollback:
 		kg, err := k.RollbackTarget()
 		if err != nil {
 			return false, err
 		}
 		target = kg.Version
-	} else {
+	case file != "":
+		// 版本在文件名里，不用查询；校验在确认之后。
+		if _, target, err = mihomo.ParseKernelAsset(filepath.Base(file)); err != nil {
+			return false, err
+		}
+		if ks.KnownGood && ks.Version == target {
+			return true, nil
+		}
+	default:
 		err := a.spin("Looking up the mihomo release", func() (err error) {
 			target, err = k.UpgradeTarget(ctx, *version)
 			return err

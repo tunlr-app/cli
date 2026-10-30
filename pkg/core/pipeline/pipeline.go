@@ -14,8 +14,6 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
-	"net/netip"
-	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -952,7 +950,7 @@ const DNSListen = "127.0.0.1:1053"
 //
 // 提供默认值、用户可以覆盖的：tunlr:defaults，兜底值（templates.Defaults：geo 数据的设置和 DNS），写在
 // tunlr.defaults 中，订阅没有写时才用（见 config.Compose）；tunlr:dns，DNS 的监听地址（订阅中的被丢弃）；
-// tunlr:mirror，配置了 GitHub 镜像时经镜像的面板下载地址和让镜像直连的规则（用 tunlr.rules.delete 去掉），
+// tunlr:mirror，配置了 GitHub 镜像时经镜像的面板下载地址，
 // 并在合成的最后把 geox-url 中 GitHub 的地址改为经镜像（RewriteGeoxURL，用户的 mixin 不能取消）；tunlr:filter，有过滤项
 // 时在规则最前插入的规则（设为直连的设备、拒绝 QUIC、只代理常用端口，见 filterRules 和 DESIGN.md 8.13）。
 func managed(secret string, sw switches, set *settings.Settings) []config.Managed {
@@ -980,8 +978,9 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 		LANAllowedIPs []string `yaml:"lan-allowed-ips"`
 	}{sw.proxyLAN, config.LANAllowedIPs}})
 
+	// 镜像的域名不加直连规则（2026-10-31 决定，见 DESIGN.md 第 7 节）：它和其他流量一样按规则分流。
 	mirror := set.GitHubMirror
-	mirrorSection := section{Tunlr: prependRules(mirrorRules(mirror))}
+	var mirrorSection section
 	if mirror != "" {
 		mirrorSection.Mihomo = struct {
 			ExternalUIURL string `yaml:"external-ui-url"`
@@ -1056,26 +1055,6 @@ func marshal(v any) []byte {
 	_ = enc.Encode(v)
 	_ = enc.Close()
 	return b.Bytes()
-}
-
-// mirrorRules 返回让 GitHub 镜像直连的规则。内核自己的下载（面板、geo 数据）同样按规则分流，
-// 实测选中不可用的节点时全部失败；镜像本来就是为直连准备的，因此让它绕开节点。没有配置镜像时为空。
-func mirrorRules(mirror string) []string {
-	if mirror == "" {
-		return nil
-	}
-	u, err := url.Parse(mirror)
-	if err != nil || u.Hostname() == "" {
-		return nil
-	}
-	host := u.Hostname()
-	if ip, err := netip.ParseAddr(host); err == nil {
-		if ip.Is4() {
-			return []string{"IP-CIDR," + ip.String() + "/32,DIRECT,no-resolve"}
-		}
-		return []string{"IP-CIDR6," + ip.String() + "/128,DIRECT,no-resolve"}
-	}
-	return []string{"DOMAIN," + host + ",DIRECT"}
 }
 
 // newSecret 生成 32 个十六进制字符的随机 secret。

@@ -274,6 +274,65 @@ func TestManagerUpgradeAndRollback(t *testing.T) {
 	}
 }
 
+// TestManagerUpgradeFromFile 验证离线安装：资产文件按名称得出版本，按官方 sha256 校验后安装；
+// 名称不对、平台不符、内容被改过的都拒绝。
+func TestManagerUpgradeFromFile(t *testing.T) {
+	ctx := context.Background()
+	m, _ := newTestManager(t, fakeReleases(t, "v1.19.34", testBinaries))
+	dir := t.TempDir()
+	gz := func(name, content string) string {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		zw.Write([]byte(content))
+		zw.Close()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	res, err := m.UpgradeFrom(ctx, gz("mihomo-linux-amd64-v3-v1.19.35.gz", testBinaries["v1.19.35"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.To != "v1.19.35" || !res.Changed || res.Asset != "mihomo-linux-amd64-v3-v1.19.35.gz" {
+		t.Fatalf("install from file = %+v", res)
+	}
+	if got := binary(t, m); got != testBinaries["v1.19.35"] {
+		t.Fatalf("binary = %q", got)
+	}
+
+	for _, tc := range []struct{ name, content, want string }{
+		{"mihomo-v1.19.35.gz", testBinaries["v1.19.35"], "is not a mihomo release asset"},
+		{"mihomo-linux-arm64-v1.19.35.gz", testBinaries["v1.19.35"], "built for arm64"},
+		{"mihomo-linux-amd64-v3-v1.19.34.gz", "tampered", "checksum mismatch"},
+		{"mihomo-linux-amd64-v3-v1.19.99.gz", "x", "HTTP 404"},
+	} {
+		_, err := m.UpgradeFrom(ctx, gz(tc.name, tc.content))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	if got := binary(t, m); got != testBinaries["v1.19.35"] {
+		t.Errorf("binary changed by a rejected file: %q", got)
+	}
+
+	// 级别高于本机 CPU 的构建拒绝，并说明该用哪个。
+	m.Arch = Arch{GOARCH: "amd64", Level: 2}
+	_, err = m.UpgradeFrom(ctx, gz("mihomo-linux-amd64-v3-v1.19.35.gz", testBinaries["v1.19.35"]))
+	if err == nil || !strings.Contains(err.Error(), "needs x86-64-v3") || !strings.Contains(err.Error(), "mihomo-linux-amd64-v2-v1.19.35.gz") {
+		t.Errorf("level: err = %v", err)
+	}
+
+	if a, v, err := ParseKernelAsset("mihomo-linux-arm64-v1.19.33.gz"); err != nil || a.GOARCH != "arm64" || a.Level != 0 || v != "v1.19.33" {
+		t.Errorf("ParseKernelAsset arm64 = %+v, %q, %v", a, v, err)
+	}
+	if a, v, err := ParseKernelAsset("mihomo-linux-amd64-v1-v1.19.33.gz"); err != nil || a.GOARCH != "amd64" || a.Level != 1 || v != "v1.19.33" {
+		t.Errorf("ParseKernelAsset amd64 = %+v, %q, %v", a, v, err)
+	}
+}
+
 func TestManagerUpgradeRevertsUnhealthyKernel(t *testing.T) {
 	ctx := context.Background()
 	m, svc := newTestManager(t, fakeReleases(t, "v1.19.34", testBinaries))

@@ -29,6 +29,10 @@ exitcode 2 tunlr core rollback --version v1.19.33
 stderr 'unknown flag: --version'
 exitcode 2 tunlr core upgrade --version 1.19
 stderr 'invalid mihomo version "v1.19"'
+exitcode 2 tunlr core upgrade --file mihomo-linux-amd64-v3-v1.19.33.gz --version v1.19.33 --yes
+stderr '--file installs the version in the file.s name; it cannot be combined with --version'
+exitcode 2 tunlr init --kernel-file mihomo-linux-amd64-v3-v1.19.33.gz --version v1.19.33 --yes
+stderr '--kernel-file installs the version in the file.s name; it cannot be combined with --version'
 exitcode 2 tunlr core logs --json
 stdout 'logs does not support --json'
 exitcode 2 tunlr upgrade --version 0.2

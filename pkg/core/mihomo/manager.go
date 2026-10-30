@@ -240,6 +240,24 @@ func (m *Manager) Upgrade(ctx context.Context, version string) (*UpgradeResult, 
 	return m.switchTo(ctx, k, true)
 }
 
+// UpgradeFrom 同 Upgrade，但内核来自事先下载好的官方资产文件 path（LoadKernelFile）：离线安装时用，
+// 仍按官方 sha256 校验。
+func (m *Manager) UpgradeFrom(ctx context.Context, path string) (*UpgradeResult, error) {
+	arch, err := m.arch()
+	if err != nil {
+		return nil, err
+	}
+	d, err := m.downloader()
+	if err != nil {
+		return nil, err
+	}
+	k, err := LoadKernelFile(ctx, d, arch, path)
+	if err != nil {
+		return nil, err
+	}
+	return m.switchTo(ctx, k, true)
+}
+
 // UpgradeTarget 返回 Upgrade(ctx, version) 将安装的版本（version 为空时为最新的正式发布），只查询不下载，
 // 供执行前确认。确认后把它传给 Upgrade，确认期间有新发布也不会装成别的版本。
 func (m *Manager) UpgradeTarget(ctx context.Context, version string) (string, error) {
@@ -744,7 +762,7 @@ func (m *Manager) downloader() (*download.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &download.Client{Mirror: set.GitHubMirror}, nil
+	return &download.Client{Mirror: set.GitHubMirror, Log: m.Log}, nil
 }
 
 func (m *Manager) lock(ctx context.Context, wait time.Duration) (*lock.Lock, error) {

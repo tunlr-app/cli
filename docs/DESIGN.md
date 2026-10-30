@@ -243,7 +243,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
     | 种类 | 成员 | 应用时机 | 用户的 mixin 动了它的键 |
     |---|---|---|---|
     | 独占 | `tunlr:core`（`external-controller-unix`，工具经它访问 API）<br>`tunlr:tun`（`tun.enable` 等，见 8.3）<br>`tunlr:panel`（`external-controller`、`secret`）<br>`tunlr:proxy`（`allow-lan`、`lan-allowed-ips`，见第 10 节“代理端口的局域网访问”） | 用户的 mixin 之后 | 报错，不发布 |
-    | 默认值 | `tunlr:defaults`（DNS 和 geo 数据的兜底值，写在 `tunlr.defaults` 下，在订阅之前合并，见下文“mixin 的兜底值”）<br>`tunlr:dns`（`dns.listen`）<br>`tunlr:mirror`（配置了 `github-mirror` 时：`external-ui-url` 和让镜像直连的规则；另在合成的最后改写 `geox-url`，见上面第 6 步，用户的 mixin 不能取消，只能改用其他地址）<br>`tunlr:filter`（流量过滤的规则，见 8.13） | 用户的 mixin 之前 | 允许，`config plan` 中记为“覆盖 tunlr:dns”等 |
+    | 默认值 | `tunlr:defaults`（DNS 和 geo 数据的兜底值，写在 `tunlr.defaults` 下，在订阅之前合并，见下文“mixin 的兜底值”）<br>`tunlr:dns`（`dns.listen`）<br>`tunlr:mirror`（配置了 `github-mirror` 时：`external-ui-url`；另在合成的最后改写 `geox-url`，见上面第 6 步，用户的 mixin 不能取消，只能改用其他地址）<br>`tunlr:filter`（流量过滤的规则，见 8.13） | 用户的 mixin 之前 | 允许，`config plan` 中记为“覆盖 tunlr:dns”等 |
 
   - 冲突：用户的 mixin 在 `mihomo:` 下写了独占的键（即使值相同）、用 `null` 删除它，或把它的上级整个替换掉。报告为 mixin 错误（`*config.MixinError`，退出码 3），指出文件、行和改用的命令，例如 `mixin 20-x.yaml:3: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off); remove it from the mixin`。同一映射中的其他键照常可改（如 `tun.stack`、`tun.route-exclude-address`）。
   - 为什么拒绝而不是像原来那样忽略并警告：被忽略的设置让人以为生效了，交互命令和手改的 mixin 各说各的；拒绝时用户立刻知道该用哪个命令。代价是工具升级新增独占的键后，已经写了它的 mixin 会让定时更新保持当前配置（与 mixin 出错相同），`doctor` 的 `install.mixins` 列出这种冲突。
@@ -388,7 +388,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   | 面板触发的内核升级 | 内核 | 按规则分流，直连 github.com | 无，事后由工具核对（见第 7 节） |
 
   - 读 mihomo 源码（`component/http`）确认：内核自己的 HTTP 请求交给内部 tunnel，按目标域名匹配规则，失败时才退回直连。所以策略组选中不可用的节点时，面板和 geo 下载全部失败（实测）。
-  - **镜像直连规则**：配置了 `github-mirror` 时，工具在订阅规则前插入 `DOMAIN,<镜像域名>,DIRECT`（镜像是 IP 时用 `IP-CIDR`/`IP-CIDR6`）。镜像本来就是为直连准备的；实测选中不可用的节点时，加上这条规则后面板经镜像下载成功。它属于提供默认值的 `tunlr:mirror` 而不是独占的：用户有理由让镜像也走代理，可以用 `tunlr.rules.delete` 去掉。没有配置镜像时不加，直连 github.com 在国内很慢，交给规则决定。将来 TUN 阶段需要直连的主机（如订阅域名）也放在这一层。
+  - **镜像不加直连规则**（2026-10-31 决定）：配置了 `github-mirror` 时，镜像的域名和其他流量一样按订阅规则分流，工具不插入 `DOMAIN,<镜像域名>,DIRECT`。之前默认插入这条规则（选中不可用的节点时面板和 geo 的下载全部失败，让镜像绕开节点能成功），去掉的理由：它改的是配置而不是工具行为，按原则应由 mixin 决定，为一条规则加设置项或默认值都多余；节点失效时在面板上切个节点即可；想让镜像直连的人在 mixin 里加一行 `tunlr.rules.prepend: [DOMAIN,gh-proxy.com,DIRECT]`，与加其他直连域名的写法相同。`tunlr:mirror` 因此只剩两件事：`external-ui-url` 和 `geox-url` 改为经镜像。
   - **信任边界**：镜像可以篡改它转发的内容。工具的下载有官方 sha256 兜底，内核的下载没有。tunlr 下载管理的只有内核和订阅（见第 7 节“geo 数据更新”），面板和 geo 数据都交给内核：
     - 面板：不由 tunlr 下载（2026-10-30 决定）。读 mihomo 源码（`hub/executor` 的 `updateUpdater`、`component/updater/update_ui.go`）确认：内核每次应用配置（启动和热重载）时，`external-ui` 目录不存在或为空就按 `external-ui-url` 同步下载（有内容时跳过），解压到临时目录后把内容移进 `external-ui`（压缩包只有一个顶层目录时取其内容）；`mihomo -t` 只解析配置，不下载。面板上手动更新（`POST /upgrade/ui`）总是重新下载，先清空目录再放入。tunlr-dev 实测：移走面板目录后重启内核，约 6 秒下载到 `core/ui/zashboard`，归 `tunlr` 所有。面板在浏览器中运行并持有 API secret，被篡改的后果很严重，但只校验第一次安装没有意义：之后每次在面板上更新都不经 tunlr，同样不校验；为第一次安装维护一套下载、校验、解压只是给了不存在的保证。选用可信的镜像是用户的事。
     - geo 数据：不校验（2026-10-29 决定）。内核每次更新都不校验，事后核对只能在被篡改的文件用过之后才发现，还要另写一套下载、替换和重启；订阅自定义的来源本来也无从校验。选用可信的镜像是用户的事。
@@ -442,14 +442,18 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - `doctor` 报告 CPU 级别；低于 v3 时提示虚拟机可改用 host 或更新的 CPU 型号以获得更好的性能（同时会带来 AES-NI）。
 - **版本**：默认安装最新正式发布（不支持 alpha），`--version` 可以指定。
 - **镜像下载，官方校验**：国内服务器直连 GitHub 下载很慢（实测 2 分钟只下完 22MB 中的 6.5MB），经 gh-proxy 等镜像只需约 12 秒。工具支持配置 GitHub 下载镜像（工具下载的内核和安装脚本；配置中内核自己下载的 geo 数据、面板的地址也改为经镜像，不校验），工具的下载**校验值必须取自官方来源**：从 `api.github.com` 读取 release 资产的 `digest`（sha256），镜像只负责传输字节，校验不一致则丢弃；GitHub 没有提供 digest 的资产拒绝下载。api.github.com 在国内通常可以直连。实现见 `pkg/core/download`。
+- **续传与重试**：慢速线路上常见的是速度很低或中途断开，而不是彻底不通（tunlr-dev 直连约 22 KB/s，22 MB 的内核要 17 分钟；原来单个资产 10 分钟的总时限必然超时，又要从头再来）。下载因此不设总时限，只看有没有进展：一轮 60 秒收不到任何数据，或连接出错、遇到 408、429、5xx，就带 `Range` 从已收到的位置续传（服务器不支持续传、返回的位置不对时从头开始），等待从 2 秒起加倍、最多 30 秒；连续 5 轮没有新数据才放弃；404 等其他状态码不重试。已收到的内容只在内存中，完整性仍由官方 sha256 兜底。gh-proxy.com、gh-proxy.org 与直连 GitHub 都支持 `Range`（实测返回 206）。内核和 `tunlr upgrade` 都经这里下载。
+- **API 不经镜像**（2026-10-31 决定）：发布信息（版本号、资产的大小和 sha256）只直连 `api.github.com`。曾实现过“连不上时经镜像查同一个 API 地址”的兜底，去掉了：未认证的 API 请求每个 IP 每小时只有 60 次，经镜像时计的是镜像出口 IP 的限额，所有用户共用，基本总是用完的（tunlr-dev 实测直连与经镜像同时 403），而且 sha256 也会经镜像的手。`install.sh` 同样只直连 API；它下载资产用 `curl -C -` 续传（服务器不支持 `Range` 时从头开始）。
+  - **API 限流**：用完时 GitHub 回 403，响应头 `X-RateLimit-Reset` 给出解除时间。错误信息解释限额和解除时间（`HTTP 403 Forbidden: GitHub API rate limit exceeded for this IP (60 unauthenticated requests per hour); it resets at 02:24`），其他 API 错误带上响应中的 `message`。正常使用一天只查几次（每日版本查询 2 次，升级 1 到 2 次），达不到限额；反复测试、或者多台机器共用一个 NAT 出口才会。如果将来需要，可加 `github-token` 设置（带 token 每小时 5000 次，按 token 计数），尚未决定。
 - **运行身份与权限**：
   - 内核以系统用户 `tunlr` 运行（`useradd --system`），通过 systemd `AmbientCapabilities` 只授予 `CAP_NET_ADMIN` 和 `CAP_NET_BIND_SERVICE`。不用 `DynamicUser`：工作目录要由 root 写入配置又归内核用户所有，动态用户的 uid 不固定，目录还会被移到 `/var/lib/private`。
   - 为了让面板升级可用，`bin/` 归 `tunlr` 所有；工作目录（含 external-ui）同样归它所有。
   - **root 不执行内核用户可写的二进制**：`bin/mihomo` 可被内核改写，root 运行它就是提权。因此 `mihomo -t` 降权到 `tunlr` 用户运行（系统中没有这个用户，即尚未 `init` 时，以当前用户运行）。
 - **已知可用版本**：`/var/lib/tunlr/kernels/<版本>/mihomo`，root 所有、0755，保留最近 3 个；状态文件记录每个版本的资产名、二进制的 sha256 和确认时间。工具安装的版本通过健康检查后加入，面板升级来的版本由 `_aftercare` 核对后加入。
 - **健康检查**：启动或重启后 15 秒内经 socket 得到 `/version` 响应且版本与预期一致，再等 3 秒，服务仍为 active 且 systemd 的重启计数（`NRestarts`）没有增加。
-- **工具升级内核**（`tunlr core upgrade [--version <v>]`）：
+- **工具升级内核**（`tunlr core upgrade [--version <v> | --file <资产>]`）：
   1. 下载并按官方 sha256 校验，解压到 `kernels/<版本>/`（此时尚未记为已知可用）。
+     - **离线安装**（2026-10-31 定）：`--file`（`init --kernel-file` 同）给出事先在别处下载好的官方资产，文件名必须是官方的资产名（`mihomo-linux-amd64-v3-v1.19.33.gz`、`mihomo-linux-arm64-v1.19.33.gz`），从中得知版本和平台：平台必须是本机的，amd64 的级别不高于本机 CPU 的（高了会非法指令崩溃，错误里给出该用的资产名）。内容仍按官方 sha256 校验：只向 API 查询这个版本的发布信息（连不上时经镜像，见下文），不下载资产；查不到就拒绝，不提供跳过校验的参数——没有校验值的二进制和面板升级来的一样只能事后核对，而离线安装的场景（下载慢、被阻断）恰恰是最需要校验的。与 `--version` 互斥（版本在文件名里）。`core upgrade` 的其余步骤相同。
   2. 降权用新内核对生效的配置执行 `-t`，不通过则停止（退出码 3），运行中的内核不受影响。
   3. 加锁，读入当前二进制备用（失败时换回）。
   4. 在 `bin/` 中写临时文件后 rename 替换，归 `tunlr` 所有。
@@ -906,7 +910,7 @@ tunlr devices             使用本机的局域网设备（--all 含未使用的
 Kernel and panel
 tunlr core                内核的状态（服务、版本、已知可用版本）
 tunlr core start | stop | restart | logs   服务控制（start、restart 后做健康检查；logs 透传 -f、-n）
-tunlr core upgrade        升级内核到最新发布（--version 指定版本）
+tunlr core upgrade        升级内核到最新发布（--version 指定版本，--file 从下载好的资产离线安装）
 tunlr core rollback       换回上一个已知可用版本（不下载）
 tunlr panel               面板的 SSH 隧道命令与链接
 tunlr panel reset-secret  换新的 API secret（diff 确认后发布，内核重启）
@@ -926,7 +930,7 @@ tunlr backup restore [文件|-]     还原备份：diff 确认后发布，先自
 
 服务与安装相关命令的行为：
 
-- `init`：可重复执行，再次执行即修复。依次：检查环境（root、systemd、架构）→ 把自身复制到 `/usr/local/bin/tunlr` → 创建用户 `tunlr` → 建目录并设置属主与权限 → 没有内核时安装最新版 → 写入 unit 和 timer、`daemon-reload`、启用 `tunlr-core.service`、`tunlr-update.timer`、`tunlr-aftercare.path` 与 `tunlr-firewall.service`（`tunlr-check.timer` 按开关启停，见 8.4）→ 给了订阅就添加 → 有启用的订阅时发布配置并启动内核、做健康检查。交互模式下询问 GitHub 镜像、订阅地址及其节点筛选（都可以留空）；非交互模式由 `--mirror`、`--sub <名称>=<地址>`、`--include`、`--exclude` 给出，没给就跳过。
+- `init`：可重复执行，再次执行即修复。依次：检查环境（root、systemd、架构）→ 把自身复制到 `/usr/local/bin/tunlr` → 创建用户 `tunlr` → 建目录并设置属主与权限 → 没有内核时安装最新版（`--version`，或 `--kernel-file` 从下载好的资产离线安装，见第 7 节）→ 写入 unit 和 timer、`daemon-reload`、启用 `tunlr-core.service`、`tunlr-update.timer`、`tunlr-aftercare.path` 与 `tunlr-firewall.service`（`tunlr-check.timer` 按开关启停，见 8.4）→ 给了订阅就添加 → 有启用的订阅时发布配置并启动内核、做健康检查。交互模式下询问 GitHub 镜像（输入框预填当前设置，还没有时预填 `settings.SuggestedMirror` 即 `https://gh-proxy.com/`；清空即直连，2026-10-31 定：之前是留空保持原值，`install.sh` 又总是传 `--mirror`，用户在不知情的情况下就用上了镜像，也没有顺手的办法改成直连）、订阅地址及其节点筛选（都可以留空）；非交互模式由 `--mirror`、`--sub <名称>=<地址>`、`--include`、`--exclude` 给出，没给就跳过。
   - 之后询问这台服务器的用途（见下文“家庭网络中的用法”）：只给本机用（默认，如 VPS）、只给局域网设备当代理、给局域网设备当网关和代理（两种用法同时可用，选项文字写明，免得看起来是三选一）。后两项再问是否也让局域网设备打开面板（默认是）；选网关且有多块候选网卡（已启用、有 IPv4 地址、接着真实网络，见 8.10，默认路由所在的排最前）时选择网卡；所选网卡有公网地址时再确认一次，回答否回到用途的问题。
   - 已经开启过透明代理、网关或代理端口局域网访问时不问（再次 init 是修复，不改用途）；没有订阅时也不问（内核不会启动）。
   - 非交互模式由 `--lan-proxy`、`--gateway <网卡|auto>`（同时开启 `--lan-proxy`）、`--lan-panel` 给出，`--lan-interface` 指定代理端口和面板放行的网卡（同 `proxy lan on --interface`，没给时取默认值，见第 10 节“对其他设备开放的端口”）；写错的网卡名在检查环境之后、动手之前就拒绝，不会装好内核后才在最后一步失败。它们与 `--json` 同用时报用法错误：后续步骤各有输出，合不成一份 JSON，分别执行 `proxy lan on`、`tun gateway on`、`panel lan on` 即可。
@@ -1129,7 +1133,7 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 - **版本号**只有一处：git tag `vX.Y.Z`。goreleaser 把它（去掉 `v`）连同 commit 和构建时间经 `-ldflags -X` 注入 `cmd/tunlr` 的 `version`、`commit`、`date`，`tunlr --version` 和各命令 `--json` 中的 `version` 都是它；本地 `go build` 的版本是 `dev`（`setup.DevVersion`）。第一个版本 `v0.1.0`。
 - **发布**：推送 tag 触发 `.github/workflows/release.yml`：`go test ./...` → goreleaser 构建 linux amd64、arm64（`CGO_ENABLED=0`、`-trimpath`、`-s -w`）→ 发布 GitHub release，资产为 `tunlr_<版本>_linux_<架构>.tar.gz`（内含 `tunlr`、`LICENSE`、`README.md`）、`checksums.txt`，另附 `install.sh`、`uninstall.sh` 一份。每个资产的 sha256 由 GitHub 记在 release API 的 `digest` 中，`tunlr upgrade`、`core upgrade` 和 `install.sh` 只认它（见第 7 节）。`.github/workflows/ci.yml` 在每次推送和 PR 时跑 gofmt、vet、测试、脚本语法和 `goreleaser check`。
   - 第一个版本的说明手写在 release 页面（goreleaser 的 changelog 关闭），之后的版本从 commit 生成（排除 `docs:`、`test:` 开头的）。发布前的提交历史原样保留，不压缩。
-- **安装入口**：`install.sh` 放在仓库根目录，入口是 jsDelivr（`https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/install.sh`，中国可达），备用 `https://raw.githubusercontent.com/tunlr-app/cli/main/install.sh`；`tunlr.app/install.sh` 等官网上线后再加。脚本（POSIX sh，依赖 curl、tar、sha256sum）：检查 root、Linux、systemd、架构（x86_64 → amd64、aarch64 → arm64）→ 向 `api.github.com` 查 release（`TUNLR_VERSION` 指定版本，默认最新；API 不经镜像）→ 经镜像下载资产（`TUNLR_MIRROR`，默认 `https://gh-proxy.com/`，设为空则直连）→ 核对 API 给出的 sha256 → 解出 `tunlr` 并运行 `--version` 确认 → 写到 `/usr/local/bin/.tunlr-new` 再 `mv` 替换 → 运行 `tunlr init`，把同一个镜像作为 `--mirror` 传给它（参数里自己给了 `--mirror` 则不传），其余参数原样传给 `init`（`sh -s -- --sub home=…`）。管道执行时标准输入是脚本，`init` 从 `/dev/tty` 读取以便提问；没有控制终端时（`/dev/tty` 文件总在，要试着打开才知道，`ssh` 不带 tty、cloud-init 都打不开）`init --yes`。curl 的进度条只在标准错误是终端时显示。`TUNLR_INIT=no` 只装二进制。
+- **安装入口**：`install.sh` 放在仓库根目录，入口是 jsDelivr（`https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/install.sh`，中国可达），备用 `https://raw.githubusercontent.com/tunlr-app/cli/main/install.sh`；`tunlr.app/install.sh` 等官网上线后再加。脚本（POSIX sh，依赖 curl、tar、sha256sum）：检查 root、Linux、systemd、架构（x86_64 → amd64、aarch64 → arm64）→ 向 `api.github.com` 查 release（`TUNLR_VERSION` 指定版本，默认最新；API 不经镜像）→ 经镜像下载资产（`TUNLR_MIRROR`，默认 `https://gh-proxy.com/`，设为空则直连）→ 核对 API 给出的 sha256 → 解出 `tunlr` 并运行 `--version` 确认 → 写到 `/usr/local/bin/.tunlr-new` 再 `mv` 替换 → 运行 `tunlr init`，其余参数原样传给 `init`（`sh -s -- --sub home=…`）。有终端时不传 `--mirror`，让 `init` 自己问（预填同一个默认值），除非用户设了 `TUNLR_MIRROR`（已经选过）；没有终端时把脚本用的镜像作为 `--mirror` 传给它（参数里自己给了 `--mirror` 则不传）。管道执行时标准输入是脚本，`init` 从 `/dev/tty` 读取以便提问；没有控制终端时（`/dev/tty` 文件总在，要试着打开才知道，`ssh` 不带 tty、cloud-init 都打不开）`init --yes`。curl 的进度条只在标准错误是终端时显示。`TUNLR_INIT=no` 只装二进制。
   - 为什么默认经 gh-proxy：中国的服务器直连 GitHub 下载常常失败，而字节经哪里都按官方 sha256 校验，默认走镜像对其他地区只是多一跳。jsDelivr 只能分发仓库文件，不能分发 release 资产，所以脚本本身走 jsDelivr、资产走 gh-proxy；只支持前缀式镜像，不适配其他改写规则。
   - `uninstall.sh`：有终端时运行 `tunlr uninstall --purge` 让它确认，没有时 `--yes`；`/usr/local/bin/tunlr` 不在时先用 `install.sh`（`TUNLR_INIT=no`）装一份再卸载。
 - 可审计性：`tunlr config plan --full` 输出将写入系统的全部内容（mihomo 配置、nft 脚本、systemd unit），用户执行前即可审查。

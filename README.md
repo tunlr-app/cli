@@ -33,13 +33,13 @@ jsDelivr 不可用时改用 GitHub 的原始文件：
 curl -fsSL https://raw.githubusercontent.com/tunlr-app/cli/main/install.sh | sudo sh
 ```
 
-脚本做的事：检查 root、systemd 和架构 → 向 `api.github.com` 查询最新发布 → 经镜像下载 `tunlr_<版本>_linux_<架构>.tar.gz` → 核对 GitHub 为该文件记录的 sha256 → 确认下载的二进制能运行 → 原子替换到 `/usr/local/bin/tunlr` → 运行 `tunlr init`。`init` 会询问 GitHub 镜像、订阅地址及节点筛选、这台服务器的用途（只给本机用、给局域网设备当代理、当网关），都可以留空或之后再设。
+脚本做的事：检查 root、systemd 和架构 → 向 `api.github.com` 查询最新发布 → 经镜像下载 `tunlr_<版本>_linux_<架构>.tar.gz` → 核对 GitHub 为该文件记录的 sha256 → 确认下载的二进制能运行 → 原子替换到 `/usr/local/bin/tunlr` → 运行 `tunlr init`。`init` 会询问 GitHub 镜像（预填 `https://gh-proxy.com/`，清空即直连）、订阅地址及节点筛选、这台服务器的用途（只给本机用、给局域网设备当代理、当网关），都可以留空或之后再设。
 
 环境变量和参数：
 
 | 变量 | 作用 |
 |---|---|
-| `TUNLR_MIRROR` | GitHub 下载镜像前缀，默认 `https://gh-proxy.com/`；设为空（`TUNLR_MIRROR= `）则直连 github.com。镜像只传字节，sha256 始终取自 GitHub 的 API，不一致即拒绝。同一个镜像会作为 `--mirror` 传给 `tunlr init`，之后内核和 geo 数据的下载也经它 |
+| `TUNLR_MIRROR` | 脚本下载 tunlr 用的 GitHub 镜像前缀，默认 `https://gh-proxy.com/`；设为空（`sudo env TUNLR_MIRROR= sh`）则直连 github.com。镜像只传字节，sha256 取自 GitHub 的 API，不一致即拒绝。有终端时 `init` 会问之后用哪个镜像（输入框预填这个默认值，清空即直连）；没有终端或设了这个变量时直接作为 `--mirror` 传给 `init`，之后内核和 geo 数据的下载也经它 |
 | `TUNLR_VERSION` | 安装指定版本，如 `v0.2.0`；默认最新发布 |
 | `TUNLR_INIT=no` | 只安装二进制，不运行 `tunlr init` |
 
@@ -123,6 +123,9 @@ tunlr core upgrade     # 升级 mihomo：下载、校验、用新内核校验当
 tunlr core rollback    # 换回上一个已知可用的内核版本
 ```
 
+- 下载慢或断开时自动续传、重试，不限总时长；只有连续 5 轮收不到数据才放弃。
+- 在别处下载好官方的内核资产（文件名要保持原样，如 `mihomo-linux-amd64-v3-v1.19.33.gz`）再安装：`tunlr core upgrade --file <文件>`，首次安装用 `tunlr init --kernel-file <文件>`。只向 GitHub 查询该版本的发布信息来核对 sha256，不下载资产。
+
 - 面板里升级内核也可以：`tunlr-aftercare.path` 在内核文件变化后核对它，启动失败时 `tunlr-rescue.service` 换回已知可用版本。
 
 ## 卸载
@@ -140,7 +143,7 @@ curl -fsSL https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/uninstall.sh | sudo sh
 
 ## GitHub 镜像
 
-中国的服务器直连 GitHub 下载常常失败。tunlr 的下载（内核、tunlr 自身）都可以经前缀式镜像传输：`tunlr init --mirror https://gh-proxy.com/`，或 `tunlr settings edit` 修改 `github-mirror`。无论经哪个镜像，sha256 都只取自 GitHub 的 release API，不一致即丢弃。配置中 `external-ui-url`、`geox-url` 的 GitHub 地址也会改为经镜像，由内核自己下载。只支持“镜像前缀 + 完整 GitHub 地址”这一种写法，jsDelivr 这类按仓库路径改写的 CDN 不能用作 `github-mirror`，但可以按文件给 geo 数据指定来源：`tunlr sub set <名称> --geo-url geosite=https://cdn.jsdelivr.net/...`。
+中国的服务器直连 GitHub 下载常常失败。tunlr 的下载（内核、tunlr 自身）都可以经前缀式镜像传输：`tunlr init --mirror https://gh-proxy.com/`，或 `tunlr settings edit` 修改 `github-mirror`。无论经哪个镜像，sha256 都只取自 GitHub 的 release API，不一致即丢弃；API 本身不经镜像。配置中 `external-ui-url`、`geox-url` 的 GitHub 地址也会改为经镜像，由内核自己下载。镜像的域名不加直连规则，和其他流量一样按订阅规则分流；想让它直连，在 mixin 里加 `tunlr.rules.prepend: [DOMAIN,gh-proxy.com,DIRECT]`。只支持“镜像前缀 + 完整 GitHub 地址”这一种写法，jsDelivr 这类按仓库路径改写的 CDN 不能用作 `github-mirror`，但可以按文件给 geo 数据指定来源：`tunlr sub set <名称> --geo-url geosite=https://cdn.jsdelivr.net/...`。
 
 ## 磁盘布局
 

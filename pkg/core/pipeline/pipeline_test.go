@@ -863,32 +863,18 @@ func TestTemplateURLs(t *testing.T) {
 	}
 }
 
-// TestMirrorRules 验证配置了 GitHub 镜像时，镜像主机的直连规则插在订阅规则前面，用户可以在 mixin 中去掉。
-func TestMirrorRules(t *testing.T) {
+// TestMirrorNoRules 验证配置了 GitHub 镜像时 tunlr:mirror 只改下载地址，不给镜像的域名加规则：
+// 它和其他流量一样按订阅规则分流。
+func TestMirrorNoRules(t *testing.T) {
 	p, _, _ := newPipeline(t)
 	useSubscription(t, p.Layout, "main", subscriptionV1)
 	writeFile(t, p.Layout.SettingsFile(), "github-mirror: https://gh-proxy.com/\n")
 	plan := mustPlan(t, p)
-	if m := plan.Managed[len(plan.Managed)-1]; m.Name != ManagedMirror || !strings.Contains(string(m.Data), "tunlr:\n  rules:\n    prepend:\n      - DOMAIN,gh-proxy.com,DIRECT\n") {
+	if m := plan.Managed[len(plan.Managed)-1]; m.Name != ManagedMirror || strings.Contains(string(m.Data), "rules") || !strings.Contains(string(m.Data), "external-ui-url: https://gh-proxy.com/") {
 		t.Errorf("mirror = %s", m.Data)
 	}
-	if !strings.Contains(string(plan.Config), "\nrules:\n  - DOMAIN,gh-proxy.com,DIRECT\n  - MATCH,a\n") {
-		t.Errorf("config:\n%s", plan.Config)
-	}
-
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "tunlr:\n  rules:\n    delete:\n      - DOMAIN,gh-proxy.com,DIRECT\n")
-	if cfg := string(mustPlan(t, p).Config); strings.Contains(cfg, "gh-proxy.com,DIRECT") {
-		t.Errorf("mixin could not remove the rule:\n%s", cfg)
-	}
-
-	for mirror, want := range map[string]string{
-		"":                       "",
-		"http://192.0.2.7:8080/": "IP-CIDR,192.0.2.7/32,DIRECT,no-resolve",
-		"https://[2001:db8::1]/": "IP-CIDR6,2001:db8::1/128,DIRECT,no-resolve",
-	} {
-		if got := strings.Join(mirrorRules(mirror), ","); got != want {
-			t.Errorf("mirrorRules(%q) = %q, want %q", mirror, got, want)
-		}
+	if cfg := string(plan.Config); strings.Contains(cfg, "gh-proxy.com,DIRECT") || !strings.Contains(cfg, "\nrules:\n  - MATCH,a\n") {
+		t.Errorf("config:\n%s", cfg)
 	}
 }
 

@@ -78,6 +78,9 @@ type InitOptions struct {
 	SubFilter, SubExclude string
 	// KernelVersion 是没有内核时安装的版本，为空时为最新正式发布。
 	KernelVersion string
+	// KernelFile 不为空时，没有内核时从这个事先下载好的官方资产文件安装（mihomo.LoadKernelFile），
+	// 与 KernelVersion 不能同时给出。
+	KernelFile string
 	// Progress 在每一步开始时调用，可为空。
 	Progress func(step string)
 }
@@ -157,7 +160,12 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 	kernels := i.kernels(owner, arch)
 	if !kernels.Installed() {
 		progress(fmt.Sprintf("Installing mihomo for %s", arch))
-		if res.Kernel, err = kernels.Upgrade(ctx, opts.KernelVersion); err != nil {
+		if opts.KernelFile != "" {
+			res.Kernel, err = kernels.UpgradeFrom(ctx, opts.KernelFile)
+		} else {
+			res.Kernel, err = kernels.Upgrade(ctx, opts.KernelVersion)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("install mihomo: %w", err)
 		}
 	}
@@ -256,6 +264,13 @@ func (i *Installer) InitSteps(ctx context.Context, opts InitOptions) ([]string, 
 	}
 	if !i.kernels(nil, mihomo.Arch{}).Installed() {
 		v := cmp.Or(opts.KernelVersion, "(latest release)")
+		if opts.KernelFile != "" {
+			_, version, err := mihomo.ParseKernelAsset(filepath.Base(opts.KernelFile))
+			if err != nil {
+				return nil, err
+			}
+			v = version + " from " + opts.KernelFile
+		}
 		steps = append(steps, "Install mihomo "+v+", verified against the official sha256")
 	}
 	sd := i.systemd()
@@ -470,7 +485,7 @@ func (i *Installer) downloader() (*download.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &download.Client{Mirror: set.GitHubMirror}, nil
+	return &download.Client{Mirror: set.GitHubMirror, Log: i.Log}, nil
 }
 
 func (i *Installer) pipeline(owner *fsutil.Owner) *pipeline.Pipeline {
