@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,6 +54,10 @@ type fakeHost struct {
 	devicesSync string
 	seen        map[string]string
 	neigh       string
+	// uses 是网关的表中各集合（如 dns_seen）的元素，形如 "192.168.1.5 udp"；ruleset 是 nft -j list ruleset
+	// 的输出（为空时没有其他表）。
+	uses    map[string][]string
+	ruleset string
 }
 
 func (h *fakeHost) systemd(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -103,6 +108,28 @@ func (h *fakeHost) netfilter(_ context.Context, stdin []byte, name string, args 
 		h.tables = slices.DeleteFunc(h.tables, func(t string) bool { return t == args[3] })
 	case strings.HasPrefix(cmd, "nft -j list set inet "+netfilter.DevicesTable+" "):
 		return []byte(h.seen[args[len(args)-1]]), nil
+	case cmd == "nft -j list table inet "+netfilter.GatewayTable:
+		if !slices.Contains(h.tables, netfilter.GatewayTable) {
+			return nil, errors.New("nft: Error: No such file or directory")
+		}
+		var items []string
+		for _, path := range []string{netfilter.PathDNS, netfilter.PathForward, netfilter.PathInput} {
+			for _, name := range []string{path + "_seen", path + "_passed"} {
+				var elems []string
+				for _, e := range h.uses[name] {
+					ip, proto, _ := strings.Cut(e, " ")
+					elems = append(elems, fmt.Sprintf(`{"elem": {"val": {"concat": [%q, %q]}, "timeout": 300, "expires": 200}}`, ip, proto))
+				}
+				items = append(items, fmt.Sprintf(`{"set": {"family": "inet", "name": %q, "table": %q, "elem": [%s]}}`,
+					name, netfilter.GatewayTable, strings.Join(elems, ", ")))
+			}
+		}
+		return []byte(`{"nftables": [` + strings.Join(items, ",") + `]}`), nil
+	case cmd == "nft -j list ruleset":
+		if h.ruleset == "" {
+			return []byte(`{"nftables": []}`), nil
+		}
+		return []byte(h.ruleset), nil
 	case cmd == "ip -j -4 neigh show":
 		return []byte(h.neigh), nil
 	case cmd == "ip -4 route show default":

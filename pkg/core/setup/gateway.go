@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -32,6 +33,154 @@ type GatewayStatus struct {
 	Sysctl  bool `json:"sysctl"`
 	// Rules 是 nftables 表和 DOCKER-USER 规则的情况（只在开关开启时检查）。
 	Rules *netfilter.GatewayState `json:"rules,omitempty"`
+	// Recent 是最近 5 分钟（netfilter.GatewayWindow）用过网关的局域网设备（IPv4 地址，表在时才有），
+	// Blocks 是其中被其他防火墙丢弃的流量。
+	Recent []string       `json:"recent,omitempty"`
+	Blocks []GatewayBlock `json:"blocks,omitempty"`
+}
+
+// recentText 是 GatewayStatus.Recent 所指的时段，用于提示。
+var recentText = fmt.Sprintf("the last %d minutes", int(netfilter.GatewayWindow.Minutes()))
+
+// GatewayBlock 是被其他防火墙丢弃的一类流量：最近 5 分钟有局域网设备的这类新连接，却一个都没有通过
+// （由 inet tunlr_gateway 记下的新连接得出，DESIGN.md 8.10）。
+type GatewayBlock struct {
+	// Class 是流量的名称：DNS、TCP、UDP、ping，其余为协议名。
+	Class string `json:"class"`
+	// Path 是 netfilter.PathDNS 等，决定它经过转发还是入站。
+	Path string `json:"path"`
+	// Devices 是这类流量被丢弃的设备（IPv4 地址）。
+	Devices []string `json:"devices"`
+	// Suspects 是挂在同一处、可能丢弃它的规则链；为空时可能是其他规则或 iptables-legacy 的规则。
+	Suspects []netfilter.Blocker `json:"suspects,omitempty"`
+	// Fixes 是放行的方法，每条一句。
+	Fixes []string `json:"fixes,omitempty"`
+}
+
+// Describe 用一句话说明，如 “DNS from 192.168.1.20 and 192.168.1.21 is dropped by inet firewalld
+// filter_FORWARD (firewalld)”。
+func (b GatewayBlock) Describe() string {
+	by := "another firewall"
+	if len(b.Suspects) > 0 {
+		by = strings.Join(netfilter.BlockerNames(b.Suspects), ", ")
+	}
+	devices := b.Devices
+	more := ""
+	if len(devices) > 3 {
+		devices, more = devices[:3], fmt.Sprintf(" and %d more", len(devices)-3)
+	} else if len(devices) > 1 {
+		devices, more = devices[:len(devices)-1], " and "+devices[len(devices)-1]
+	}
+	return fmt.Sprintf("%s from %s%s is dropped by %s", b.Class, strings.Join(devices, ", "), more, by)
+}
+
+// GatewayFixes 返回放行 blocks 的方法，同样的只列一次。
+func GatewayFixes(blocks []GatewayBlock) []string {
+	var fixes []string
+	for _, b := range blocks {
+		for _, f := range b.Fixes {
+			if !slices.Contains(fixes, f) {
+				fixes = append(fixes, f)
+			}
+		}
+	}
+	return fixes
+}
+
+// trafficClass 是一类新连接的名称（GatewayBlock.Class）：被劫持的 DNS 按协议分开（设备解析先用 UDP，超时
+// 不会改用 TCP，UDP 被丢就是解析失败），转发的 ICMP 算作 ping，nft 不认识的协议是协议号。
+func trafficClass(u netfilter.GatewayUse) string {
+	proto := strings.ToUpper(u.Protocol)
+	if _, err := strconv.Atoi(u.Protocol); err == nil {
+		proto = "protocol " + u.Protocol
+	}
+	switch {
+	case u.Path == netfilter.PathDNS && u.Protocol == "udp":
+		return "DNS"
+	case u.Path == netfilter.PathDNS:
+		return "DNS over " + proto
+	case u.Protocol == "icmp":
+		return "ping"
+	}
+	return proto
+}
+
+// recentDevices 返回 uses 中的设备，去掉重复的（uses 已按设备排序）。
+func recentDevices(uses []netfilter.GatewayUse) []string {
+	var devices []string
+	for _, u := range uses {
+		if len(devices) == 0 || devices[len(devices)-1] != u.Device {
+			devices = append(devices, u.Device)
+		}
+	}
+	return devices
+}
+
+// gatewayBlocks 找出被其他防火墙丢弃的流量：某台设备的一类新连接一个都没有通过。按路与类别归并设备，并列出
+// 可疑的规则链和放行的方法。dockerHandled 报告 DOCKER-USER 中的放行规则都在（见 suspects）。
+func (i *Installer) gatewayBlocks(ctx context.Context, iface string, uses []netfilter.GatewayUse, dockerHandled bool) []GatewayBlock {
+	type key struct{ device, path, class string }
+	var keys []key
+	passed := map[key]bool{}
+	for _, u := range uses {
+		k := key{u.Device, u.Path, trafficClass(u)}
+		if _, ok := passed[k]; !ok {
+			keys = append(keys, k)
+		}
+		passed[k] = passed[k] || u.Passed
+	}
+	var blocks []GatewayBlock
+	for _, k := range keys {
+		if passed[k] {
+			continue
+		}
+		n := slices.IndexFunc(blocks, func(b GatewayBlock) bool { return b.Path == k.path && b.Class == k.class })
+		if n < 0 {
+			blocks = append(blocks, GatewayBlock{Class: k.class, Path: k.path})
+			n = len(blocks) - 1
+		}
+		blocks[n].Devices = append(blocks[n].Devices, k.device)
+	}
+	if len(blocks) == 0 {
+		return nil
+	}
+	slices.SortStableFunc(blocks, func(a, b GatewayBlock) int {
+		return strings.Compare(a.Path+" "+a.Class, b.Path+" "+b.Class)
+	})
+	blockers, err := i.rules().Blockers(ctx)
+	if err != nil {
+		i.log().Debug("list the chains that drop by default", "err", err)
+	}
+	for n, b := range blocks {
+		blocks[n].Suspects = netfilter.Suspects(blockers, b.Path, dockerHandled)
+		blocks[n].Fixes = netfilter.Fixes(iface, b.Path, blocks[n].Suspects)
+	}
+	return blocks
+}
+
+// blockerWarnings 是开启网关前的提示：挂在转发、入站上默认丢弃的规则链可能挡住局域网设备（DOCKER-USER
+// 能处理的、先放行 DNAT 连接的见 netfilter.Suspects）。挡没挡住要等设备用上网关后由 doctor 判断。
+func blockerWarnings(iface string, blockers []netfilter.Blocker) []string {
+	var warnings []string
+	for _, path := range []string{netfilter.PathForward, netfilter.PathInput} {
+		list := netfilter.Suspects(blockers, path, true)
+		if len(list) == 0 {
+			continue
+		}
+		names := netfilter.BlockerNames(list)
+		kind, classes := "incoming", "TCP"
+		if path == netfilter.PathForward {
+			// 被劫持的 DNS 也是转发的，先放行 DNAT 连接的链不会丢弃它。
+			kind, classes = "forwarded", "UDP and ping"
+			if slices.ContainsFunc(list, func(b netfilter.Blocker) bool { return !b.AcceptsDNAT }) {
+				classes = "DNS, UDP and ping"
+			}
+		}
+		warnings = append(warnings, fmt.Sprintf("%s drops %s traffic by default, which may block LAN devices' %s; "+
+			"to let it through: %s. Once LAN devices use the gateway, tunlr doctor tells whether anything is dropped",
+			strings.Join(names, ", "), kind, classes, strings.Join(netfilter.Fixes(iface, path, list), "; ")))
+	}
+	return warnings
 }
 
 // GatewayResult 是开启网关的结果。
@@ -64,6 +213,12 @@ func (i *Installer) GatewayStatus(ctx context.Context) (*GatewayStatus, error) {
 	}
 	if rs, err := i.rules().Gateway(ctx, s.Interface); err == nil {
 		s.Rules = &rs
+		if rs.Table {
+			if uses, err := i.rules().GatewayUses(ctx); err == nil {
+				s.Recent = recentDevices(uses)
+				s.Blocks = i.gatewayBlocks(ctx, s.Interface, uses, rs.DockerRules)
+			}
+		}
 	}
 	return s, nil
 }
@@ -109,7 +264,8 @@ func (i *Installer) gatewayInterface(ctx context.Context, iface string, s *Gatew
 // gatewayInterface。不满足时返回满足 errors.Is(err, core.ErrCheckFailed) 的错误；网卡名不合法时满足
 // errors.Is(err, core.ErrInvalidArgument)。透明代理是否开启不在这里检查。
 func (i *Installer) GatewayPreflight(ctx context.Context, iface string) (*GatewayPlan, error) {
-	warnings, err := i.TunPreflight(ctx)
+	// 默认丢弃入站的防火墙由下文的 blockerWarnings 按局域网网卡提示，不要 tun 组的通用版。
+	warnings, err := i.tunPreflight(ctx, "tun.firewall")
 	if err != nil {
 		return nil, err
 	}
@@ -136,16 +292,15 @@ func (i *Installer) GatewayPreflight(ctx context.Context, iface string) (*Gatewa
 	if len(ifi.IPv4) == 0 {
 		return nil, fmt.Errorf("%w: the interface %s has no IPv4 address", core.ErrCheckFailed, iface)
 	}
-	if i.strictRPFilter(iface) {
-		warnings = append(warnings, fmt.Sprintf("rp_filter is strict (1) on %s; replies from TUN may be dropped (not tested yet); "+
-			"if LAN devices cannot connect, set net.ipv4.conf.all.rp_filter and net.ipv4.conf.%s.rp_filter to 2", iface, iface))
-	}
 	p := &GatewayPlan{Interface: iface, Addresses: ifi.IPv4, Forward: i.ipForward(), Warnings: warnings}
 	rs, err := i.rules().Gateway(ctx, iface)
 	if err != nil {
 		return nil, err
 	}
 	p.Docker = rs.DockerChain
+	if blockers, err := i.rules().Blockers(ctx); err == nil {
+		p.Warnings = append(p.Warnings, blockerWarnings(iface, blockers)...)
+	}
 	if s.On {
 		p.Current = s
 	}
@@ -325,21 +480,6 @@ func (i *Installer) ipForward() string {
 func (i *Installer) setIPForward(v string) error {
 	// procfs 中的文件不能用临时文件加改名的方式替换。
 	return os.WriteFile(i.Layout.IPForward(), []byte(v+"\n"), 0o644)
-}
-
-// strictRPFilter 报告 iface 上实际生效的 rp_filter（all 与网卡二者中的较大值）是否为严格模式。
-func (i *Installer) strictRPFilter(iface string) bool {
-	v := 0
-	for _, name := range []string{"all", iface} {
-		data, err := os.ReadFile(i.Layout.RPFilter(name))
-		if err != nil {
-			continue
-		}
-		if n, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-			v = max(v, n)
-		}
-	}
-	return v == 1
 }
 
 func (i *Installer) lookupInterface(name string) (*netfilter.Interface, error) {

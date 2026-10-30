@@ -178,8 +178,10 @@ func TestPreflightForeignRules(t *testing.T) {
 		if name == "ip" && args[0] == "-4" {
 			return []byte("0:\tfrom all lookup local\n8999:\tfrom all fwmark 0x10000000/0x10000000 lookup main\n9005:\tfrom all lookup 77\n"), nil
 		}
-		if name == "systemctl" && args[1] == "ufw" {
-			return []byte("active\n"), nil
+		if name == "nft" {
+			// UFW 的入站链默认丢弃。
+			return []byte(`{"nftables": [{"chain": {"family": "ip", "table": "filter", "name": "INPUT", "hook": "input", "prio": 0, "policy": "drop"}},
+{"chain": {"family": "ip", "table": "filter", "name": "ufw-before-input"}}]}`), nil
 		}
 		return []byte("0:\tfrom all lookup local\n"), nil
 	}
@@ -194,42 +196,8 @@ func TestPreflightForeignRules(t *testing.T) {
 	if len(problems) != 1 || !strings.Contains(problems[0], `"from all lookup 77"`) {
 		t.Errorf("problems = %q", problems)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "ufw") {
+	if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "ip filter INPUT (UFW) drops incoming connections by default") {
 		t.Errorf("warnings = %q", warnings)
-	}
-}
-
-func TestEgress(t *testing.T) {
-	var calls []string
-	links := map[string]string{
-		"ens3": "2: ens3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP",
-		"wg0":  "5: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN",
-	}
-	route := "1.1.1.1 via 192.168.1.1 dev ens3 src 192.168.1.20 uid 999 \n    cache \n"
-	r := &Rules{Run: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
-		calls = append(calls, name+" "+strings.Join(args, " "))
-		if args[1] == "route" {
-			return []byte(route), nil
-		}
-		return []byte(links[args[len(args)-1]] + "\n"), nil
-	}}
-	ctx := context.Background()
-	if dev, p2p, err := r.Egress(ctx, 999); err != nil || dev != "ens3" || p2p {
-		t.Errorf("ens3: %q %v %v", dev, p2p, err)
-	}
-	if calls[0] != "ip -4 route get 1.1.1.1 uid 999" {
-		t.Errorf("calls = %q", calls)
-	}
-	route = "1.1.1.1 dev wg0 table 51820 src 10.8.0.2 uid 0 \n    cache \n"
-	if dev, p2p, err := r.Egress(ctx, -1); err != nil || dev != "wg0" || !p2p {
-		t.Errorf("wg0: %q %v %v", dev, p2p, err)
-	}
-	if calls[2] != "ip -4 route get 1.1.1.1" {
-		t.Errorf("calls = %q", calls)
-	}
-	route = "local 1.1.1.1\n"
-	if _, _, err := r.Egress(ctx, -1); err == nil {
-		t.Error("no dev accepted")
 	}
 }
 

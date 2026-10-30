@@ -100,11 +100,6 @@ func (l Layout) SysctlFile() string { return l.join("etc", "sysctl.d", "90-tunlr
 // IPForward 是 IPv4 转发的内核开关（procfs），测试时也放在 Root 下。
 func (l Layout) IPForward() string { return l.join("proc", "sys", "net", "ipv4", "ip_forward") }
 
-// RPFilter 是网卡 iface 的反向路径过滤设置（procfs）。iface 须先经过校验。
-func (l Layout) RPFilter(iface string) string {
-	return l.join("proc", "sys", "net", "ipv4", "conf", iface, "rp_filter")
-}
-
 // NetDevices 是网卡的 sysfs 目录（/sys/class/net），每块网卡一个子目录，测试时也放在 Root 下。
 func (l Layout) NetDevices() string { return l.join("sys", "class", "net") }
 

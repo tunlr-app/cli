@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -75,11 +76,46 @@ func TestNetns(t *testing.T) {
 	if s, err := r.Gateway(ctx, "lo"); err != nil || s != (GatewayState{Table: true}) {
 		t.Fatalf("gateway = %+v, %v", s, err)
 	}
-	if _, err := inNS(ctx, nil, "iptables", "-N", DockerChain); err != nil {
+	// 记下的新连接：经 lo 重定向到本机端口的 TCP 记在 input 的两个集合中，被其他防火墙丢弃时只在 input_seen 中。
+	if uses, err := r.GatewayUses(ctx); err != nil || len(uses) != 0 {
+		t.Fatalf("uses = %+v, %v", uses, err)
+	}
+	nftScript := func(script string) {
+		t.Helper()
+		if _, err := inNS(ctx, []byte(script), "nft", "-f", "-"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := inNS(ctx, nil, "ip", "link", "set", "lo", "up"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := inNS(ctx, nil, "iptables", "-A", DockerChain, "-j", "RETURN"); err != nil {
-		t.Fatal(err)
+	// nft 1.0.6 不接受规则后紧跟 “; }”，每条规则单独一行。
+	nftScript("table ip test_nat {\n\tchain out {\n\t\ttype nat hook output priority -100; policy accept;\n\t\ttcp dport 9 redirect to :10\n\t}\n}\n")
+	connect := func() {
+		// 没有程序监听，连接被拒绝或超时，只要 SYN 经过入站。
+		inNS(ctx, nil, "timeout", "2", "bash", "-c", "echo > /dev/tcp/127.0.0.1/9")
+	}
+	connect()
+	if uses, err := r.GatewayUses(ctx); err != nil || !slices.Equal(uses, []GatewayUse{{Device: "127.0.0.1", Path: PathInput, Protocol: "tcp", Passed: true}}) {
+		t.Fatalf("uses = %+v, %v", uses, err)
+	}
+	nftScript("flush set inet " + GatewayTable + " input_seen\nflush set inet " + GatewayTable + " input_passed\n" +
+		"table inet test_drop {\n\tchain in {\n\t\ttype filter hook input priority filter; policy accept;\n\t\ttcp dport 10 drop\n\t}\n}\n")
+	connect()
+	if uses, err := r.GatewayUses(ctx); err != nil || !slices.Equal(uses, []GatewayUse{{Device: "127.0.0.1", Path: PathInput, Protocol: "tcp"}}) {
+		t.Fatalf("uses with a drop = %+v, %v", uses, err)
+	}
+	nftScript("delete table ip test_nat\ndelete table inet test_drop\n")
+	if b, err := r.Blockers(ctx); err != nil || len(b) != 0 {
+		t.Fatalf("blockers without iptables = %+v, %v", b, err)
+	}
+	for _, args := range [][]string{{"-N", DockerChain}, {"-A", DockerChain, "-j", "RETURN"}, {"-P", "FORWARD", "DROP"}} {
+		if _, err := inNS(ctx, nil, "iptables", args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b, err := r.Blockers(ctx); err != nil || !slices.Equal(b, []Blocker{{Family: "ip", Table: "filter", Chain: "FORWARD", Hook: "forward", Owner: OwnerDocker, DockerChain: true}}) {
+		t.Fatalf("blockers with Docker's FORWARD = %+v, %v", b, err)
 	}
 	if err := r.GatewayUp(ctx, "lo"); err != nil {
 		t.Fatal(err)

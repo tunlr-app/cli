@@ -76,8 +76,25 @@ func (a *app) printGatewayStatus(s *setup.GatewayStatus) {
 			fmt.Fprintf(w, "Docker:            %s accept rules %s\n", netfilter.DockerChain, mark(r.DockerRules, "present", "absent"))
 		}
 	}
+	if r := s.Rules; r != nil && r.Table {
+		window := fmt.Sprintf("in the last %d minutes", int(netfilter.GatewayWindow.Minutes()))
+		switch {
+		case len(s.Recent) == 0:
+			fmt.Fprintf(w, "LAN traffic:       %s\n", a.style.dim("no device "+window))
+		case len(s.Blocks) == 0:
+			fmt.Fprintf(w, "LAN traffic:       %s %s, nothing dropped\n", plural(len(s.Recent), "device", "devices"), window)
+		default:
+			fmt.Fprintf(w, "LAN traffic:       %s %s\n", plural(len(s.Recent), "device", "devices"), window)
+		}
+		for _, b := range s.Blocks {
+			fmt.Fprintf(w, "                   %s\n", a.style.bad(b.Describe()))
+		}
+	}
 	if s.Tun != state.TunOn || !s.Forward || !s.Sysctl || s.Rules == nil || !s.Rules.Complete() {
 		fmt.Fprintf(w, "\n%s tunlr tun gateway on --interface %s restores the missing parts.\n", a.style.warn("Hint:"), s.Interface)
+	}
+	if len(s.Blocks) > 0 {
+		fmt.Fprintf(w, "\n%s to let it through: %s\n", a.style.warn("Hint:"), strings.Join(setup.GatewayFixes(s.Blocks), "; "))
 	}
 }
 

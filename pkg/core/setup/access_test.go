@@ -2,10 +2,13 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/tunlr-app/cli/pkg/core/lock"
 	"github.com/tunlr-app/cli/pkg/core/netfilter"
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/state"
@@ -77,5 +80,40 @@ func TestCheckLANAccessOnly(t *testing.T) {
 	h.calls = nil
 	if _, err := i.Check(ctx); err != nil || h.called("systemctl enable --now "+service.FirewallUnit) {
 		t.Errorf("active unit: %v, calls %q", err, h.calls)
+	}
+}
+
+// TestRepairHoldsLock 验证 _check、_firewall 补表时持锁（同时执行时不会都插入 DOCKER-USER 的规则），
+// _check 启动 tunlr-firewall.service 之前已经释放锁（启动会等 _firewall 取锁）。
+func TestRepairHoldsLock(t *testing.T) {
+	i, h, _ := newTunInstaller(t)
+	saveLANAccess(t, i)
+	l, err := lock.TryAcquire(i.Layout.LockFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, run := range map[string]func(context.Context) (*CheckResult, error){"_check": i.Check, "_firewall": i.Firewall} {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		_, err := run(ctx)
+		cancel()
+		if !errors.Is(err, lock.ErrBusy) || h.called("nft -f") {
+			t.Errorf("%s while the lock is held: %v, calls %q", name, err, h.calls)
+		}
+	}
+	l.Release()
+
+	var locked bool
+	i.Systemd.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if slices.Equal(args, []string{"enable", "--now", service.FirewallUnit}) {
+			if l, err := lock.TryAcquire(i.Layout.LockFile()); err != nil {
+				locked = true
+			} else {
+				l.Release()
+			}
+		}
+		return h.systemd(ctx, name, args...)
+	}
+	if _, err := i.Check(context.Background()); err != nil || !h.called("systemctl enable --now "+service.FirewallUnit) || locked {
+		t.Errorf("err %v, lock held while starting %s: %v, calls %q", err, service.FirewallUnit, locked, h.calls)
 	}
 }

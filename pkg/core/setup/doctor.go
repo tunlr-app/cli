@@ -48,7 +48,7 @@ func (i *Installer) Doctor(ctx context.Context, opts DoctorOptions) (*doctor.Rep
 	h := i.host()
 	r := &doctor.Report{}
 	r.Checks = append(r.Checks, h.Support(ctx)...)
-	r.Checks = append(r.Checks, h.Tun(ctx, i.rules(), i.coreUID())...)
+	r.Checks = append(r.Checks, h.Tun(ctx, i.rules())...)
 	r.Checks = append(r.Checks, i.installChecks(ctx, h, opts.Quick)...)
 	if opts.Quick {
 		return r, nil
@@ -464,17 +464,48 @@ func (i *Installer) checkGateway(ctx context.Context, c *doctor.Checker, st *sta
 	if err == nil && rs.DockerChain && !rs.DockerRules {
 		fails = append(fails, "the accept rules in "+netfilter.DockerChain+" are missing (Docker drops the forwarded traffic)")
 	}
-	if i.strictRPFilter(iface) {
-		warns = append(warns, "rp_filter is strict (1) on "+iface+"; replies from TUN may be dropped (not tested yet)")
-	}
 	switch {
 	case len(fails) > 0:
 		c.Add("gateway", doctor.Fail, "Gateway", strings.Join(append(fails, warns...), "; "), "tunlr tun gateway on --interface "+iface+" restores it")
 	case len(warns) > 0:
 		c.Add("gateway", doctor.Warn, "Gateway", strings.Join(warns, "; "), "tunlr tun gateway on --interface "+iface)
-	default:
+	case rs.DockerChain:
 		c.Add("gateway", doctor.OK, "Gateway", "on "+iface+": forwarding, nftables and Docker rules in place", "")
+	default:
+		c.Add("gateway", doctor.OK, "Gateway", "on "+iface+": forwarding and nftables rules in place", "")
 	}
+	if err == nil && rs.Table {
+		i.checkGatewayTraffic(ctx, c, iface, rs.DockerRules)
+	}
+}
+
+// checkGatewayTraffic 按 inet tunlr_gateway 记下的最近 5 分钟的新连接，检查局域网设备的流量有没有被其他
+// 防火墙丢弃：某台设备的一类新连接一个都没有通过时为 fail。dockerHandled 见 gatewayBlocks。
+func (i *Installer) checkGatewayTraffic(ctx context.Context, c *doctor.Checker, iface string, dockerHandled bool) {
+	const title = "Gateway traffic"
+	uses, err := i.rules().GatewayUses(ctx)
+	if err != nil {
+		c.Add("gateway-traffic", doctor.Fail, title, err.Error(), "tunlr tun gateway on --interface "+iface+" reloads the table")
+		return
+	}
+	blocks := i.gatewayBlocks(ctx, iface, uses, dockerHandled)
+	if len(blocks) == 0 {
+		msg := "no LAN device used the gateway in " + recentText
+		switch n := len(recentDevices(uses)); n {
+		case 0:
+		case 1:
+			msg = "1 LAN device used the gateway in " + recentText + "; nothing was dropped"
+		default:
+			msg = fmt.Sprintf("%d LAN devices used the gateway in %s; nothing was dropped", n, recentText)
+		}
+		c.Add("gateway-traffic", doctor.OK, title, msg, "")
+		return
+	}
+	msgs := make([]string, len(blocks))
+	for n, b := range blocks {
+		msgs[n] = b.Describe()
+	}
+	c.Add("gateway-traffic", doctor.Fail, title, strings.Join(msgs, "; "), strings.Join(GatewayFixes(blocks), "; "))
 }
 
 // checkExposure 检查生效的配置会不会开放无需认证的端口（见 DESIGN.md 第 6 节“端口安全”）。

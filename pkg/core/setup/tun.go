@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"strings"
 	"time"
 
@@ -93,13 +94,19 @@ func (i *Installer) TunStatus(ctx context.Context) (*TunStatus, error) {
 // （TUN 设备、nft、ip、ip rule 优先级等）。不满足时返回满足 errors.Is(err, core.ErrCheckFailed) 的错误；
 // warnings 是不阻止开启、但可能影响使用的情况。
 func (i *Installer) TunPreflight(ctx context.Context) (warnings []string, err error) {
+	return i.tunPreflight(ctx, "")
+}
+
+// tunPreflight 同 TunPreflight，skip 是不计入的检查（如 GatewayPreflight 自己按网卡提示的 tun.firewall）。
+func (i *Installer) tunPreflight(ctx context.Context, skip string) (warnings []string, err error) {
 	if !i.systemd().Installed() {
 		return nil, fmt.Errorf("%w: %w", core.ErrCheckFailed, mihomo.ErrServiceNotInstalled)
 	}
 	if _, err := mihomo.NewClient(i.Layout.CoreSocket()).Version(ctx); err != nil {
 		return nil, fmt.Errorf("%w: mihomo is not responding (%v); start it first: tunlr core start", core.ErrCheckFailed, err)
 	}
-	return doctor.Failures(i.host().Tun(ctx, i.rules(), i.coreUID()))
+	checks := slices.DeleteFunc(i.host().Tun(ctx, i.rules()), func(c doctor.Check) bool { return c.ID == skip })
+	return doctor.Failures(checks)
 }
 
 // TunOn 开启透明代理并发布 plan（pipeline.PlanTun(ctx, true) 的结果，已经用户确认）：
@@ -382,20 +389,22 @@ func (i *Installer) Check(ctx context.Context) (*CheckResult, error) {
 		res.Actions = append(res.Actions, "stopped "+service.CheckTimer+": TUN, the gateway and LAN access are off")
 		return res, nil
 	}
-	actions, err := i.repairTables(ctx, st)
+	// 补表时持锁（同 _firewall），之后释放：启动 tunlr-firewall.service 会等 _firewall 取锁执行完，重启
+	// 内核也要取锁。
+	st, actions, err := i.repairLocked(ctx)
 	res.Actions = append(res.Actions, actions...)
 	if err != nil {
 		return res, err
 	}
 	// tunlr-firewall.service 随 nftables.service 停止后不随它启动（PartOf 只传播停止和重启），停着时收不到
-	// 之后的重新加载：这里拉起来。_check 不持锁，_firewall 取锁不会等它。
+	// 之后的重新加载：这里拉起来。
 	if status, err := i.systemd().Status(ctx, service.FirewallUnit); err == nil && !status.Active() {
 		if err := i.systemd().SetTimer(ctx, service.FirewallUnit, true); err != nil {
 			return res, fmt.Errorf("starting %s: %w", service.FirewallUnit, err)
 		}
 		res.Actions = append(res.Actions, "started "+service.FirewallUnit)
 	}
-	if !st.TunEnabled() {
+	if st == nil || !st.TunEnabled() {
 		return res, nil
 	}
 
@@ -423,14 +432,6 @@ func (i *Installer) rules() *netfilter.Rules {
 		return i.Rules
 	}
 	return &netfilter.Rules{}
-}
-
-// coreUID 返回内核用户的 UID，不知道（尚未 init、测试用的布局）时为 -1。
-func (i *Installer) coreUID() int {
-	if o, err := service.KernelUser(i.Layout); err == nil && o != nil {
-		return o.UID
-	}
-	return -1
 }
 
 func (i *Installer) now() time.Time {

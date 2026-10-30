@@ -83,7 +83,7 @@
   | 组 | 检查 | 何时 |
   |---|---|---|
   | `system` 支持条件 | Linux、root、PID 1 为 systemd、amd64 或 arm64（amd64 报告 CPU 级别，低于 v3 警告）、不在 WSL 中、不在容器中、发行版版本 | 总是。`init` 复用：有 fail 就拒绝安装 |
-  | `tun` 透明代理条件 | `/dev/net/tun`、`nft`、`ip`、需要的 ip rule 优先级没有被占用、内核出站的网卡（经 VPN 时 warn，见 8.4“防回环”）、UFW 和 firewalld、iptables-legacy 中的规则 | 总是。`tun on` 复用：有 fail 就不开启，warn 照常显示 |
+  | `tun` 透明代理条件 | `/dev/net/tun`、`nft`、`ip`、需要的 ip rule 优先级没有被占用、默认丢弃入站又不放行 DNAT 连接的规则链（会丢掉内核重定向的 TCP，见 8.10“其他防火墙”）、iptables-legacy 中的规则 | 总是。`tun on` 复用：有 fail 就不开启，warn 照常显示 |
   | `install` 安装是否健康 | unit 与当前版本的模板一致；`/usr/local/bin/tunlr` 与正在运行的这个相同；内核用户存在，`bin/`、`core/` 归它所有；内核服务已启用、在运行，没有 failed 或反复重启；内核二进制存在且是已知可用版本；设置和状态文件能读取；生效配置存在并通过 `mihomo -t`；两个 timer 与设置和 TUN 开关一致，没有遗留的回滚定时器；TUN 开关与内核实际状态一致，内核在运行时两张 nft 表都在；内核开着 TUN 时防回环的两道设置都生效（见 8.4）；配置中的端口没有被其他程序占用；订阅最近一次抓取是否失败、是否已到期或 7 天内到期、流量是否用完或超过 90% | 已安装（有 `tunlr-core.service`）时。没有安装时只有一项 skip，提示 `tunlr init` |
   | `network` 网络 | 能解析域名；能访问 api.github.com（校验值的来源）；配置了镜像时镜像能连上；本机时钟与 GitHub 的偏差（超过 90 秒警告，VMess 等协议会失败；超过 1 天判失败，TLS 会失败）；内核在运行时经 mixed-port 访问一个测试地址 | 默认执行，并行进行，总时长约 10 秒；`--offline` 跳过 |
 
@@ -142,7 +142,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 见 `CLAUDE.md`。补充两点：
 
 - **YAML 合并基于 `yaml.Node`**：保留键顺序和注释，生成的配置可读、diff 干净；不需要为 mihomo 的大量字段定义结构体。
-- **nftables 用 `nft -f`，不用 `google/nftables`**：规则用 nft 原生语法写成模板，生成的脚本落盘可读、可手动执行、易于 golden 测试，`config plan --full` 原样给用户审查；`nft -f` 整个文件在一个事务中提交。用库直接发 netlink 的话，规则是一串字节表达式，与 `nft list ruleset` 对不上，用户无法审查，出问题也无法手动复现；很多语法特性还要自己拼表达式。`nft` 命令在目标系统上一定存在（`doctor` 要求 nftables），用户排查也离不开它。目前只需要加载、删表、列出表名，都用 `nft` 命令完成；将来真要程序化读取规则的计数器、集合内容等，再考虑引入它。
+- **nftables 用 `nft -f`，不用 `google/nftables`**：规则用 nft 原生语法写成模板，生成的脚本落盘可读、可手动执行、易于 golden 测试，`config plan --full` 原样给用户审查；`nft -f` 整个文件在一个事务中提交。用库直接发 netlink 的话，规则是一串字节表达式，与 `nft list ruleset` 对不上，用户无法审查，出问题也无法手动复现；很多语法特性还要自己拼表达式。`nft` 命令在目标系统上一定存在（`doctor` 要求 nftables），用户排查也离不开它。加载、删表、列出表名，以及读取规则和集合的内容（记录设备、网关流量的检查、其他防火墙的规则链，用 `nft -j` 的 JSON 输出），都用 `nft` 命令完成。
 - **diff 自己实现**：锚定（patience）逐行 diff，约 80 行。原先用的 `sergi/go-diff` 是字符级的 diff-match-patch，按行用要把每行映射成一个字符，求的是最短差异，新旧差别大时要算几秒，统一格式也要自己拼；锚定算法以两侧各只出现一次的行对齐，耗时 O(n log n)（5000 节点换成 1 万节点约 30 毫秒），对每行多半唯一的配置结果也更易读。
 - **正则用 `dlclark/regexp2`**（MIT，独立的库，不属于 mihomo）：mihomo 筛选节点用的就是它，节点筛选的正则要原样写给内核，两边必须一致（见第 6 节“节点筛选”）。
 - **没有引入的**：`coder/websocket`（实时视图交给 zashboard，见 3.1 和 5.2）。
@@ -538,7 +538,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 ### 8.3 开关与配置
 
 - **开关**：`tunlr tun on`、`tunlr tun off`；不带子命令的 `tunlr tun` 显示状态。`--mode` 预留给将来的 tproxy，现在不提供。
-- **开关存在状态文件中**（`state.json` 的 `tun`），不放在 `settings.yaml`：手改设置文件打开 TUN 会绕过防失联检测。状态有三种：`off`、`pending`（已发布、检测中，带回滚期限）、`on`。新增的字段可以省略，旧状态文件视为 `off`，不需要迁移。
+- **开关存在状态文件中**（`state.json` 的 `tun`），不放在 `settings.yaml`：手改设置文件打开 TUN 会绕过防失联检测。状态有三种：`off`、`pending`（已发布、检测中，带回滚期限）、`on`；关闭时不写这个字段。
 - **配置复用分层合成**，`tun on/off` 本身只改开关，然后走与 `config apply` 相同的流水线（`-t` 校验、原子写入、热重载、失败回滚、记入历史）。实测热重载即可开关 TUN，`tun` 不加入需要重启的键。
   - 模板（用户可以用 mixin 覆盖）：`stack: mixed`、`dns-hijack: [any:53, tcp://any:53]`，附注释说明为什么不排除私有地址段。
   - 由 `tunlr:tun` 独占（mixin 写了就拒绝发布，提示用 `tunlr tun on/off`）：`tun.enable`（取自开关：`pending` 与 `on` 为 true）、`auto-route: true`、`auto-redirect: true`、`strict-route: false`、`auto-detect-interface: true`、`exclude-uid: [<内核用户的 UID>]`、`device: tunlr0`、`iproute2-table-index: 2022`、`iproute2-rule-index: 9000`。工具补的规则、清理和检测都依赖这些值；固定网卡名也让 `doctor` 和日志一眼认出它。
@@ -547,7 +547,12 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
     - `exclude-uid`：内核以独立用户 `tunlr` 运行，sing-tun 为它加一条 `uidrange <UID> goto 9010`（排在 9000，早于其余规则），这个用户的包查主路由表，不进 TUN；出口不是 `tunlr0`，auto-redirect 的 output 规则（`oifname "tunlr0"`）也不重定向它。本机其他进程（包括以 root 运行的 tunlr）照常经 TUN。UID 在合成时查 `/etc/passwd`；尚未 init、用户不存在时不写，仍然独占（mixin 不能写，想排除其他用户用 `exclude-uid-range`）。用户被重建、UID 变了时，下次发布配置跟上。
     - 在 tunlr-dev（v1.19.33）上实测：开启 TUN 后 ip rule 出现 `9000: from all uidrange 999-999 goto 9010`；把生效配置改成 `auto-detect-interface: false` 热重载，只靠 `exclude-uid` 时访问正常（连接 1 个）；再去掉 `exclude-uid` 作为对照，请求全部超时，连接数涨到 5791，即回环。
     - 检查：`doctor` 的 install 组在内核开着 TUN 时（面板打开的也算）检查“Loop prevention”：运行中的配置（`GET /configs` 的 `tun` 段）开着 `auto-detect-interface`；`exclude-uid` 含有内核用户现在的 UID，sing-tun 建了 auto-route 规则的每个地址族都有对应的 `uidrange` 规则。两道都不在判 fail，缺一道判 warn。修复：UID 对不上（用户被重建过）或配置不对时 `tunlr config apply` 按 `tunlr:tun` 重新发布；配置对、只是规则不在时 `tunlr core restart`。
-    - 服务器自己跑全隧道 VPN（wg-quick 把默认路由放进自己的表、OpenVPN 的 `0.0.0.0/1` 与 `128.0.0.0/1`、Tailscale 的出口节点）时，`auto-detect-interface` 可能把内核绑到 VPN 网卡，`exclude-uid` 的规则之后也按 VPN 的策略路由走；VPN 自己的包由系统内核发出，不带内核用户的 UID，可能被 TUN 截下、经内核又送回 VPN，互相套住。未实测。`tun on` 的前置检查和 `doctor` 的 tun 组为此检查“Route out”：以内核用户的身份查到公网地址（`1.1.1.1`，只用 `ip route get` 查路由，不发包）的出口网卡，按策略路由查，上述几种都算在内；它是点对点网卡（`IFF_POINTOPOINT`）时 warn，不阻止开启——Tailscale 的包带它自己的 fwmark，在 5210 走主路由表，大概率能用。提示确认 VPN 自己的包绕开 TUN，或在 mixin 中用 `interface-name` 指定物理网卡。
+    - 服务器自己跑全隧道 VPN 时（2026-10-30 实测）：在 tunlr-dev 上用三个 network namespace 模拟服务器、上游路由器、WireGuard 服务端。服务器按 wg-quick 的做法配全隧道：默认路由放进表 51820，`not fwmark 51820` 的包查它，WireGuard 自己的包带 fwmark，查主路由表。内核以 UID 999 运行，tun 设置同 `tunlr:tun`，规则 `MATCH,DIRECT`。
+      - 两道都开（即 `tunlr:tun`）：不回环。TUN 的规则（9000～9010）排在 wg-quick 的（32764、32765）之前，本机流量都进 TUN；`auto-detect-interface` 按主路由表的默认路由绑定物理网卡，内核直连的连接绕过 VPN、从物理网卡出去。去往 VPN 内层网段的流量（主路由表中的具体路由）照常经 VPN。
+      - VPN 在 TUN 开着时新建会话：WireGuard 的握手包还没定源地址，被 `from 0.0.0.0 iif lo` 送进 TUN，由内核按分流规则转发，这里经物理网卡出去，握手成功。VPN 先建立好再开 TUN 时，源地址已经定了，不进 TUN。所以 VPN 自己的包可能经过内核、按分流规则走。
+      - 对照：只开 `exclude-uid` 时，内核的连接按策略路由经 VPN。VPN 先建立好时访问正常；TUN 开着时新建会话，握手包经内核又被送回 VPN，握手失败，但连接数没有暴增。两道都关时，内核自己识别出回环并拒绝（日志 `reject loopback connection`）。
+      - 其他 VPN 只做了推断，未实测。OpenVPN 等替换默认路由的，会为自己的服务器加一条主路由表中的具体路由，TUN 的 `lookup main suppress_prefixlength 0` 先查到它，VPN 的包不进 TUN。Tailscale 的包带它自己的 fwmark，在 5210 走主路由表。
+      - 不检查内核的出口网卡。曾在 `tun on` 的前置检查和 `doctor` 中以内核用户的身份用 `ip route get` 查公网地址的出口网卡，是点对点网卡（VPN）时警告可能回环。上面的实测中它查到的是 VPN 网卡，内核实际却从物理网卡出去（`auto-detect-interface` 的绑定不反映在 `ip route get` 中），警告的回环也没有出现，所以去掉。
     - 约束：`exclude-uid` 让内核用户的全部流量绕过 TUN，所以这个用户只运行 mihomo。将来新增的组件（如 agent）需要经代理时，要用别的用户运行。
   - 不写进 `mixin.d`，理由见第 6 节“受管 mixin”。
 - **回滚与开关**：`config rollback` 恢复旧修订的内容后，再按当前开关写入独占的受管 mixin（与合成时最后一层相同）。否则回滚到开关不同的修订，配置就与工具的规则和防失联状态对不上。`config plan` 照常显示差异。
@@ -563,16 +568,18 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - `tunlr-core.service` 增加 `ExecStartPre=-+/usr/local/bin/tunlr _prestart`：加载 `inet tunlr` 表和 ip rule（`+` 表示以 root 运行，不受 `User=` 和沙箱限制；`-` 表示失败也照常启动内核，不让规则的问题拖垮代理本身）。
   - 增加 `ExecStopPost=-+/usr/local/bin/tunlr _poststop`：删除 `inet tunlr` 表和工具的 ip rule；内核的 `inet mihomo` 表和优先级 9000～9010 的 ip rule 如果还在（内核被 `SIGKILL` 或崩溃），一并删除。`ExecStopPost` 在进程以任何方式退出后都会执行，所以实测中 `SIGKILL` 后容器断网的问题由此消除，`_rescue` 不必再单独清理。
   - 这两个命令不取文件锁（`tunlr core start` 持锁调用 `systemctl start` 时会死锁），操作本身幂等。
-- **规则被他人清空**：例如重新加载 Debian 的 `nftables.service`，其配置以 `flush ruleset` 开头，会连同内核的表一起清空。两道补救：
+- **规则被他人清空**：例如重新加载 Debian 的 `nftables.service`，其配置以 `flush ruleset` 开头，会连同内核的表一起清空；启动 firewalld 会停掉 `nftables.service`，Docker 的 iptables 链也随之消失（8.10 的实测）。两道补救：
   - `tunlr-check.timer`（每 5 分钟）执行 `_check`：按状态补上 tunlr 的表（网关的转发设置与规则（8.10）、代理端口和面板的访问限制 `inet tunlr_access`（第 10 节）、记录设备的表（8.12）、内核在运行时的 `inet tunlr`），访问限制每次都按生效的配置重新加载，mixin 改了代理端口也能跟上；透明代理开着而 `inet mihomo` 不见了，重启内核由它重建。另外兜底处理回滚定时器没有生效的情况：开关为 `pending` 且过期一分钟以上时关闭 TUN。
+  - `_check` 补表时同 `_firewall` 一样取文件锁（最多等 5 分钟），补完就释放，再拉起 `tunlr-firewall.service`（会等 `_firewall` 取锁执行完）、重启内核（自己取锁）。两者会同时执行，例如重新加载 `nftables.service` 时 timer 恰好到期：不持锁时两边会发现缺了同一条规则、各补一遍（8.10 的实测中 `DOCKER-USER` 的放行规则出现过 4 条）。持锁也避免与 `gateway off` 等操作交错，按旧状态补回刚删掉的表。
   - 这个 timer 在透明代理、网关或局域网访问（代理端口、面板）任一开着时启用（`checkWanted`），各开关的 on/off 之后按状态启停，`init` 时也按状态校正；开关被回滚定时器或 `_prestart` 关闭、都已关闭时，`_check` 下次执行时停用自己（不在 `ExecStartPre` 中调用 systemctl）。面板临时打开的 TUN 不在保护范围内。
   - `tunlr-firewall.service`（安装后总是启用）：`PartOf=`、`ReloadPropagatedFrom=nftables.service`，`nftables.service` 启动、重启、重新加载之后执行 `_firewall`，立即按状态补上同样的表，不等 5 分钟；它取文件锁，最多等 5 分钟（同 `_aftercare`；超时会让单元 failed、此后的 reload 不再传到它，所以不能用 30 秒），不重启内核（内核的 `inet mihomo` 交给 `_check`）。持锁的操作不能同步启动它：`settings set` 等保存设置的操作先释放锁，再同步 unit（`enable --now` 会等 `_firewall` 执行完）。`tunlr-core.service` 排在 `nftables.service` 之后启动，开机时内核启动前的 `_prestart` 加载的表不会被它随后清空。`systemctl stop nftables`（同样清空规则）不会传到它，`stop` 之后再 `start` 也不会把它拉起来（`PartOf=` 只传播 stop 和 restart），没在运行的单元也收不到 reload：`_check` 发现它没在运行时拉起它，表由 `_check` 同时补上。
+  - Docker 晚于内核建好 `DOCKER-USER` 链时（开机时 Docker 晚就绪、只启用了 `docker.socket` 按需启动、网关开着时才装上 Docker），网关的放行规则由 `_check` 在 5 分钟内补上，不为 Docker 另设随它启动的单元：Docker 只在自己开启转发（启动时 `ip_forward` 为 0）时把转发链策略设为 drop，网关开着时 sysctl 文件让 `ip_forward` 开机即为 1，这段时间转发不受影响（8.10 的实测）。其余情形（例如有人把 `ip_forward` 改回 0 后重启 Docker）同样由 `_check` 补上。
 
 ### 8.5 开启流程与防失联
 
 `tun on`：
 
-1. 前置检查，不通过则退出码 3：服务已安装且内核在运行（不运行就无法检测，提示先 `core start`）；`/dev/net/tun`、`nft`、`ip` 可用；优先级 8999～9010 没有他人的 ip rule；启用了 UFW、firewalld 时给出警告（未实测，见 8.8）。
+1. 前置检查，不通过则退出码 3：服务已安装且内核在运行（不运行就无法检测，提示先 `core start`）；`/dev/net/tun`、`nft`、`ip` 可用；优先级 8999～9010 没有他人的 ip rule；有默认丢弃入站、又不先放行 DNAT 连接的规则链（UFW 即是如此，firewalld 不是）时警告：内核把 TCP 重定向到自己的端口后经入站，会被它丢弃（见 8.8、8.10“其他防火墙”）。
 2. 显示 `config plan`（diff 中是 `tun.enable` 的变化）并确认；非交互模式需要 `--yes`，`--dry-run` 只预览。
 3. 加锁，开关记为 `pending`（期限为现在加 3 分钟），用 `systemd-run --on-active=3min --unit=tunlr-tun-guard` 布置回滚定时器，执行 `tunlr _tun-guard`。
 4. 加载工具的规则（见 8.4，让已经建立的连接也能标记），发布配置，内核热重载打开 TUN。发布失败时流水线自己回滚，开关恢复原状，退出码 4。然后释放锁，检测不需要持锁，这样卡住的检测不会挡住回滚定时器。
@@ -617,7 +624,7 @@ tunlr-dev（环境同 8.2；SSH 客户端 192.168.11.41 不在服务器的直连
 
 - 真实的 UDP 服务（WireGuard、hysteria2 服务端）：按原理不受影响。若受影响，再加按端口放行的设置（`ip rule sport <端口> lookup main`）。
 - IPv6：测试机没有公网 IPv6。日志显示 TUN 没有 IPv6 地址（`Meta([198.18.0.1/30],[])`），有公网 IPv6 的服务器上 IPv6 流量可能不经 TUN。
-- UFW、firewalld 启用时：auto-redirect 把容器的 TCP 重定向到本机端口，可能被入站策略拦下。
+- UFW、firewalld 启用时容器的 TCP：auto-redirect 把它重定向到本机端口，经过入站。网关模式中局域网设备的 TCP 走的是同一条路（8.10 的实测）：UFW 的入站策略丢弃它，firewalld 先放行 DNAT 的连接、不受影响。容器的情形按此推断，未实测。`doctor` 的 tun 组和 `tun on` 据此只对默认丢弃入站、又不放行 DNAT 连接的链警告（按链判断，不按程序名），firewalld 不再误报；`tun gateway on` 不用这条，改用网关按局域网网卡给出的提示。
 - Ubuntu 的 systemd-resolved（`127.0.0.53`）：DNS 先到本机的 resolved，再由它向上游查询；内核的 ip rule 对目的端口 53 有专门处理，应当仍能劫持。
 - 以本机方式安装的 Tailscale：它的 ip rule 优先级为 52xx，排在 TUN 之前，应当互不影响。
 
@@ -646,38 +653,38 @@ tunlr-dev（环境同 8.2，装有 Docker：`ip_forward` 由 Docker 在运行时
 
 结论：开启 TUN 后，网关模式缺的只有两样：`ip_forward`，以及转发链策略为 drop 时的放行。auto-redirect 和 `dns-hijack` 已经覆盖了 TCP 和 DNS，不需要 NAT，也不需要改 `dns.listen`。
 
-尚未实测：没有 Docker（转发链策略为 accept）的机器、局域网设备与网关在同一网段（旁路由的实际情形，实测用的是单独的 veth 网段）、rp_filter 为严格模式、IPv6。
+尚未实测：局域网设备与网关在同一网段（旁路由的实际情形，实测用的是单独的 veth 网段）、IPv6。没有 Docker 的机器和 rp_filter 严格模式在实现后测过，见 8.10。
 
 ### 8.10 网关模式（MVP 5）
 
 局域网设备把这台服务器设为默认网关（以及 DNS），它们的流量经 mihomo 分流，即常说的旁路由。按 8.9 的实测，开启 TUN 后 auto-redirect 和 `dns-hijack` 已经处理了转发来的 TCP 和 DNS，网关模式只需要补：IPv4 转发、转发链策略为 drop 时的放行，以及内核不在时不让局域网流量直接出去。不需要 NAT，不改 mihomo 的配置。
 
 - **命令**：`tunlr tun gateway` 显示状态；`tunlr tun gateway on [--interface <网卡>]`；`tunlr tun gateway off`。菜单放在“Traffic”分类中。`init` 的用途问题选“当网关和代理”时，在 init 成功、内核已经运行之后走同一个流程；没有订阅时不问（内核不会启动，TUN 无法检测），见第 10 节“家庭网络中的用法”。
-- **开关**存在 `state.json` 的 `gateway`（局域网网卡、开启前 `ip_forward` 的值），理由同 TUN 开关（8.3）。字段可以省略，旧状态文件视为关闭，不需要迁移。
+- **开关**存在 `state.json` 的 `gateway`（局域网网卡、开启前 `ip_forward` 的值），理由同 TUN 开关（8.3）。关闭时不写这个字段。
 - **局域网网卡**：默认取 IPv4 默认路由所在的网卡（旁路由的情形，局域网与上行是同一块网卡），可用 `--interface` 指定。不能是 `lo`、`tunlr0`。交互模式下不给 `--interface`、网关模式还没开启、且候选网卡多于一块时（候选同 `init` 的用途问题：已启用、有 IPv4 地址、接着真实网络的网卡，见下文“网卡是否接着真实网络”），在列表中选择，默认路由所在的排在最前，有公网地址的标出；`--yes` 时不问，取默认路由所在的网卡。菜单的“Turn gateway on”走同一个流程。
 - **网卡是否接着真实网络**（2026-10-29）：候选网卡和 `devices --all` 中的邻居都按内核在 `/sys/class/net/<网卡>` 给出的属性判断，不按网卡名猜（`setup.physicalInterface`）。有 `device` 的是硬件或虚拟机的网卡；网桥、bond、VLAN、macvlan 顺着 `lower_<网卡>` 逐层找下层，下层中有硬件网卡的才算（Proxmox 的 `vmbr0` 算，成员只有 veth 的 Docker 网桥不算）。回环、veth、tun/tap、WireGuard 等 VPN 都没有 `device`。原来按 `docker`、`br-`、`veth`、`tailscale`、`wg` 等名字前缀排除，两处各有一张表且不一致：新出现的软件要补表，用户自己起的名字可能被误伤，属于特殊适配。默认路由所在的网卡总是候选，兜住判断不了的情况。
 - **只做 IPv4**：测试机没有 IPv6（见 8.8），`ip6` 转发不开启也不放行。
 
 **`tun gateway on`**：
 
-1. 前置检查，不通过则退出码 3：TUN 的前置检查（8.5 第 1 步）；局域网网卡存在且已启用。该网卡的 `rp_filter` 为严格模式（1）时警告（未实测）。
+1. 前置检查，不通过则退出码 3：TUN 的前置检查（8.5 第 1 步）；局域网网卡存在且已启用。不检查 `rp_filter`：严格模式（1）下局域网设备各项都通过（见下文的实测）。
 2. TUN 没开时，先走 `tun on` 的完整流程（plan、确认、防失联检测），通过后再继续；TUN 开启失败则网关也不开启。
 3. 显示将要做的改动并确认；非交互模式需要 `--yes`，`--dry-run` 只预览。
 4. 加锁，依次：
    - 记下 `net.ipv4.ip_forward` 的当前值，写入 `/etc/sysctl.d/90-tunlr-gateway.conf`（`net.ipv4.ip_forward = 1`，重启后仍生效）并立即生效。
-   - 加载 `inet tunlr_gateway` 表（`templates/nft/gateway.nft`，`nft -f` 原子替换）：从局域网网卡进来、不出 `tunlr0`、目标不是私有地址段的转发流量丢弃。TUN 正常时局域网流量都进 `tunlr0`，这条规则不起作用；内核停止、崩溃或面板临时关闭 TUN 时，局域网设备断网，而不是悄悄直连（失败时关闭）。去往私有地址段（第 10 节“私有地址段只定义一处”）的照常转发：这些网段本来就不经代理；DNAT 到本机容器、虚拟机等的连接在 forward 链看到的也是私有地址（如 Docker 发布的端口）。
+   - 加载 `inet tunlr_gateway` 表（`templates/nft/gateway.nft`，`nft -f` 原子替换）：从局域网网卡进来、不出 `tunlr0`、目标不是私有地址段的转发流量丢弃。TUN 正常时局域网流量都进 `tunlr0`，这条规则不起作用；内核停止、崩溃或面板临时关闭 TUN 时，局域网设备断网，而不是悄悄直连（失败时关闭）。去往私有地址段（第 10 节“私有地址段只定义一处”）的照常转发：这些网段本来就不经代理；DNAT 到本机容器、虚拟机等的连接在 forward 链看到的也是私有地址（如 Docker 发布的端口）。表中还记下局域网设备最近 5 分钟的新连接，供检查其他防火墙是否丢弃了它们（见下文“其他防火墙”）。
    - 存在 Docker 的 `DOCKER-USER` 链时，在其中插入两条放行规则（`-i <网卡> -o tunlr0` 及反方向，带注释 `tunlr`）。同一个 hook 上任何一张表 drop 都会丢包，自己的表中 accept 无效，只能按 Docker 文档放在这条链里。**这是项目中唯一调用 `iptables` 的地方**（Docker 的链由 iptables 管理）；没有这条链时不调用。
    - 开关记为开启。任何一步失败，撤销已做的步骤，退出码 4。
 5. 输出局域网设备应设置的网关和 DNS 地址（局域网网卡的 IPv4 地址）。
 
-不做防失联检测：网关不改变本机自己的流量，SSH 不受影响。从服务器上也无法检测局域网设备是否能用，`doctor` 检查各项是否到位。
+不做防失联检测：网关不改变本机自己的流量，SSH 不受影响。局域网设备能不能用，要等它们用上网关后由 `doctor` 按记下的新连接判断（见下文“其他防火墙”）。
 
 **`tun gateway off`**：加锁，删除 `DOCKER-USER` 中的两条规则、`inet tunlr_gateway` 表和 sysctl 文件；`ip_forward` 开启前为 0、且没有 `DOCKER-USER` 链时恢复为 0（Docker 需要转发，有它时保持 1）；开关记为关闭。TUN 保持开启。
 
 **生命周期**：
 
 - 网关的规则不随内核停止删除（`_poststop` 不动它们），这样内核不在时仍是失败时关闭。
-- `_prestart`（含开机）在开关开启时重新加载 `inet tunlr_gateway` 表和 `DOCKER-USER` 规则（nft 规则不跨重启保存）。Docker 晚于内核服务启动时，`DOCKER-USER` 链那时还不存在，由 `_check` 补上。
+- `_prestart`（含开机）在开关开启时重新加载 `inet tunlr_gateway` 表和 `DOCKER-USER` 规则（nft 规则不跨重启保存）。Docker 晚于内核服务启动时，`DOCKER-USER` 链那时还不存在，由 `_check` 补上；`ip_forward` 那时已经是 1，Docker 不把转发链策略改为 drop，转发不受影响（见 8.4）。
 - `_check`（每 5 分钟）和 `_firewall`（`nftables.service` 重新加载之后）在开关开启时检查表和 `DOCKER-USER` 规则，缺了就补（例如 `flush ruleset`、Docker 重建了链），见 8.4。
 - 局域网网卡总是被代理端口和面板的访问限制放行（第 10 节“对其他设备开放的端口”）：经网关上网的设备也能直接用代理端口、打开面板（开着时）。
 - `tun off` 先关闭网关（同一把锁中），并在确认时说明；防失联回滚关闭 TUN 时同样先关闭网关。
@@ -686,12 +693,33 @@ tunlr-dev（环境同 8.2，装有 Docker：`ip_forward` 由 Docker 在运行时
 **其他**：
 
 - `status` 显示网关开关和网卡；`tunlr tun`（连同透明代理）和 `tunlr tun gateway` 显示各项是否到位（转发、sysctl 文件、表、`DOCKER-USER` 规则）。
-- `doctor` 的 install 组在网关开启时检查：`ip_forward` 为 1、sysctl 文件、`inet tunlr_gateway` 表、有 `DOCKER-USER` 链时的放行规则、局域网网卡存在、`rp_filter` 不是严格模式、TUN 开启。
+- `doctor` 的 install 组在网关开启时检查：`ip_forward` 为 1、sysctl 文件、`inet tunlr_gateway` 表、有 `DOCKER-USER` 链时的放行规则、局域网网卡存在、TUN 开启；表在时再检查其他防火墙是否丢弃了局域网设备的流量（“Gateway traffic”，见下文）。
 - 代码：nft 模板与 `DOCKER-USER` 规则在 `pkg/core/netfilter`；开关、sysctl 与流程在 `pkg/core/setup`；CLI 在 `internal/cli/gateway.go`。
 - `--json` 时 TUN 必须已经开启（退出码 3，提示先 `tunlr tun on`）：两段流程各有一份 JSON 输出，无法合并。
 - 再次执行 `tun gateway on` 会补上缺少的部分，不给 `--interface` 时沿用正在使用的网卡（而不是换到默认路由所在的网卡）；换 `--interface` 时先撤掉旧网卡的规则，开启前的 `ip_forward` 仍按最初记下的值。
 
-**实现后的实测**（2026-10-28，tunlr-dev，Debian 12 + Docker，局域网设备仍用 netns + veth 模拟）：
+**其他防火墙**（2026-10-30）：同一个 hook 上的基础链按优先级依次执行（nft 的表与 iptables-nft 的表一样），任何一条链丢弃就丢弃，accept 只是交给下一条链。UFW、firewalld、Docker 等的默认丢弃都可能挡住局域网设备，而且挡在哪里因流量而异。局域网设备经网关的流量分三条路：
+
+| 路 | 流量 | 经过 |
+|---|---|---|
+| `dns` | 被劫持的 DNS（`dnat` 到 `198.18.0.2` 后进 `tunlr0`） | 转发，带 `ct status dnat` |
+| `forward` | 其余进 `tunlr0` 的：UDP、ping 等 | 转发 |
+| `input` | 被 redirect 到内核本机端口的 TCP | 入站，带 `ct status dnat` |
+
+- **记下新连接**：`inet tunlr_gateway` 中每条路两个超时集合，元素是“设备地址 . 协议”，每个新连接（`ct state new`）刷新 5 分钟的计时。`<路>_seen` 在优先级 `mangle - 1` 的链中记录，早于其他防火墙；`<路>_passed` 在 `filter + 200`，晚于 iptables、UFW（`filter`）和 firewalld（`filter + 10`）。只记录，不改变包的去向。
+- **判断**：某台设备的一类流量最近 5 分钟有新连接，却一个都没有进 `_passed`，就是被其他防火墙丢弃了。类别按路和协议分：DNS（UDP）、DNS over TCP（分开算：设备解析先用 UDP，超时不会改用 TCP，UDP 被丢就是解析失败）、TCP、UDP、ping（转发的 ICMP），nft 不认识的协议写作协议号。只认“全部被丢弃”：部分被丢弃可能是有意的限制（UFW 放行转发的 ICMP echo，不放行其他类型），也就不需要阈值。用超时集合而不用计数器：每台设备、每类流量各自判断，放行之后几分钟内自然恢复，不需要清零。最近 5 分钟没用过网关的设备不判断。
+- **报告**：`doctor` 的“Gateway traffic”有被丢弃的流量时 fail，逐类列出设备、可疑的规则链，提示放行的方法；没有时报告最近 5 分钟用过网关的设备数。`tunlr tun gateway` 显示同样的内容。
+- **可疑的规则链**：从 `nft -j list ruleset` 中找出挂在 forward、input 上的基础链（ip、inet 族，不含 tunlr 和内核的表），默认丢弃的才算：策略为 drop，或最后一条规则无条件 drop、reject（firewalld 即是如此）。有无条件放行 DNAT 连接的规则（`ct status dnat accept`，firewalld 即是如此）的链不算 `dns`、`input` 的嫌疑；`DOCKER-USER` 中的放行规则都在时，同一张表的转发链也不算（Docker 把跳到 `DOCKER-USER` 的规则放在转发链最前面，放行之后不再经过后面的规则）。按表名、链名认出程序，给出放行的方法：
+  - UFW：转发 `ufw route allow in on <网卡> out on tunlr0`，入站 `ufw allow in on <网卡>`。
+  - firewalld：`firewall-cmd --permanent --zone=trusted --add-interface=<网卡>`，再 `firewall-cmd --reload`。局域网网卡和 `tunlr0` 都不在任何区域时落到默认区域，`--add-forward` 只放行同一区域内的转发，不起作用。
+  - Docker：再次 `tun gateway on`，补回 `DOCKER-USER` 中的放行规则。
+  - 其他 iptables 规则：`iptables -I <链> -i <网卡> -o tunlr0 -j ACCEPT`，入站为 `iptables -I <链> -i <网卡> -m conntrack --ctstate DNAT -j ACCEPT`。
+  - 其他 nft 表：在丢弃之前加 `iifname "<网卡>" oifname "tunlr0" accept`，入站为 `iifname "<网卡>" ct status dnat accept`。
+  - 一条都找不到时，提示查看同一 hook 上的其他规则和 iptables-legacy（它的规则不在 nftables 中）。
+- **开启前的提示**：`tun gateway on` 的前置检查按同样的规则列出可疑的链（`DOCKER-USER` 中的放行规则随后就会加上，按都在算），警告可能挡住哪些流量并给出放行方法，不阻止开启。静态地看不出排在前面的规则是否已经放行（例如 `ufw allow in on <网卡>` 之后这条提示仍在），挡没挡住以 `doctor` 为准，提示中也这样说明。`doctor` 的 tun 组和 `tun on` 只看入站的那部分（内核重定向的 TCP 都经过它，网卡写作 `<interface>`），`tun gateway on` 不重复它。
+- **边界**：只看优先级 (-151, 200) 之间的丢弃，挂在 raw（-300）或 200 以上的链丢转发、入站的看不到；新出现的拦截要等 `_passed` 中的旧记录过期，最多 5 分钟后才报告，放行之后下一个新连接就清掉；只看新连接，拦截出现前已经建立的长 UDP 流被丢不会记到。
+
+**实现后的实测**（2026-10-28，“没有 Docker”及之后各行为 2026-10-30；tunlr-dev，Debian 12 + Docker，局域网设备仍用 netns + veth 模拟）：
 
 | 项目 | 结果 |
 |---|---|
@@ -704,8 +732,19 @@ tunlr-dev（环境同 8.2，装有 Docker：`ip_forward` 由 Docker 在运行时
 | 再次 `tun gateway on` 两次 | 第二次报告已经开启，不做改动 |
 | `tun off` | 先关闭网关，确认前说明；表与规则都删除，`tunlr-check.timer` 停用 |
 | `TestNetns`（真实 nft、netns 中的 iptables） | 通过 |
+| 没有 Docker：停掉 Docker、删掉它的链，转发链策略为 accept，`ip_forward` 为 0 | 不调用 `iptables`；局域网设备的 DNS、HTTPS、NTP、ping 都通过；`core stop` 后失败时关闭，`core start` 后恢复；`tun gateway off` 把 `ip_forward` 恢复为 0 |
+| `rp_filter` 严格模式：`all`、`default` 为 1，局域网网卡和 `tunlr0` 实际生效为 1 | 局域网设备各项都通过，与宽松模式相同 |
+| 网关开着时重启机器 | 开机时 `tunlr-firewall.service`（`_firewall`）在内核启动之前补上网关、访问限制、记录设备的表，`_prestart` 无事可做；sysctl 文件让 `ip_forward` 为 1，TUN 照常开启，局域网设备立即可用。Docker 晚于内核就绪（测试机磁盘慢，开机后约 400 秒），`DOCKER-USER` 中的放行规则由之后的 `_check` 补上；Docker 启动时 `ip_forward` 已经是 1，转发链策略保持 accept（见下一行），这期间转发不受影响 |
+| Docker 启动时 `ip_forward` 为 1、为 0 | 为 1 时转发链策略保持 accept；为 0 时 Docker 开启转发，并把策略设为 drop |
+| 重启 Docker | `DOCKER-USER` 中 tunlr 的放行规则保留 |
+| 删掉放行规则后同时执行 `_check` 和 `_firewall`（5 轮），以及重启 Docker 时 `tunlr-check.service` 同时执行 | 每次都只有一方补上，另一方无事可做，规则 2 条。不持锁时出现过规则被插入两遍（4 条），由此让 `_check` 补表时持锁（8.4） |
+| `TestNetns`：记下新连接 | lo 上被重定向到本机端口的 TCP 记进 `input_seen` 和 `input_passed`；在 `filter` 优先级丢弃它之后只在 `input_seen` 中 |
+| 转发链策略为 drop（模拟 Docker 自己开启转发） | 放行规则在时局域网设备各项都通过，`doctor` 报告 1 台设备、没有丢弃。删掉放行规则后 DNS、UDP、ping 不通，TCP 照常；`doctor` 报 DNS、UDP、ping 被 `ip filter FORWARD (docker)` 丢弃，提示再次 `tun gateway on`，执行后都通过 |
+| UFW 0.36.2（与 Docker 共存，入站、转发策略为 drop） | `doctor` 的 tun 组警告 `ip filter INPUT (UFW)` 会丢掉重定向的 TCP；开启前提示它可能挡住局域网设备的 TCP（只这一条，转发由 `DOCKER-USER` 放行，不提示）。TCP 不通，`doctor` 报 TCP 被它丢弃，提示 `ufw allow in on <网卡>`，执行后都通过；之后开启前的提示仍在。再删掉 `DOCKER-USER` 中的放行规则：DNS、UDP 被 `ip filter FORWARD (UFW)` 丢弃（UFW 放行转发的 ping，不报），`ufw route allow in on <网卡> out on tunlr0` 之后都通过 |
+| firewalld 1.3.3（nftables 后端，默认区域 public） | `doctor` 的 tun 组不警告（它的入站、转发链都先放行 DNAT 的连接）；开启前只提示 `inet firewalld filter_FORWARD` 可能挡住 UDP 和 ping。DNS、TCP 通过，UDP、ping 被拒绝，`doctor` 如实报告，提示加入 trusted 区域；`firewall-cmd --permanent --zone=trusted --add-interface=<网卡>`、`firewall-cmd --reload` 之后都通过，reload 不动 tunlr 的表。`firewall-cmd --add-forward` 不起作用 |
+| 启动 firewalld 的副作用 | 它与 `nftables.service` 冲突，启动时停掉后者，`tunlr-firewall.service` 随之停止（`PartOf=`），由 `_check` 拉起；`nftables.service` 停止时 Debian 默认执行 `nft flush ruleset`（测试机改成了只删自己的表，tunlr 的表因此还在）。启动 firewalld 之后，Docker 在 `ip filter` 中的链连同 `DOCKER-USER` 中的放行规则都没了，`iptables -S DOCKER-USER` 报 incompatible（tunlr 当作没有这条链），停掉 firewalld 后也不恢复，重启 Docker 才重建，放行规则再由 `_check` 补上 |
 
-仍未实测：同 8.9 末尾所列（没有 Docker 的机器、同网段的旁路由、rp_filter 严格模式、IPv6），以及重启后由 `_prestart` 重新加载。
+仍未实测：同网段的旁路由、IPv6（同 8.9 末尾）。
 
 ### 8.11 若将来实现 tproxy，需要处理的 Docker 冲突
 

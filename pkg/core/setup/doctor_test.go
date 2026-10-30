@@ -120,7 +120,7 @@ func TestDoctorNotInstalled(t *testing.T) {
 }
 
 func TestDoctorInstalled(t *testing.T) {
-	i, _ := newDoctorInstaller(t)
+	i, h := newDoctorInstaller(t)
 	units, err := service.RenderUnits(i.Layout)
 	if err != nil {
 		t.Fatal(err)
@@ -201,6 +201,31 @@ func TestDoctorInstalled(t *testing.T) {
 	if c := got["install.gateway"]; c.Status != doctor.Fail || !strings.Contains(c.Message, "IPv4 forwarding is off") ||
 		!strings.Contains(c.Message, netfilter.GatewayTable) {
 		t.Errorf("gateway = %+v", c)
+	}
+
+	// 转发、sysctl 文件和规则都到位：没有 Docker 时不提它的规则，有 DOCKER-USER 链时提。
+	for _, p := range []string{i.Layout.IPForward(), i.Layout.SysctlFile()} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, docker := range []bool{false, true} {
+		if docker {
+			h.docker = []string{}
+		}
+		if err := i.rules().GatewayUp(context.Background(), "ens3"); err != nil {
+			t.Fatal(err)
+		}
+		if r, err = i.Doctor(context.Background(), DoctorOptions{Quick: true}); err != nil {
+			t.Fatal(err)
+		}
+		c := checkMap(r)["install.gateway"]
+		if c.Status != doctor.OK || strings.Contains(c.Message, "Docker") != docker {
+			t.Errorf("gateway (docker %v) = %+v", docker, c)
+		}
 	}
 
 	// 非 root：安装的细节都跳过。

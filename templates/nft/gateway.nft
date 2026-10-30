@@ -4,9 +4,68 @@
 table inet {{.Table}}
 delete table inet {{.Table}}
 table inet {{.Table}} {
+	# 局域网设备最近 {{.Window}} 的新连接，按设备地址与协议记两次：*_seen 排在其他防火墙之前（mangle 之前），
+	# *_passed 排在它们之后（iptables 与 UFW 在 filter，firewalld 在 filter + 10）。只在 *_seen 中的，是被
+	# 其他防火墙丢弃了。dns 是被内核劫持（DNAT）、转发进 TUN 的 DNS，forward 是其余转发进 TUN 的（UDP、ping
+	# 等），input 是被内核重定向到本机端口的 TCP。每个新连接刷新计时；只记录，不改变包的去向。
+	set dns_seen {
+		type ipv4_addr . inet_proto
+		flags dynamic, timeout
+		timeout {{.Window}}
+		size 4096
+	}
+	set dns_passed {
+		type ipv4_addr . inet_proto
+		flags dynamic, timeout
+		timeout {{.Window}}
+		size 4096
+	}
+	set forward_seen {
+		type ipv4_addr . inet_proto
+		flags dynamic, timeout
+		timeout {{.Window}}
+		size 4096
+	}
+	set forward_passed {
+		type ipv4_addr . inet_proto
+		flags dynamic, timeout
+		timeout {{.Window}}
+		size 4096
+	}
+	set input_seen {
+		type ipv4_addr . inet_proto
+		flags dynamic, timeout
+		timeout {{.Window}}
+		size 4096
+	}
+	set input_passed {
+		type ipv4_addr . inet_proto
+		flags dynamic, timeout
+		timeout {{.Window}}
+		size 4096
+	}
+
 	chain forward {
 		type filter hook forward priority filter - 1; policy accept;
 		# 去往私有地址的照常转发：这些网段本来就不经代理；DNAT 到本机容器、虚拟机等的连接在这里看到的也是私有地址。
 		iifname "{{.Interface}}" oifname != "{{.Device}}" ip daddr != { {{.Private}} } drop
+	}
+	chain early_forward {
+		type filter hook forward priority mangle - 1; policy accept;
+		iifname "{{.Interface}}" oifname "{{.Device}}" ct state new ct status dnat update @dns_seen { ip saddr . meta l4proto }
+		iifname "{{.Interface}}" oifname "{{.Device}}" ct state new ct status & dnat == 0 update @forward_seen { ip saddr . meta l4proto }
+	}
+	chain early_input {
+		type filter hook input priority mangle - 1; policy accept;
+		iifname "{{.Interface}}" ct state new ct status dnat update @input_seen { ip saddr . meta l4proto }
+	}
+	chain late_forward {
+		type filter hook forward priority filter + 200; policy accept;
+		iifname "{{.Interface}}" oifname "{{.Device}}" ct state new ct status dnat update @dns_passed { ip saddr . meta l4proto }
+		iifname "{{.Interface}}" oifname "{{.Device}}" ct state new ct status & dnat == 0 update @forward_passed { ip saddr . meta l4proto }
+	}
+	chain late_input {
+		type filter hook input priority filter + 200; policy accept;
+		iifname "{{.Interface}}" ct state new ct status dnat update @input_passed { ip saddr . meta l4proto }
 	}
 }

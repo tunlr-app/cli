@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/pkg/core/doctor"
 	"github.com/tunlr-app/cli/pkg/core/netfilter"
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
@@ -217,6 +218,153 @@ func TestCheckRepairsGateway(t *testing.T) {
 	h.active = true
 	if res, err := i.Check(context.Background()); err != nil || len(res.Actions) != 0 {
 		t.Fatalf("second check: %+v %v", res, err)
+	}
+}
+
+// ufwRuleset 是 UFW 与 Docker 共存时 nft -j list ruleset 的要点：ip filter 的入站、转发链默认丢弃。
+const ufwRuleset = `{"nftables": [
+{"chain": {"family": "ip", "table": "filter", "name": "INPUT", "type": "filter", "hook": "input", "prio": 0, "policy": "drop"}},
+{"chain": {"family": "ip", "table": "filter", "name": "FORWARD", "type": "filter", "hook": "forward", "prio": 0, "policy": "drop"}},
+{"chain": {"family": "ip", "table": "filter", "name": "DOCKER-USER"}},
+{"chain": {"family": "ip", "table": "filter", "name": "ufw-before-input"}}]}`
+
+// firewalldRuleset 是 firewalld（nftables 后端）的要点：入站、转发链先放行 DNAT 的连接，最后无条件拒绝。
+const firewalldRuleset = `{"nftables": [
+{"chain": {"family": "inet", "table": "firewalld", "name": "filter_INPUT", "type": "filter", "hook": "input", "prio": 10, "policy": "accept"}},
+{"chain": {"family": "inet", "table": "firewalld", "name": "filter_FORWARD", "type": "filter", "hook": "forward", "prio": 10, "policy": "accept"}},
+{"rule": {"family": "inet", "table": "firewalld", "chain": "filter_INPUT", "expr": [{"match": {"op": "in", "left": {"ct": {"key": "status"}}, "right": "dnat"}}, {"accept": null}]}},
+{"rule": {"family": "inet", "table": "firewalld", "chain": "filter_INPUT", "expr": [{"reject": {"type": "icmpx", "expr": "admin-prohibited"}}]}},
+{"rule": {"family": "inet", "table": "firewalld", "chain": "filter_FORWARD", "expr": [{"match": {"op": "in", "left": {"ct": {"key": "status"}}, "right": "dnat"}}, {"accept": null}]}},
+{"rule": {"family": "inet", "table": "firewalld", "chain": "filter_FORWARD", "expr": [{"reject": {"type": "icmpx", "expr": "admin-prohibited"}}]}}]}`
+
+// TestGatewayBlocked 验证按最近 5 分钟记下的新连接判断被其他防火墙丢弃的流量：某台设备的一类流量一个都
+// 没有通过时 doctor 报 fail，列出设备、可疑的规则链和放行方法；没有流量或都通过为 ok。
+func TestGatewayBlocked(t *testing.T) {
+	i, h := newGatewayInstaller(t, "1")
+	ctx := context.Background()
+	h.docker = []string{"-j RETURN"}
+	gatewayOn(t, i, "ens3")
+	h.ruleset = ufwRuleset
+	check := func() doctor.Check {
+		t.Helper()
+		c := &doctor.Checker{Group: doctor.GroupInstall}
+		i.checkGatewayTraffic(ctx, c, "ens3", true)
+		if len(c.List) != 1 {
+			t.Fatalf("checks = %+v", c.List)
+		}
+		return c.List[0]
+	}
+	if c := check(); c.Status != doctor.OK || c.Message != "no LAN device used the gateway in the last 5 minutes" {
+		t.Errorf("no traffic: %+v", c)
+	}
+
+	// UFW 与 Docker 共存：转发经 DOCKER-USER 放行，重定向的 TCP 被 INPUT 丢弃。另有一台设备的 ping 被丢弃，
+	// 但另一台的通过（不同设备分开判断）；UDP 的 DNS 被丢弃而 TCP 的通过，按协议分开，DNS 算被丢弃；
+	// 不认识的协议写作协议号。
+	h.uses = map[string][]string{
+		"dns_seen":       {"10.0.0.2 udp", "10.0.0.2 tcp", "10.0.0.3 udp"},
+		"dns_passed":     {"10.0.0.2 tcp", "10.0.0.3 udp"},
+		"forward_seen":   {"10.0.0.2 icmp", "10.0.0.3 icmp", "10.0.0.3 47"},
+		"forward_passed": {"10.0.0.3 icmp"},
+		"input_seen":     {"10.0.0.3 tcp", "10.0.0.2 tcp"},
+	}
+	s, err := i.GatewayStatus(ctx)
+	if err != nil || !slices.Equal(s.Recent, []string{"10.0.0.2", "10.0.0.3"}) || len(s.Blocks) != 4 {
+		t.Fatalf("status = %+v, %v", s, err)
+	}
+	if b := s.Blocks[0]; b.Class != "DNS" || b.Path != netfilter.PathDNS || !slices.Equal(b.Devices, []string{"10.0.0.2"}) || len(b.Suspects) != 0 {
+		t.Errorf("DNS = %+v", b)
+	}
+	if b := s.Blocks[1]; b.Class != "ping" || !slices.Equal(b.Devices, []string{"10.0.0.2"}) || len(b.Suspects) != 0 ||
+		!strings.Contains(b.Fixes[0], "iptables-legacy") {
+		t.Errorf("ping = %+v", b)
+	}
+	if b := s.Blocks[2]; b.Class != "protocol 47" || !slices.Equal(b.Devices, []string{"10.0.0.3"}) {
+		t.Errorf("protocol 47 = %+v", b)
+	}
+	b := s.Blocks[3]
+	if b.Class != "TCP" || b.Path != netfilter.PathInput || len(b.Suspects) != 1 || b.Suspects[0].Chain != "INPUT" ||
+		!slices.Equal(b.Fixes, []string{"ufw allow in on ens3"}) {
+		t.Errorf("TCP = %+v", b)
+	}
+	if want := "TCP from 10.0.0.2 and 10.0.0.3 is dropped by ip filter INPUT (UFW)"; b.Describe() != want {
+		t.Errorf("Describe() = %q", b.Describe())
+	}
+	if c := check(); c.Status != doctor.Fail || !strings.HasPrefix(c.Message, "DNS from 10.0.0.2 is dropped by another firewall; ping from 10.0.0.2 is dropped by another firewall; protocol 47 from 10.0.0.3 is dropped by another firewall; TCP from") ||
+		!strings.HasSuffix(c.Hint, "; ufw allow in on ens3") {
+		t.Errorf("dropped: %+v", c)
+	}
+	// DOCKER-USER 中的放行规则不在时，UFW 的转发链也可疑。
+	c := &doctor.Checker{Group: doctor.GroupInstall}
+	i.checkGatewayTraffic(ctx, c, "ens3", false)
+	if !strings.Contains(c.List[0].Message, "ping from 10.0.0.2 is dropped by ip filter FORWARD (UFW)") ||
+		!strings.Contains(c.List[0].Hint, "ufw route allow in on ens3 out on tunlr0") {
+		t.Errorf("without the DOCKER-USER rules: %+v", c.List[0])
+	}
+
+	// firewalld：先放行 DNAT 的连接，所以只有转发的 UDP、ping 被丢弃（UDP、TCP 的 DNS 都通过）；放行方法只列一次。
+	h.ruleset = firewalldRuleset
+	h.uses = map[string][]string{
+		"dns_seen": {"10.0.0.2 udp", "10.0.0.2 tcp"}, "dns_passed": {"10.0.0.2 udp", "10.0.0.2 tcp"},
+		"forward_seen": {"10.0.0.2 udp", "10.0.0.2 icmp"},
+		"input_seen":   {"10.0.0.2 tcp"}, "input_passed": {"10.0.0.2 tcp"},
+	}
+	want := "firewall-cmd --permanent --zone=trusted --add-interface=ens3, then firewall-cmd --reload"
+	if c := check(); c.Status != doctor.Fail || c.Message != "UDP from 10.0.0.2 is dropped by inet firewalld filter_FORWARD (firewalld); "+
+		"ping from 10.0.0.2 is dropped by inet firewalld filter_FORWARD (firewalld)" || c.Hint != want {
+		t.Errorf("firewalld: %+v", c)
+	}
+
+	// 都通过。
+	h.uses = map[string][]string{"dns_seen": {"10.0.0.2 udp", "10.0.0.3 udp"}, "dns_passed": {"10.0.0.2 udp", "10.0.0.3 udp"}}
+	if c := check(); c.Status != doctor.OK || c.Message != "2 LAN devices used the gateway in the last 5 minutes; nothing was dropped" {
+		t.Errorf("passed: %+v", c)
+	}
+}
+
+func TestGatewayBlockDescribe(t *testing.T) {
+	b := GatewayBlock{Class: "DNS", Devices: []string{"10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5", "10.0.0.6"}}
+	if got := b.Describe(); got != "DNS from 10.0.0.2, 10.0.0.3, 10.0.0.4 and 2 more is dropped by another firewall" {
+		t.Errorf("five: %q", got)
+	}
+	b.Devices = b.Devices[:3]
+	if got := b.Describe(); got != "DNS from 10.0.0.2, 10.0.0.3 and 10.0.0.4 is dropped by another firewall" {
+		t.Errorf("three: %q", got)
+	}
+}
+
+// TestBlockerWarnings 验证开启前的提示：DOCKER-USER 能处理的转发链、先放行 DNAT 连接的入站链不提示，
+// 其余提示可能挡住的流量和放行方法。
+func TestBlockerWarnings(t *testing.T) {
+	blockers := func(ruleset string) []netfilter.Blocker {
+		t.Helper()
+		list, err := (&netfilter.Rules{Run: func(context.Context, []byte, string, ...string) ([]byte, error) {
+			return []byte(ruleset), nil
+		}}).Blockers(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return list
+	}
+	ufw := blockers(ufwRuleset)
+	w := blockerWarnings("ens3", ufw)
+	if len(w) != 1 || !strings.HasPrefix(w[0], "ip filter INPUT (UFW) drops incoming traffic by default, which may block LAN devices' TCP") ||
+		!strings.Contains(w[0], "ufw allow in on ens3") {
+		t.Errorf("warnings = %q", w)
+	}
+	// 没有 Docker 时转发链也提示。
+	for n := range ufw {
+		ufw[n].DockerChain = false
+	}
+	if w := blockerWarnings("ens3", ufw); len(w) != 2 || !strings.Contains(w[0], "LAN devices' DNS, UDP and ping") ||
+		!strings.Contains(w[0], "ufw route allow in on ens3 out on tunlr0") {
+		t.Errorf("without Docker: %q", w)
+	}
+	// firewalld 放行被劫持的 DNS 和重定向的 TCP：只提示 UDP 和 ping。
+	w = blockerWarnings("ens3", blockers(firewalldRuleset))
+	if len(w) != 1 || !strings.Contains(w[0], "inet firewalld filter_FORWARD (firewalld) drops forwarded traffic by default, which may block LAN devices' UDP and ping") ||
+		!strings.Contains(w[0], "firewall-cmd --permanent --zone=trusted --add-interface=ens3") {
+		t.Errorf("firewalld: %q", w)
 	}
 }
 

@@ -248,29 +248,36 @@ func (i *Installer) syncCheckTimer(ctx context.Context, st *state.State) {
 	}
 }
 
-// firewallLockWait 是 _firewall 等待 tunlr 自己的操作（如正在下载的 core upgrade）释放锁的时间：等不到就
-// 失败会让 unit 进入 failed，之后 nftables.service 的重新加载不再传到它。
-const firewallLockWait = 5 * time.Minute
+// repairLockWait 是 _firewall、_check 等待 tunlr 自己的操作（如正在下载的 core upgrade）释放锁的时间。
+// _firewall 等不到就失败会让 unit 进入 failed，之后 nftables.service 的重新加载不再传到它，所以不能太短。
+const repairLockWait = 5 * time.Minute
 
 // Firewall 是 tunlr-firewall.service 在 nftables.service 启动、重启或重新加载之后执行的 _firewall：
 // 它加载的配置以 flush ruleset 开头，会清空 tunlr 的表，这里按状态重新加载（同 _check 中的表，但不重启
 // 内核：内核的表由 _check 发现后重启内核重建）。持锁的操作不能同步启动这个 unit（会互相等待）。
 func (i *Installer) Firewall(ctx context.Context) (*CheckResult, error) {
-	lctx, cancel := context.WithTimeout(ctx, firewallLockWait)
+	_, actions, err := i.repairLocked(ctx)
+	return &CheckResult{Actions: actions}, err
+}
+
+// repairLocked 取锁后读取状态，补上 tunlr 的表（repairTables）。_check 与 _firewall 会同时执行（例如重新
+// 加载 nftables.service 时 tunlr-check.timer 恰好到期），不持锁时两边会发现缺了同一条规则、各补一遍
+// （DOCKER-USER 中的放行规则就会重复）；持锁也避免与 gateway off 等操作交错，按旧状态补回刚删掉的表。
+// 返回读到的状态（文件不存在时为 nil）。
+func (i *Installer) repairLocked(ctx context.Context) (*state.State, []string, error) {
+	lctx, cancel := context.WithTimeout(ctx, repairLockWait)
 	defer cancel()
 	l, err := lock.Acquire(lctx, i.Layout.LockFile())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer l.Release()
 	st, err := state.Load(i.Layout.StateFile())
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, err
+		return nil, nil, err
 	}
-	res := &CheckResult{}
 	actions, err := i.repairTables(ctx, st)
-	res.Actions = actions
-	return res, err
+	return st, actions, err
 }
 
 // repairTables 按状态补上 tunlr 的表（_check、_firewall）：网关开启时它的转发设置和规则，代理端口和面板的

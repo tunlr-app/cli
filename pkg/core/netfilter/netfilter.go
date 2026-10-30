@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"slices"
 	"strconv"
 	"strings"
 	"text/template"
@@ -170,7 +169,7 @@ func DeviceUp() bool {
 	return err == nil
 }
 
-// Preflight 检查开启 TUN 的前置条件。problems 不满足时不能开启；warnings 是可能影响使用、未实测的情况。
+// Preflight 检查开启 TUN 的前置条件。problems 不满足时不能开启；warnings 是可能影响使用的情况（RedirectBlocked）。
 func (r *Rules) Preflight(ctx context.Context) (problems, warnings []string) {
 	if _, err := os.Stat("/dev/net/tun"); err != nil {
 		problems = append(problems, "/dev/net/tun is missing (the tun kernel module is not available)")
@@ -184,10 +183,27 @@ func (r *Rules) Preflight(ctx context.Context) (problems, warnings []string) {
 		return problems, nil
 	}
 	problems = append(problems, r.RuleConflicts(ctx)...)
-	for _, fw := range r.ActiveFirewalls(ctx) {
-		warnings = append(warnings, fmt.Sprintf("%s is active; its input policy may block the traffic mihomo redirects (not tested yet)", fw))
+	if list, err := r.RedirectBlockers(ctx); err == nil && len(list) > 0 {
+		warnings = append(warnings, RedirectBlocked(list))
 	}
 	return problems, warnings
+}
+
+// RedirectBlockers 返回挂在入站上默认丢弃、又不先放行 DNAT 连接的规则链（UFW 即是如此，firewalld 不是）：
+// 内核把 TCP 重定向（REDIRECT，即 DNAT）到自己的端口后，连接经入站，会被它们丢弃。网关模式下局域网设备
+// 的 TCP 在 8.10 中实测如此；容器的 TCP 走同一条路。
+func (r *Rules) RedirectBlockers(ctx context.Context) ([]Blocker, error) {
+	blockers, err := r.Blockers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return Suspects(blockers, PathInput, true), nil
+}
+
+// RedirectBlocked 是 RedirectBlockers 不为空时的警告。
+func RedirectBlocked(list []Blocker) string {
+	return strings.Join(BlockerNames(list), ", ") + " drops incoming connections by default, including the TCP mihomo redirects to its own port " +
+		"(from LAN devices in gateway mode, checked by tunlr doctor once they use it; containers take the same path, not tested)"
 }
 
 // RuleConflicts 返回占用了工具和内核所需 ip rule 优先级（RulePriority 到 RuleIndex+10）的他人规则，
@@ -210,46 +226,6 @@ func (r *Rules) RuleConflicts(ctx context.Context) []string {
 		}
 	}
 	return problems
-}
-
-// EgressProbe 是查出站路由时用的公网地址：只用于 ip route get，不发包。
-const EgressProbe = "1.1.1.1"
-
-// Egress 返回 uid（为负时不指定用户）的连接到公网地址 EgressProbe 走的网卡，以及它是否是点对点的
-// 网卡（WireGuard、Tailscale、OpenVPN 等 VPN）。按策略路由查，全隧道 VPN 放在其他路由表或用
-// 0.0.0.0/1、128.0.0.0/1 盖过默认路由的情况都算在内。
-func (r *Rules) Egress(ctx context.Context, uid int) (dev string, pointToPoint bool, err error) {
-	args := []string{"-4", "route", "get", EgressProbe}
-	if uid >= 0 {
-		args = append(args, "uid", strconv.Itoa(uid))
-	}
-	// 输出形如 “1.1.1.1 via 192.168.1.1 dev ens3 src 192.168.1.20 uid 999”。
-	out, err := r.run(ctx, nil, "ip", args...)
-	if err != nil {
-		return "", false, err
-	}
-	if dev = fieldAfter(string(out), "dev"); dev == "" {
-		return "", false, fmt.Errorf("ip route get %s: no interface in %q", EgressProbe, strings.TrimSpace(string(out)))
-	}
-	// 输出形如 “5: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 …”。
-	out, err = r.run(ctx, nil, "ip", "-o", "link", "show", "dev", dev)
-	if err != nil {
-		return dev, false, err
-	}
-	_, flags, _ := strings.Cut(string(out), "<")
-	flags, _, _ = strings.Cut(flags, ">")
-	return dev, slices.Contains(strings.Split(flags, ","), "POINTOPOINT"), nil
-}
-
-// fieldAfter 返回 s 中第一个等于 key 的字段之后的那个字段，没有时为空。
-func fieldAfter(s, key string) string {
-	f := strings.Fields(s)
-	for i := 0; i+1 < len(f); i++ {
-		if f[i] == key {
-			return f[i+1]
-		}
-	}
-	return ""
 }
 
 // UIDRuleMissing 返回内核建立了 auto-route 的 ip rule（RuleIndex 到 RuleIndex+10）、却没有让 uid 绕过
@@ -275,17 +251,6 @@ func (r *Rules) UIDRuleMissing(ctx context.Context, uid int) ([]string, error) {
 		}
 	}
 	return missing, nil
-}
-
-// ActiveFirewalls 返回正在运行的 UFW、firewalld。它们的入站策略可能挡住内核重定向的流量（未实测）。
-func (r *Rules) ActiveFirewalls(ctx context.Context) []string {
-	var active []string
-	for _, fw := range []string{"ufw", "firewalld"} {
-		if out, _ := r.run(ctx, nil, "systemctl", "is-active", fw); strings.TrimSpace(string(out)) == "active" {
-			active = append(active, fw)
-		}
-	}
-	return active
 }
 
 // ruleSpec 是工具的 ip rule：带标记的包查主路由表。
