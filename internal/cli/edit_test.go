@@ -466,3 +466,20 @@ func writeMixin(t *testing.T, l paths.Layout, name, content string) {
 		t.Fatal(err)
 	}
 }
+
+// 没有校验函数的提问（如 init 的订阅地址）提交时不能崩溃：huh 的 Validate(nil) 会把默认的校验换成 nil。
+func TestInputWithoutValidate(t *testing.T) {
+	v := "https://x.example/sub"
+	in := newInput("Subscription URL (optional)", "", &v, nil)
+	in.Focus()
+	in.Blur() // 失去焦点时校验，与提交相同
+	if err := in.Error(); err != nil {
+		t.Errorf("error = %v", err)
+	}
+	in = newInput("Name", "", &v, func(string) error { return errors.New("bad") })
+	in.Focus()
+	in.Blur()
+	if in.Error() == nil {
+		t.Error("the validate function was not used")
+	}
+}

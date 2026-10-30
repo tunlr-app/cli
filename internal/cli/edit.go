@@ -85,8 +85,18 @@ func (p huhPrompter) ChooseMany(ctx context.Context, title string, options []str
 
 func (p huhPrompter) Input(ctx context.Context, title, description, value string, validate func(string) error) (string, error) {
 	v := value
-	err := p.run(ctx, huh.NewInput().Title(title).Description(description).Validate(validate).Value(&v))
+	err := p.run(ctx, newInput(title, description, &v, validate))
 	return v, err
+}
+
+// newInput 返回文字输入字段。huh 的 Validate(nil) 会把默认的校验换成 nil，提交时调用它就空指针崩溃，
+// 所以没有校验时不设置。
+func newInput(title, description string, v *string, validate func(string) error) *huh.Input {
+	in := huh.NewInput().Title(title).Description(description).Value(v)
+	if validate != nil {
+		in = in.Validate(validate)
+	}
+	return in
 }
 
 func (p huhPrompter) Confirm(ctx context.Context, title, description string) (bool, error) {
