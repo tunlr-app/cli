@@ -41,8 +41,8 @@ release:
     - glob: uninstall.sh
 
 changelog:
-  # 第一个版本（v0.1.0）的说明手写在 release 页面，之后的版本从 commit 生成；发布 v0.1.0 后改为 disable: false。
-  disable: true
+  # 第一个版本（v0.1.0）的说明手写在 release 页面，之后的版本从 commit 生成。
+  disable: false
   sort: asc
   filters:
     exclude:
