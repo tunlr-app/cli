@@ -581,6 +581,9 @@ func (a *app) newStatusCommand() *cobra.Command {
 func (a *app) printStatus(s *setup.Status) {
 	w := a.stdout
 	a.printCore(&setup.CoreStatus{Installed: s.Installed, Service: s.Service, Running: s.Running, Kernel: s.Kernel})
+	if n := describeAvailable(s.UpdateCheck); n != "" {
+		fmt.Fprintf(w, "Available:     %s\n", a.style.warn(n))
+	}
 	if s.Subscription != "" {
 		fmt.Fprintf(w, "Subscription:  %s\n", s.Subscription)
 	} else {
@@ -610,6 +613,22 @@ func (a *app) printStatus(s *setup.Status) {
 	if s.Filter != nil {
 		fmt.Fprintf(w, "Filters:       %s (details: tunlr filter)\n", a.describeFilter(s.Filter))
 	}
+}
+
+// describeAvailable 是 status 里可用的更新和装它们的命令，如 "tunlr 0.2.0 (tunlr upgrade) · mihomo v1.19.34
+// (tunlr core upgrade)"；没有更新（或还没有查询过）时为空。
+func describeAvailable(c *setup.UpdateCheck) string {
+	if c == nil {
+		return ""
+	}
+	var parts []string
+	if c.Tool != "" {
+		parts = append(parts, fmt.Sprintf("tunlr %s (tunlr upgrade)", c.Tool))
+	}
+	if c.Kernel != "" {
+		parts = append(parts, fmt.Sprintf("mihomo %s (tunlr core upgrade)", c.Kernel))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // printCore 输出内核服务的状态：服务、运行中的版本、已知可用的版本（status 与 core 共用）。
@@ -719,6 +738,73 @@ func (a *app) newUninstallCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&purge, "purge", false, "also delete settings, mixins, subscriptions, history and /usr/local/bin/tunlr")
+	return cmd
+}
+
+func (a *app) newUpgradeCommand() *cobra.Command {
+	var version string
+	cmd := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Upgrade tunlr itself to the latest release (or --version)",
+		Long: "Download the tunlr release for this platform (the latest, or --version), verify it against\n" +
+			"the official sha256, check that it runs and replace /usr/local/bin/tunlr; the new tunlr then\n" +
+			"runs init --yes to refresh the systemd units. mihomo is not touched (that is tunlr core\n" +
+			"upgrade). To go back, pass the earlier version with --version. A build without a release\n" +
+			"version (dev) must be given --version.",
+		Args: usageArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if version != "" {
+				v, err := setup.NormalizeToolVersion(version)
+				if err != nil {
+					return err
+				}
+				version = v
+			}
+			if err := a.requireYes("upgrade"); err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			inst := a.installer()
+			if !a.opts.Yes {
+				var target string
+				err := a.spin("Looking up the tunlr release", func() (err error) {
+					target, err = inst.UpgradeTarget(ctx, version)
+					return err
+				})
+				if err != nil {
+					return err
+				}
+				if target != strings.TrimPrefix(a.info.Version, "v") {
+					desc := "The running tunlr keeps working until it exits; afterwards the new one runs init --yes\n" +
+						"to refresh the systemd units (mihomo restarts only if its configuration changes)."
+					if ok, err := a.ask(ctx, fmt.Sprintf("Replace tunlr %s with %s?", a.info.Version, target), desc, "tunlr not changed."); !ok {
+						return err
+					}
+				}
+			}
+			var res *setup.UpgradeResult
+			err := a.spin("Upgrading tunlr (download, verify, replace, init)", func() (err error) {
+				res, err = inst.Upgrade(ctx, version)
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			return a.render(res, func() error {
+				w := a.stdout
+				switch {
+				case !res.Changed:
+					fmt.Fprintf(w, "tunlr %s is already installed.\n", res.To)
+				case res.Reinstalled:
+					fmt.Fprintf(w, "tunlr %s is installed at %s (%s); it refreshed the service units.\n", res.To, res.Path, res.Asset)
+				default:
+					fmt.Fprintf(w, "tunlr %s is installed at %s (%s).\n", res.To, res.Path, res.Asset)
+				}
+				return nil
+			})
+		},
+	}
+	cmd.Flags().StringVar(&version, "version", "", "install this version instead of the latest release, e.g. v0.2.0")
 	return cmd
 }
 

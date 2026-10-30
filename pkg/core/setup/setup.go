@@ -63,6 +63,9 @@ type Installer struct {
 	LookupNames func(ctx context.Context, ips []string) map[string]string
 	// Connections 返回内核当前连接按来源地址的计数，为空时经 API 获取（测试时替换）。
 	Connections func(ctx context.Context) (map[string]int, error)
+	// RunTool 执行 path 处的 tunlr 二进制并返回它的标准输出，为空时真的执行（测试时替换）。升级时用它确认
+	// 下载的二进制能运行，并让新版本执行 init。
+	RunTool func(ctx context.Context, path string, args ...string) ([]byte, error)
 }
 
 // InitOptions 是 init 的参数。
@@ -456,6 +459,18 @@ func (i *Installer) kernels(owner *fsutil.Owner, arch mihomo.Arch) *mihomo.Manag
 		Layout: i.Layout, Service: i.systemd(), Download: i.Download,
 		Arch: arch, Owner: owner, Now: i.Now, Log: i.Log,
 	}
+}
+
+// downloader 返回下载 GitHub release 的客户端：Download 为空时按工具设置中的镜像下载。
+func (i *Installer) downloader() (*download.Client, error) {
+	if i.Download != nil {
+		return i.Download, nil
+	}
+	set, err := settings.Load(i.Layout.SettingsFile())
+	if err != nil {
+		return nil, err
+	}
+	return &download.Client{Mirror: set.GitHubMirror}, nil
 }
 
 func (i *Installer) pipeline(owner *fsutil.Owner) *pipeline.Pipeline {

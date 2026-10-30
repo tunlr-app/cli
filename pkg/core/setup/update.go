@@ -290,6 +290,14 @@ func (i *Installer) Update(ctx context.Context, opts UpdateOptions) (*UpdateResu
 	if geo {
 		add("geo", "Having mihomo update the geo data", func() (string, string) { return i.updateGeo(ctx) })
 	}
+	if !manual {
+		// 每天查一次 tunlr 和 mihomo 的最新版本，菜单和 status 据此提示；不是更新步骤，失败只记日志。
+		if uc, checked, err := i.CheckUpdates(ctx); err != nil {
+			i.log().Warn("check for updates", "error", err)
+		} else if checked {
+			i.log().Info("checked for updates", "tunlr", uc.Tool, "mihomo", uc.Kernel)
+		}
+	}
 	if n := res.Failed(); n > 0 {
 		errs = append(errs, fmt.Errorf("%d of %d update steps failed", n, len(res.Steps)))
 	}

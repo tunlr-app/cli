@@ -380,7 +380,7 @@ func (m *menuModel) nextTick() tea.Cmd {
 // statusLine 是菜单顶部的一行状态，超出终端宽度的部分截掉。
 func (m *menuModel) statusLine() string {
 	a, s := m.a, m.data.status
-	parts := []string{a.style.title("tunlr")}
+	parts := []string{a.describeTool(s)}
 	if !s.Installed {
 		parts = append(parts, a.style.warn("not installed"))
 	} else {
@@ -785,14 +785,31 @@ func (a *app) describeFilterNote(f *setup.FilterStatus) string {
 	return a.describeFilter(f)
 }
 
+// describeService 是菜单里 mihomo 的状态（状态行和 mihomo 分类的备注），有新版本时附上它：
+// "running · v1.19.33 (v1.19.34 available)"。只是提示，升级仍由用户执行（tunlr core upgrade）。
 func (a *app) describeService(s *setup.Status) string {
-	if s.Running != "" {
-		return a.style.good("running") + a.style.dim(" · "+s.Running)
+	var out string
+	switch {
+	case s.Running != "":
+		out = a.style.good("running") + a.style.dim(" · "+s.Running)
+	case s.Service != nil && s.Service.ActiveState == "failed":
+		out = a.style.bad("failed")
+	default:
+		out = a.style.warn("not running")
 	}
-	if s.Service != nil && s.Service.ActiveState == "failed" {
-		return a.style.bad("failed")
+	if s.UpdateCheck != nil && s.UpdateCheck.Kernel != "" {
+		out += a.style.warn(" (" + s.UpdateCheck.Kernel + " available)")
 	}
-	return a.style.warn("not running")
+	return out
+}
+
+// describeTool 是状态行开头的 tunlr 自己：有新版本时 "tunlr 0.1.0 (0.2.0 available)"，否则只有名字。
+func (a *app) describeTool(s *setup.Status) string {
+	out := a.style.title("tunlr")
+	if s.UpdateCheck != nil && s.UpdateCheck.Tool != "" {
+		out += a.style.dim(" "+a.info.Version) + a.style.warn(" ("+s.UpdateCheck.Tool+" available)")
+	}
+	return out
 }
 
 // commandLine 是给用户看的等价命令。含空白或 shell 特殊字符的参数加上单引号。

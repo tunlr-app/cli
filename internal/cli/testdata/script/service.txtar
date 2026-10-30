@@ -31,6 +31,16 @@ exitcode 2 tunlr core upgrade --version 1.19
 stderr 'invalid mihomo version "v1.19"'
 exitcode 2 tunlr core logs --json
 stdout 'logs does not support --json'
+exitcode 2 tunlr upgrade --version 0.2
+stderr 'invalid tunlr version "v0.2"'
+exitcode 2 tunlr upgrade --dry-run
+stderr 'upgrade does not support --dry-run'
+
+# tunlr upgrade 在 Setup 组里，非交互时也要 --yes
+exec tunlr --help
+stdout '^\s+upgrade\s+Upgrade tunlr itself'
+exitcode 2 tunlr upgrade
+stderr 'upgrade needs confirmation; pass --yes'
 
 # 非交互时停止、重启、升级内核、卸载必须带 --yes，且不支持 --dry-run（不能当作已确认）
 exitcode 2 tunlr core stop

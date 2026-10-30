@@ -2,10 +2,12 @@ version: 2
 
 project_name: tunlr
 
+# 版本号来自 git tag（v0.1.0 → 0.1.0），注入 cmd/tunlr 的 version、commit、date；本地 go build 的版本是 dev。
+# 发布由 .github/workflows/release.yml 在推送 v* tag 时执行；测试在 workflow 里先跑。
+
 before:
   hooks:
     - go mod tidy
-    - go test ./...
 
 builds:
   - id: tunlr
@@ -23,6 +25,7 @@ builds:
     ldflags:
       - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}
 
+# 资产名 tunlr_<版本>_linux_<架构>.tar.gz 由 install.sh 和 tunlr upgrade 按此拼出，改名要一起改。
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
@@ -31,7 +34,15 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
+release:
+  # 安装脚本随 release 发布一份，供镜像或归档使用；平时的入口是仓库里的文件（见 README）。
+  extra_files:
+    - glob: install.sh
+    - glob: uninstall.sh
+
 changelog:
+  # 第一个版本（v0.1.0）的说明手写在 release 页面，之后的版本从 commit 生成；发布 v0.1.0 后改为 disable: false。
+  disable: true
   sort: asc
   filters:
     exclude:

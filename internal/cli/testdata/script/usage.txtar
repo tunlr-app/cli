@@ -40,7 +40,6 @@ exitcode 2 tunlr plan
 stderr 'unknown command "plan"'
 exitcode 2 tunlr mixin
 exitcode 2 tunlr start
-exitcode 2 tunlr upgrade
 exitcode 2 tunlr sub list
 exitcode 2 tunlr update show
 exitcode 2 tunlr update sub

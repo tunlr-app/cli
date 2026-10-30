@@ -152,7 +152,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 | 路径 | 内容 | 说明 |
 |---|---|---|
 | `/etc/tunlr/` | mixin（`mixin.d/*.yaml`，订阅 mixin 在 `mixin.d/<订阅名>/*.yaml`，目录 0700、文件 0600）、工具设置（`settings.yaml`）、订阅列表（`subscriptions.yaml`，0600，含机场凭据） | 用户可编辑，备份时最需要保留 |
-| `/var/lib/tunlr/state.json` | 状态文件：结构版本号、安装实例 ID、订阅的抓取记录、已知可用内核、TUN 开关、网关开关、各定时更新最近一次的执行情况 | 工具维护，权限 0600。只存最新状态，不存会增长的历史（配置历史在 `history/`，历次更新在 journal） |
+| `/var/lib/tunlr/state.json` | 状态文件：结构版本号、安装实例 ID、订阅的抓取记录、已知可用内核、TUN 开关、网关开关、各定时更新最近一次的执行情况、最近一次查到的 tunlr 与 mihomo 最新版本 | 工具维护，权限 0600。只存最新状态，不存会增长的历史（配置历史在 `history/`，历次更新在 journal） |
 | `/var/lib/tunlr/subscriptions/` | 每个订阅最近一次成功抓取的内容 | 含机场凭据 |
 | `/var/lib/tunlr/backups/` | `backup restore` 前自动备份的当前内容（`before-restore-<时间>.tar.gz`） | 保留最近 3 份，目录 0700、文件 0600 |
 | `/var/lib/tunlr/history/` | 已发布配置的历史：每个修订一份配置（`<号>.yaml`）和一份记录（`<号>.json`） | 用于回滚，保留最近 10 个，权限 0600 |
@@ -474,7 +474,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   |---|---|---|
   | 护栏：保证不失联、不带病运行 | `tunlr-rescue.service`（启动失败后换回已知可用内核）、`tunlr-tun-guard`（开启 TUN 后的回滚定时器）、`tunlr-check.timer` 与 `tunlr-firewall.service`（见 8.4）、`tunlr-aftercare.path`（面板升级的善后） | 不能。它们是“应用 → 确认，失败则回滚”的一部分 |
   | 资源更新：内容会过期 | 订阅（更新后发布）；geo 数据（内核按配置自己更新） | 能：订阅各自设周期，geo 数据按订阅用 `sub set <订阅> --geo-update` 设，都可以关闭 |
-  | 不做定时 | tunlr 自身的升级 | 只能手动执行，不进 timer |
+  | 不做定时 | tunlr 自身的升级 | 只能手动执行（`tunlr upgrade`），不进 timer。`_update` 每天查一次 tunlr 与 mihomo 的最新版本（两次 release API 请求，不下载），记在状态文件中（`update_check`），菜单的状态行、mihomo 分类的备注和 `status` 据此提示有新版本，不自动升级 |
   - 资源更新只用一个 timer：`tunlr-update.timer` 每小时唤醒一次（`OnCalendar=hourly`、`RandomizedDelaySec=15min`），`_update` 读状态文件，对每个订阅判断“上次执行之后是否已过一个周期”（geo 数据由内核自己更新，从不到期），到期才执行，执行后把时间和结果记下来。没有到期的更新时什么都不做，也不输出，journal 中只留真正执行过的更新。与每种资源一个 timer 相比：改周期只改设置、不用重写 unit 和 `daemon-reload`；新增资源只加一个设置项；下次执行的时间由工具自己算，`status` 和菜单直接显示；各更新顺序执行、不会同时运行；关机错过的更新在开机后的第一次唤醒时补上，不需要 `Persistent=`。代价是不能指定在某个时刻执行，服务器上的更新不在乎几点，可以接受。
   - 周期的值为小时或天数（`6h`、`1d`、`7d`，1 小时到 365 天）或 `off`。用户通过命令或菜单修改，不需要编辑文件。
     - **订阅**：周期是每个订阅自己的属性，存在订阅列表中（`update`，默认 `1d`），添加时指定（`sub add --update`，交互时从列表选），之后用 `sub set <name> --update <period>` 修改。未启用的订阅也按自己的周期更新（切换过去时内容是新的，机场的流量和到期信息也是新的），只有启用的订阅更新成功后才发布配置。下次到期 = 上次抓取（成功或失败，取较晚者；从未抓取过时为添加时间）+ 周期；上次失败时最多 6 小时后再试，不必等满一个周期。
@@ -877,7 +877,7 @@ tunlr doctor              诊断（见 4.1；--offline 跳过网络检查）
 Setup
 tunlr init                首次安装向导；再次执行即修复
 tunlr uninstall           完整卸载并清理规则（--purge 一并删除配置、订阅与状态）
-tunlr upgrade             升级 tunlr 自身（只能手动执行，不做定时任务；待实现，实现前不注册，见 13.1）
+tunlr upgrade             升级 tunlr 自身到最新发布（--version 指定版本；只能手动执行，不做定时任务，不进菜单）
 tunlr --version           版本（没有 version 子命令；status 与各命令的 --json 中也有）
 
 Configuration
@@ -938,6 +938,10 @@ tunlr backup restore [文件|-]     还原备份：diff 确认后发布，先自
   - 漂移（`pipeline.Drift`）：现场合成一次配置（不跑 `mihomo -t`）与生效的配置比较，报告四种情况：一致（不显示）；有尚未发布的改动（订阅更新、mixin 或设置改了、升级 tunlr 后模板变了、回滚到了旧修订），列出有变化的顶层键，提示 `tunlr config plan`；生效的配置与所有历史修订都不同，即在 tunlr 之外被改过，提示 `tunlr config apply` 会覆盖；无法合成（mixin 有错、端口安全检查不通过等），给出原因的第一行。还没有发布过时不报告。`--json` 中为 `drift`（`state`、`sections`、`error`），主菜单的状态行在修订号后提示。
   - 合成要解析整份订阅，主菜单每 10 秒刷新一次状态，所以按输入（状态、设置、订阅、mixin、生效的配置和历史）的大小和修改时间算出指纹（`DriftKey`），不变时沿用上次的结果。在 tunlr-dev 上 `status` 总耗时约 0.25 秒。
 - `uninstall`：停止并禁用、删除 unit，删除 `bin/`、`core/`、`kernels/` 和用户 `tunlr`；保留 `/etc/tunlr`、订阅、历史、状态文件和 `/usr/local/bin/tunlr`（之后可以直接 `tunlr init` 恢复），`--purge` 才一并删除。需要确认（`--yes`）。
+- `upgrade`（2026-10-30 定）：查询 `tunlr-app/cli` 的 release（最新的，或 `--version`）→ 下载本平台的 `tunlr_<版本>_linux_<架构>.tar.gz`（可经 `github-mirror`，只认 release API 给出的 sha256，同内核）→ 解出二进制写到 `/usr/local/bin/.tunlr-new` → 运行它的 `--version --json` 确认能运行且版本正确 → `rename` 替换 `/usr/local/bin/tunlr`（正在运行的进程不受影响）→ 服务已安装时由新版本执行 `init --yes`，重写 unit、按需迁移文件（这一步失败时二进制已换好，错误提示再跑 `tunlr init`）。已经是目标版本时什么都不做。确认同 `core upgrade`（问“Replace tunlr 0.1.0 with 0.2.0?”，非交互要 `--yes`）。
+  - 不保留旧版本、没有 `rollback`：旧版本都在 release 里，`--version` 指明就能换回去，与内核不同（内核换错了会断网，tunlr 换错了只是命令不好用）。
+  - 开发版（`go build` 的版本是 `dev`）不知道自己比谁新，不给 `--version` 时拒绝；每日的版本查询也不拿它比较。版本号与 `tunlr --version` 一致不带 `v`，`--version` 参数带不带都行；发布的 tag 带 `v`。
+  - 不进菜单（升级 tunlr 不是日常操作，菜单的状态行提示有新版本即可），不做定时任务（见第 7 节“定时任务的治理”）。
 - `proxy env`：输出让当前 shell 使用代理端口的变量（子进程改不了父 shell 的环境变量，由用户 `eval`；同类做法如 `eval "$(ssh-agent)"`）。不做 `env on/off` 和 `shell-init`：要先在 shell 配置中装函数，且与 `tun on` 等持久开关同名而行为不同（只影响当前 shell）。
   - `http_proxy`、`https_proxy` 为 `http://127.0.0.1:<mixed-port>`，`all_proxy` 为 `socks5h://…`（域名交给代理解析），大小写各一份（curl 不认大写的 `HTTP_PROXY`，有的工具只认大写）；`no_proxy` 为本机与私有地址段（不认 CIDR 的工具忽略网段）。只输出 POSIX 写法，第一行是说明用法的注释。`--unset` 输出 `unset`，不需要配置。
   - 端口取自生效的配置；没有发布过、没有 `mixed-port`、代理端口需要认证时退出码 3。生效的配置含节点密码和 API secret，普通用户读不到，此时提示 `eval "$(sudo tunlr proxy env)"`：`sudo` 只生成语句，变量仍设在用户自己的 shell 中，工具因此不必为它放开 root 的约束。
@@ -1001,18 +1005,20 @@ tunlr backup restore [文件|-]     还原备份：diff 确认后发布，先自
   | Traffic | TUN 与网关 · 代理端口的局域网访问 | TUN 开关、网关开关、代理端口的局域网开关（开着时另有“Change LAN interfaces”，即 `proxy lan on` 的网卡多选）；TUN、代理端口两项详情 |
   | Filters | 过滤摘要 | QUIC 开关、只代理部分端口（开启时为改端口、恢复全部两项）、网段直连的添加与删除（有时）、过滤详情 |
   | LAN devices | 在线、空闲的设备数；网关和代理端口都只对本机时说明没有设备使用本机 | 列出、列出全部、起名、设备走法（`devices route`）、删除记录 |
-  | mihomo | 运行中 · 版本 / 未运行 / 失败 | 启动或重启、停止，最近的日志，升级，换回已知可用版本（有时），内核详情 |
+  | mihomo | 运行中 · 版本 / 未运行 / 失败（有新版本时附 `(v1.19.34 available)`） | 启动或重启、停止，最近的日志，升级，换回已知可用版本（有时），内核详情 |
   | Panel | 面板的局域网访问 | 局域网开关（开着时另有“Change LAN interfaces”）、更换 secret、打开方式 |
   | Maintenance | 自动备份的份数 | 备份到文件、还原备份、编辑工具设置、诊断（`doctor`）、修复安装（`init`） |
 
   分类与 `--help` 的分组一一对应（Configuration = Subscriptions + Config，Network = Traffic + Filters + LAN devices，Kernel and panel = mihomo + Panel，Maintenance 另含 doctor、init），光标停在分类上时命令行显示它对应的顶层命令（如 `$ tunlr tun · tunlr proxy`），用户从菜单学到命令树。拆分的依据：Subscriptions 是“配置从哪来”，Config 是“合成与发布”（`update` 归在这里：geo 数据是配置的一部分）；Traffic 管流量怎么进 mihomo，Filters 管哪些流量例外，“LAN devices”管“具体是哪台设备”（按设备的走法在那里）；mihomo 是内核的运行与版本，Panel 是面板的访问。“Change LAN interfaces”在 Traffic 和 Panel 各出现一次，改的是同一份放行网卡，用户在哪个开关旁边都找得到。huh 的 Select 没有不可选的小节标题，所以靠分类而不是靠分组标题把同类的项放在一起。
+
+  新版本只提示、不列为事项：状态行开头的 `tunlr` 在有新版本时写成 `tunlr 0.1.0 (0.2.0 available)`，mihomo 的状态后附 `(v1.19.34 available)`；`status` 多一行 `Available: tunlr 0.2.0 (tunlr upgrade) · mihomo v1.19.34 (tunlr core upgrade)`（`--json` 中为 `update_check`：查询时间、查到的最新版本、比当前新的版本）。数据来自每日的版本查询（第 7 节），菜单刷新和 `status` 不联网。升级不是“现在就该做”的事，用户自己挑时候。
 
   需要处理的事项以 `!` 开头，各对应一个命令，只有三种：有还没发布的改动（`config apply`）；内核服务失败或没有运行，且发布过配置（`core start`）；最近一次抓取订阅失败（`update run sub`；geo 数据由内核更新，tunlr 看不到它的结果）。只列“现在就该做、做什么很明确”的事：在 tunlr 之外改过的配置要用户先看 diff 再决定，留在 Config 分类里；没有订阅、没发布过配置时状态行已经说明。光标起始于第一项，有事项时就停在它上面。
 
   第二级末尾是“← Back”，查看类的项（“… details”“List …”）排在动作之后。没安装时第一级只有“Install tunlr”“Show status”“Diagnose”“Quit”。菜单项随状态变化：有订阅才有修改、抓取；订阅多于一个才有切换、删除；有历史才有回滚；开关类的项只出现与当前状态相反的那个动作。标签用短写（sub、config），说明写在下方。
 - 列表下方两行：光标所在那一项的说明（会发生什么、有什么前提），和等价命令（`$ tunlr …`；分类显示它对应的顶层命令）。没有时留空行，列表不跳动。
 - 菜单只负责选择，不嵌表单：每一项按回车都是同一件事，把终端交给子命令，子命令自己问、做、报告。原来添加订阅、从文件还原、改端口在菜单里填表单，其余跳出菜单由子命令问，用户不知道按下回车会发生什么。为此补上子命令缺的提问：`sub add` 问名称和来源，`backup restore` 可以输入文件，新增 `sub set`。
-- 不进菜单的：`uninstall`（卸载不该是在菜单里顺手按到的操作）；`proxy env`（输出给当前 shell 用的 export 语句）；`core upgrade --version`（指定版本是排障操作）；`config plan`（`config apply` 先显示同一份 diff，回答否就什么都不做）；`update` 的日程（状态和 `sub` 列表中有）；`settings` 的查看（编辑器打开就是查看）。
+- 不进菜单的：`uninstall`（卸载不该是在菜单里顺手按到的操作）；`upgrade`（状态行提示有新版本，升级 tunlr 自己让用户挑时候执行）；`proxy env`（输出给当前 shell 用的 export 语句）；`core upgrade --version`（指定版本是排障操作）；`config plan`（`config apply` 先显示同一份 diff，回答否就什么都不做）；`update` 的日程（状态和 `sub` 列表中有）；`settings` 的查看（编辑器打开就是查看）。
 - 列表的高度按终端的行数算（减去状态行、标题与说明、按键说明和下方两行），至少 10 行，放不下时滚动；终端大小变化时随之调整，光标不动。
 - 不加分组标题，也不自己写列表组件：huh 的 Select 没有不可选的行，为几行标题自己写列表（光标跳过标题、滚动、按键）得不偿失。
 - 不清屏。在两级之间切换只是原地重画；列表标题是所在位置（`tunlr › Traffic`），下面一行是这一分类的状态，光标停在上次在这一级选的那一项。
@@ -1114,12 +1120,18 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 **将来的 agent**：桌面端、手机端和 Web 控制台需要远程管理服务器时，需要一个常驻的 agent 接收请求。计划作为同一二进制的子命令 `tunlr agent` 放在本仓库，由 systemd 托管、默认不开启，与 CLI 共用 `pkg/core`。届时必须单独设计身份认证、传输加密和权限控制。
 
-**开源协议**：待定。因为不链接 mihomo 代码，不受其 GPL-3.0 约束。一种常见做法是 CLI 使用 MIT 或 Apache-2.0，托管服务和控制台另行决定。
+**开源协议**：MIT（`LICENSE`，署名 tunlr-app，2026-10-30 定）。因为不链接 mihomo 代码，不受其 GPL-3.0 约束；托管服务和控制台另行决定。
 
 ## 12. 分发
 
-- 安装入口：`curl -fsSL https://tunlr.app/install.sh | sh`。脚本只识别架构、下载、校验 checksum，然后调用 `tunlr init`；支持指定镜像源或代理，缓解国内服务器访问 GitHub 慢的问题；无论经哪个镜像下载，都按官方 sha256 校验（见第 7 节）。
-- `.app` 域名强制 HTTPS，托管时需配置证书（Cloudflare 或 GitHub Pages 会自动处理）。
+（2026-10-30 定）
+
+- **版本号**只有一处：git tag `vX.Y.Z`。goreleaser 把它（去掉 `v`）连同 commit 和构建时间经 `-ldflags -X` 注入 `cmd/tunlr` 的 `version`、`commit`、`date`，`tunlr --version` 和各命令 `--json` 中的 `version` 都是它；本地 `go build` 的版本是 `dev`（`setup.DevVersion`）。第一个版本 `v0.1.0`。
+- **发布**：推送 tag 触发 `.github/workflows/release.yml`：`go test ./...` → goreleaser 构建 linux amd64、arm64（`CGO_ENABLED=0`、`-trimpath`、`-s -w`）→ 发布 GitHub release，资产为 `tunlr_<版本>_linux_<架构>.tar.gz`（内含 `tunlr`、`LICENSE`、`README.md`）、`checksums.txt`，另附 `install.sh`、`uninstall.sh` 一份。每个资产的 sha256 由 GitHub 记在 release API 的 `digest` 中，`tunlr upgrade`、`core upgrade` 和 `install.sh` 只认它（见第 7 节）。`.github/workflows/ci.yml` 在每次推送和 PR 时跑 gofmt、vet、测试、脚本语法和 `goreleaser check`。
+  - 第一个版本的说明手写在 release 页面（goreleaser 的 changelog 关闭），之后的版本从 commit 生成（排除 `docs:`、`test:` 开头的）。发布前的提交历史原样保留，不压缩。
+- **安装入口**：`install.sh` 放在仓库根目录，入口是 jsDelivr（`https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/install.sh`，中国可达），备用 `https://raw.githubusercontent.com/tunlr-app/cli/main/install.sh`；`tunlr.app/install.sh` 等官网上线后再加。脚本（POSIX sh，依赖 curl、tar、sha256sum）：检查 root、Linux、systemd、架构（x86_64 → amd64、aarch64 → arm64）→ 向 `api.github.com` 查 release（`TUNLR_VERSION` 指定版本，默认最新；API 不经镜像）→ 经镜像下载资产（`TUNLR_MIRROR`，默认 `https://gh-proxy.com/`，设为空则直连）→ 核对 API 给出的 sha256 → 解出 `tunlr` 并运行 `--version` 确认 → 写到 `/usr/local/bin/.tunlr-new` 再 `mv` 替换 → 运行 `tunlr init`，把同一个镜像作为 `--mirror` 传给它（参数里自己给了 `--mirror` 则不传），其余参数原样传给 `init`（`sh -s -- --sub home=…`）。管道执行时标准输入是脚本，`init` 从 `/dev/tty` 读取以便提问；没有终端时 `init --yes`。`TUNLR_INIT=no` 只装二进制。
+  - 为什么默认经 gh-proxy：中国的服务器直连 GitHub 下载常常失败，而字节经哪里都按官方 sha256 校验，默认走镜像对其他地区只是多一跳。jsDelivr 只能分发仓库文件，不能分发 release 资产，所以脚本本身走 jsDelivr、资产走 gh-proxy；只支持前缀式镜像，不适配其他改写规则。
+  - `uninstall.sh`：有终端时运行 `tunlr uninstall --purge` 让它确认，没有时 `--yes`；`/usr/local/bin/tunlr` 不在时先用 `install.sh`（`TUNLR_INIT=no`）装一份再卸载。
 - 可审计性：`tunlr config plan --full` 输出将写入系统的全部内容（mihomo 配置、nft 脚本、systemd unit），用户执行前即可审查。
 - 名字的读音和来历写在 README 与官网首页；提供 shell 自动补全。
 
@@ -1149,8 +1161,8 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 | 6 | ~~备份与还原~~ | 第 10 节 | 已完成 | 见第 10 节 `backup` |
 | 6a | ~~命令树整理~~ | 第 10 节 | 已完成 | 顶层 26 → 15（`upgrade` 实现后为 16）：`core`（start/stop/restart/logs/upgrade）、`config`（plan/apply/rollback/edit，含原 mixin）、`config` 改名 `settings`、`gateway` 并入 `tun`、`update` 移到 Configuration（不带子命令只查看，立即执行改为 `update run`，`sub set` 并入 `update set sub`）、去掉 `version` 子命令、隐藏 `completion`；帮助按分组显示；旧命令全部删除、不留别名；提示文字、主菜单、测试、本文档同步。随后按“查看命令的参数只改变看什么”的推论：`panel reset-secret`、`core rollback` 改为子命令，`config` 显示配置历史（去掉 `rollback --list`）；`tun gateway on` 交互时选局域网网卡；主菜单按帮助分组重排（Settings 独立成分类、最上面是需要处理的事项、底部显示等价命令、第一级一屏放下、Kernel 分类加回滚和修复安装） |
 | 6b | ~~mixin 分为 `mihomo:` 与 `tunlr:` 两个命名空间~~ | 第 6 节 | 已完成 | `mihomo:` 原样合并（映射合并、标量和列表替换、`null` 删除），`tunlr:` 下按 `proxies`、`proxy-groups`、`rules`、`sub-rules.<名称>` 分组提供 `prepend`/`append`/`patch`/`delete`，`patch` 项内的列表字段用 `prepend-<字段>` 等前缀。受管 mixin、`templates/mixin.yaml`、`sub add` 生成的筛选文件、提示文字、golden 文件同步 |
-| 7 | `tunlr upgrade`（自身升级） | 第 10 节 | 待补全 | 正式发布前必须有：查询最新版本、下载（可经镜像，只认官方 sha256）、用新文件跑 `--version` 确认、原子替换 `/usr/local/bin/tunlr`、必要时重写 unit 和 timer。待定：是否保留旧版本以便回退、开发版如何处理。不做定时任务 |
-| 8 | 发布 | 第 12 节 | 待补全 | `.goreleaser.yaml`（amd64、arm64，带 checksum）还没跑过真正的发布，没有 CI；`install.sh` 与官网未做 |
+| 7 | ~~`tunlr upgrade`（自身升级）~~ | 第 10 节 | 已完成 | 见第 10 节 `upgrade`；不保留旧版本（`--version` 换回）、开发版必须指明版本；每日的版本查询见第 7 节 |
+| 8 | 发布 | 第 12 节 | 已定 | `.goreleaser.yaml`、CI 与 release 的 Action、`install.sh`、`uninstall.sh`、README、LICENSE 已写；第一个 release（`v0.1.0`）还没有发布，`tunlr upgrade` 和 `install.sh` 的真实下载要等它 |
 
 不做或暂不做：失败通知（3.4）；局域网设备绕过内核的系统层（8.12）。`completion` 由 cobra 自动提供。
 
@@ -1158,5 +1170,5 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 ## 14. 待决事项
 
-- 开源协议
 - 商标查询
+- 官网（`tunlr.app`）与 `tunlr.app/install.sh` 入口

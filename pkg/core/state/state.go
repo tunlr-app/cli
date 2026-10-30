@@ -64,6 +64,20 @@ type State struct {
 
 	// Filter 是全局过滤项，零值为都关闭。只由 tunlr filter 修改。
 	Filter Filter `json:"filter,omitzero"`
+
+	// UpdateCheck 是最近一次查询 tunlr 和 mihomo 最新版本的结果，nil 为还没有查询过。由每小时的定时更新
+	// 每天查一次（setup.CheckUpdates）；菜单和 status 只读它，不联网。
+	UpdateCheck *UpdateCheck `json:"update_check,omitempty"`
+}
+
+// UpdateCheck 是一次最新版本查询的结果。只记最新的版本号，不自动升级：tunlr 由 tunlr upgrade 升级，
+// mihomo 由 tunlr core upgrade 升级。
+type UpdateCheck struct {
+	At time.Time `json:"at"`
+	// Tool 是 tunlr 最新正式发布的版本，如 "0.2.0"（与 tunlr --version 一致，不带 v）；Kernel 是 mihomo 的，
+	// 如 "v1.19.34"。查询失败时保留上一次的值，为空表示还没有查到过。
+	Tool   string `json:"tool,omitempty"`
+	Kernel string `json:"kernel,omitempty"`
 }
 
 // UpdateRun 是一次更新的执行情况（订阅的由抓取记录得出，见 setup.Schedules）。

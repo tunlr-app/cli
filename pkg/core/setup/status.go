@@ -44,6 +44,8 @@ type Status struct {
 	Devices *DeviceSummary `json:"devices,omitempty"`
 	// Filter 是全局过滤项，还没有状态文件时为 nil。
 	Filter *FilterStatus `json:"filter,omitempty"`
+	// UpdateCheck 是最近一次版本查询的结果和据此可用的更新，还没有查询过时为 nil。
+	UpdateCheck *UpdateCheck `json:"update_check,omitempty"`
 }
 
 // driftCache 缓存最近一次计算的漂移：合成一次配置要解析整份订阅，主菜单每 10 秒刷新一次状态，
@@ -147,6 +149,7 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 			s.LANAccess = &access
 		}
 		s.Filter = filterStatus(st)
+		s.UpdateCheck = updateCheck(st.UpdateCheck, i.Version, cs)
 	}
 	list, err := subscription.LoadList(i.Layout.SubscriptionList())
 	if err != nil {
