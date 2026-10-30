@@ -12,7 +12,7 @@
 #                   is passed to tunlr init (--mirror) unless the arguments give their own.
 #   TUNLR_INIT=no   install the binary only; do not run tunlr init.
 #
-# Arguments are passed to tunlr init (see: tunlr init --help). Without a terminal (no /dev/tty) init
+# Arguments are passed to tunlr init (see: tunlr init --help). Without a controlling terminal init
 # runs with --yes and asks nothing.
 set -eu
 
@@ -70,7 +70,9 @@ SHA=$(printf '%s' "$REST" | sed -n 's/.*"digest":"sha256:\([0-9a-f]\{64\}\)".*/\
 
 URL="https://github.com/$REPO/releases/download/$TAG/$ASSET"
 say "Downloading $MIRROR$URL"
-curl -fL --retry 3 --progress-bar -o "$TMP/$ASSET" "$MIRROR$URL" || fail "download failed"
+# A progress bar only when stderr is a terminal; piped output would be flooded with it.
+if [ -t 2 ]; then PROGRESS=--progress-bar; else PROGRESS=-sS; fi
+curl -fL --retry 3 $PROGRESS -o "$TMP/$ASSET" "$MIRROR$URL" || fail "download failed"
 GOT=$(sha256sum "$TMP/$ASSET" | cut -d' ' -f1)
 [ "$GOT" = "$SHA" ] || fail "sha256 mismatch for $ASSET: got $GOT, GitHub says $SHA (a mirror may have served a wrong file)"
 tar -xzf "$TMP/$ASSET" -C "$TMP" tunlr
@@ -92,7 +94,9 @@ case " $* " in
 *" --mirror "* | *" --mirror="*) ;;
 *) set -- --mirror "$MIRROR" "$@" ;;
 esac
-if [ -r /dev/tty ]; then
+# /dev/tty exists on every Linux but only opens with a controlling terminal (not under ssh without a
+# tty, cloud-init or cron), so test by opening it rather than with [ -r ].
+if ( : </dev/tty ) 2>/dev/null; then
 	exec "$BIN" init "$@" </dev/tty
 fi
 exec "$BIN" init --yes "$@"

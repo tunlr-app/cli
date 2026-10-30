@@ -5,7 +5,7 @@
 #
 #   curl -fsSL https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/uninstall.sh | sh
 #
-# It asks for confirmation when a terminal is available; without one (no /dev/tty) it proceeds.
+# It asks for confirmation when a controlling terminal is available; without one it proceeds.
 # If /usr/local/bin/tunlr is missing, the current release is downloaded first (TUNLR_MIRROR and
 # TUNLR_VERSION as in install.sh) so the cleanup still runs.
 set -eu
@@ -24,7 +24,7 @@ if [ ! -x "$BIN" ]; then
 	curl -fsSL "$INSTALL_URL" | TUNLR_INIT=no sh || fail "could not download tunlr"
 fi
 
-if [ -r /dev/tty ]; then
+if ( : </dev/tty ) 2>/dev/null; then
 	exec "$BIN" uninstall --purge </dev/tty
 fi
 exec "$BIN" uninstall --purge --yes
