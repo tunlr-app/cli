@@ -55,6 +55,10 @@ type State struct {
 	// ProxyLAN 是代理端口的局域网访问开关，nil 为关闭（代理端口只监听本机）。只由 proxy lan on/off 修改。
 	ProxyLAN *ProxyLAN `json:"proxy_lan,omitempty"`
 
+	// LANAccess 是代理端口和面板对其他设备开放时放行的入口，两个开关共用；nil 为还没有选过（取默认值）。
+	// 开关都关闭时保留，下次开启时作为默认的选择。只由 proxy lan on、panel lan on 修改。
+	LANAccess *LANAccess `json:"lan_access,omitempty"`
+
 	// Devices 是用户起过名称或设置过走法的局域网设备。只由 tunlr devices、tunlr filter device 修改。
 	Devices []Device `json:"devices,omitempty"`
 
@@ -109,6 +113,14 @@ type PanelLAN struct {
 type ProxyLAN struct {
 	// Since 是开启的时间。
 	Since time.Time `json:"since"`
+}
+
+// LANAccess 是代理端口和面板放行的入口。网关模式的局域网网卡总是放行，不记在这里。
+type LANAccess struct {
+	// Interfaces 是放行的入口网卡，按名称记（网卡的地址会变）。
+	Interfaces []string `json:"interfaces,omitempty"`
+	// Containers 放行本机容器网桥（docker0、br-*）进来的连接。
+	Containers bool `json:"containers,omitempty"`
 }
 
 // RouteDirect 是设备的走法“全部直连”；空为默认的“按规则分流”。

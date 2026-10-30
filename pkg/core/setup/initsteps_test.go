@@ -23,7 +23,8 @@ func TestInitSteps(t *testing.T) {
 		"Copy tunlr to " + l.ToolBinary(),
 		"Download from GitHub through https://gh-proxy.com/",
 		"Install mihomo (latest release)",
-		"Install and enable tunlr-core.service, tunlr-update.timer (subscriptions daily unless set otherwise) and tunlr-aftercare.path (checks mihomo after the panel upgrades it)",
+		"Install and enable tunlr-core.service, tunlr-update.timer (subscriptions daily unless set otherwise), tunlr-aftercare.path (checks mihomo after the panel upgrades it) " +
+			"and tunlr-firewall.service (reloads tunlr's nftables rules after nftables.service)",
 		`Add the subscription "home"`,
 		`Publish the configuration from "home"`,
 		"Start mihomo",

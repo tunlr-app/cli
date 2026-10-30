@@ -1,0 +1,40 @@
+# 由 tunlr 生成：代理端口、面板对其他设备开放时，只放行从选定网卡进来、来自私有地址的连接（DESIGN.md 第 10 节）。
+# 内核另外按 lan-allowed-ips 只让私有地址使用代理端口；面板的 API 不能限制来源，只靠这张表。
+# 挂在 prerouting 的 raw 优先级：早于任何 DNAT（如内核的 auto-redirect），看到的是原始的目标地址和端口。
+# 先建后删再建，整个文件在一个事务中替换旧表。
+table inet {{.Table}}
+delete table inet {{.Table}}
+table inet {{.Table}} {
+	# 对其他设备开放的端口：代理端口（proxy lan on）、面板（panel lan on）。
+	set ports {
+		type inet_service
+		elements = { {{.Ports}} }
+	}
+{{- if .Interfaces}}
+	# 放行的入口网卡：选定的网卡和网关模式的局域网网卡。
+	set interfaces {
+		type ifname
+		elements = { {{.Interfaces}} }
+	}
+{{- end}}
+	chain prerouting {
+		type filter hook prerouting priority raw; policy accept;
+		fib daddr type local meta l4proto { tcp, udp } th dport @ports jump guard
+	}
+	chain guard {
+		# 本机访问自己的任何地址都经 lo。
+		iifname "lo" return
+{{- if .Interfaces}}
+		iifname @interfaces ip saddr { {{.Private}} } return
+		iifname @interfaces ip6 saddr { {{.Private6}} } return
+{{- end}}
+{{- if .Containers}}
+		# 本机的容器（Docker 默认网桥与 compose 网络）。
+		iifname "docker0" ip saddr { {{.Private}} } return
+		iifname "docker0" ip6 saddr { {{.Private6}} } return
+		iifname "br-*" ip saddr { {{.Private}} } return
+		iifname "br-*" ip6 saddr { {{.Private6}} } return
+{{- end}}
+		drop
+	}
+}

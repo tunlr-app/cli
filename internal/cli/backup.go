@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -103,11 +104,19 @@ func (a *app) describeSwitches(s backup.Switches) string {
 	case s.Tun:
 		on = append(on, "TUN")
 	}
+	through := slices.Clone(s.LANInterfaces)
+	if s.LANContainers {
+		through = append(through, "containers")
+	}
+	note := ""
+	if len(through) > 0 {
+		note = " (through " + strings.Join(through, ", ") + ")"
+	}
 	if s.ProxyLAN {
-		on = append(on, "proxy port LAN access")
+		on = append(on, "proxy port LAN access"+note)
 	}
 	if s.PanelLAN {
-		on = append(on, "panel LAN access")
+		on = append(on, "panel LAN access"+note)
 	}
 	if len(on) == 0 {
 		return a.style.dim("nothing")
@@ -418,13 +427,48 @@ func switchCommands(s setup.SwitchSuggestion) []string {
 	case s.Tun:
 		cmds = append(cmds, "tunlr tun on")
 	}
+	var flags string
+	if len(s.LANInterfaces) > 0 {
+		flags += " --interface " + strings.Join(s.LANInterfaces, ",")
+	}
+	if s.LANContainers {
+		flags += " --containers"
+	}
 	if s.ProxyLAN {
-		cmds = append(cmds, "tunlr proxy lan on")
+		cmds = append(cmds, "tunlr proxy lan on"+flags)
 	}
 	if s.PanelLAN {
-		cmds = append(cmds, "tunlr panel lan on")
+		cmds = append(cmds, "tunlr panel lan on"+flags)
 	}
 	return cmds
+}
+
+// lanChoiceOf 是还原时打开代理端口或面板的局域网访问放行的入口：备份中选过、这台机器上也有的网卡，
+// 都没有时取默认值。
+func lanChoiceOf(s setup.SwitchSuggestion) lanChoice {
+	var c lanChoice
+	if len(s.LANInterfaces) > 0 {
+		c.interfaces = s.LANInterfaces
+	}
+	if s.LANContainers {
+		c.containers = &s.LANContainers
+	}
+	return c
+}
+
+// lanThrough 是还原步骤中放行的入口，如 “ (through ens3, containers)”。
+func lanThrough(s setup.SwitchSuggestion) string {
+	parts := slices.Clone(s.LANInterfaces)
+	if s.LANContainers {
+		parts = append(parts, "containers")
+	}
+	switch {
+	case len(s.LANInterfaces) == 0 && len(s.LANWas) > 0:
+		parts = append([]string{"interfaces without a public address; " + strings.Join(s.LANWas, ", ") + " not found here"}, parts...)
+	case len(parts) == 0:
+		return ""
+	}
+	return " (through " + strings.Join(parts, ", ") + ")"
 }
 
 // restoreSwitches 让用户勾选要打开的开关（默认全选），再依次走 gateway on（或 tun on）、proxy lan on、
@@ -452,11 +496,12 @@ func (a *app) restoreSwitches(ctx context.Context, s setup.SwitchSuggestion) err
 			return a.tunOn(ctx, warnings)
 		}})
 	}
+	choice := lanChoiceOf(s)
 	if s.ProxyLAN {
-		steps = append(steps, step{"LAN access to the proxy port", "Proxy port", func() error { return a.proxyLAN(ctx, true) }})
+		steps = append(steps, step{"LAN access to the proxy port" + lanThrough(s), "Proxy port", func() error { return a.proxyLAN(ctx, true, choice) }})
 	}
 	if s.PanelLAN {
-		steps = append(steps, step{"LAN access to the panel", "Panel", func() error { return a.panelLANOn(ctx) }})
+		steps = append(steps, step{"LAN access to the panel" + lanThrough(s), "Panel", func() error { return a.panelLANOn(ctx, choice) }})
 	}
 	options := make([]string, len(steps))
 	all := make([]int, len(steps))

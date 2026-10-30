@@ -6,20 +6,24 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/tunlr-app/cli/pkg/core"
+	"github.com/tunlr-app/cli/pkg/core/netfilter"
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/setup"
+	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
-// proxyLANView 是 proxy lan on/off 在 --json 输出中的形式。
+// proxyLANView 是 proxy lan on/off 在 --json 输出中的形式。Access 是开启时保存的放行入口。
 type proxyLANView struct {
 	Plan      *planView             `json:"plan,omitempty"`
 	Preflight *setup.ProxyLANPlan   `json:"preflight,omitempty"`
+	Access    *state.LANAccess      `json:"access,omitempty"`
 	Applied   bool                  `json:"applied"`
 	Result    *setup.ProxyLANResult `json:"result,omitempty"`
 }
@@ -30,19 +34,22 @@ func (a *app) newProxyCommand() *cobra.Command {
 		Short: "Show the proxy address for other devices; lan on/off lets LAN devices use it",
 		Long: "mihomo's proxy port (mixed-port, HTTP and SOCKS5 on one port) listens on 127.0.0.1 only by\n" +
 			"default. With LAN access on (tunlr proxy lan on), devices at home can set this server as\n" +
-			"their HTTP or SOCKS5 proxy; mihomo refuses connections from addresses that are not private.\n" +
-			"To route devices through this server without setting a proxy on each, see tunlr tun gateway.",
+			"their HTTP or SOCKS5 proxy; only connections from private addresses through the chosen\n" +
+			"interfaces are let in. To route devices through this server without setting a proxy on\n" +
+			"each, see tunlr tun gateway.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.showProxyLAN(cmd.Context()) },
 	}
 	lan := &cobra.Command{
 		Use:   "lan",
 		Short: "Show whether devices on the LAN can use the proxy port; turn it on or off",
-		Long: "With LAN access on, the configuration has allow-lan: true and lan-allowed-ips limited to\n" +
-			"this server itself and private addresses (" + privateRanges() + "),\n" +
-			"so no authentication is needed at home.\n" +
-			"Both keys are managed by tunlr; mixins cannot set them. Add authentication in a mixin if\n" +
-			"you want a password anyway.",
+		Long: "With LAN access on, mihomo listens on all addresses (allow-lan: true), and the nftables table\n" +
+			"inet " + netfilter.AccessTable + " only lets in connections through the chosen interfaces from private\n" +
+			"addresses (" + privateRanges() + "); mihomo also refuses\n" +
+			"other addresses (lan-allowed-ips), so no authentication is needed at home. " + privateIncludes + "\n" +
+			"By default the interfaces without a public address are let in; choose them with tunlr proxy\n" +
+			"lan on --interface (shared with the panel). Add authentication in a mixin if you want a\n" +
+			"password anyway.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.showProxyLAN(cmd.Context()) },
 	}
@@ -104,13 +111,11 @@ func (a *app) newProxyEnvCommand() *cobra.Command {
 }
 
 func (a *app) showProxyLAN(ctx context.Context) error {
-	pre, err := a.installer().ProxyLANPreflight(ctx)
-	if err != nil {
-		return err
-	}
+	pre := a.installer().ProxyLANInfo(ctx, os.Getenv("SSH_CONNECTION"))
 	return a.render(pre, func() error {
 		fmt.Fprintf(a.stdout, "Proxy LAN access: %s\n", a.describeProxyLAN(pre.On))
 		if pre.On {
+			a.printAccess(pre.Access, "proxy")
 			a.printProxyAddresses(pre)
 			fmt.Fprintln(a.stdout, "(tunlr proxy lan off lets only this server use it)")
 		} else {
@@ -123,22 +128,65 @@ func (a *app) showProxyLAN(ctx context.Context) error {
 	})
 }
 
-// printProxyAddresses 输出局域网设备要填写的代理地址。
+// printProxyAddresses 输出其他设备要填写的代理地址：放行的网卡上每个地址一行，注明所在的网卡。
 func (a *app) printProxyAddresses(pre *setup.ProxyLANPlan) {
 	if pre.Port == 0 {
 		fmt.Fprintln(a.stdout, "The configuration has no mixed-port, so there is no proxy port to use.")
 		return
 	}
-	if len(pre.Addresses) == 0 {
+	type row struct{ ip, addr, note string }
+	var rows []row
+	for _, c := range pre.Interfaces {
+		if !c.Allowed {
+			continue
+		}
+		for _, ip := range c.Addresses {
+			rows = append(rows, row{ip, net.JoinHostPort(ip, strconv.Itoa(pre.Port)), lanNote(c.Name, c.Default, c.Gateway, c.SSH)})
+		}
+	}
+	switch len(rows) {
+	case 0:
 		fmt.Fprintf(a.stdout, "On devices, set the HTTP or SOCKS5 proxy to this server's LAN address, port %d.\n", pre.Port)
-		return
+	case 1:
+		fmt.Fprintf(a.stdout, "On devices, set the HTTP or SOCKS5 proxy to %s\n", rows[0].addr)
+		fmt.Fprintf(a.stdout, "(server %s, port %d; Wi-Fi settings → proxy → manual on phones).\n", rows[0].ip, pre.Port)
+	default:
+		fmt.Fprintln(a.stdout, "On devices, set the HTTP or SOCKS5 proxy to this server's address on their network:")
+		width := 0
+		for _, r := range rows {
+			width = max(width, len(r.addr))
+		}
+		for _, r := range rows {
+			fmt.Fprintf(a.stdout, "  %-*s  %s\n", width, r.addr, a.style.dim(r.note))
+		}
+		fmt.Fprintf(a.stdout, "(port %d; Wi-Fi settings → proxy → manual on phones).\n", pre.Port)
 	}
-	addrs := make([]string, len(pre.Addresses))
-	for i, ip := range pre.Addresses {
-		addrs[i] = net.JoinHostPort(ip, strconv.Itoa(pre.Port))
+}
+
+// lanNote 写出地址所在的网卡，以及它为什么列出来：网关模式的局域网网卡、默认路由所在、当前 SSH 会话进来的。
+func lanNote(name string, def, gateway, ssh bool) string {
+	parts := []string{name}
+	if gateway {
+		parts = append(parts, "gateway LAN")
 	}
-	fmt.Fprintf(a.stdout, "On devices, set the HTTP or SOCKS5 proxy to %s\n", strings.Join(addrs, " or "))
-	fmt.Fprintf(a.stdout, "(server %s, port %d; Wi-Fi settings → proxy → manual on phones).\n", strings.Join(pre.Addresses, " or "), pre.Port)
+	if def {
+		parts = append(parts, "default route")
+	}
+	if ssh {
+		parts = append(parts, "this SSH session")
+	}
+	return strings.Join(parts, ", ")
+}
+
+// publicNote 列出有公网地址的网卡，如 “ens3 has the public address 203.0.113.5”；没有时为空。
+func publicNote(list []setup.LANInterface) string {
+	var parts []string
+	for _, c := range list {
+		if len(c.PublicAddresses) > 0 {
+			parts = append(parts, c.Name+" has the public address "+strings.Join(c.PublicAddresses, ", "))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // describeProxyLAN 用于 status 和菜单的代理端口访问状态。
@@ -154,23 +202,38 @@ func (a *app) newProxyLANSwitchCommand(on bool) *cobra.Command {
 	if on {
 		use, short = "on", "Let devices on the LAN use the proxy port (private addresses only)"
 	}
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   use,
 		Short: short,
 		Args:  usageArgs(cobra.NoArgs),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := a.requireConfirmation("proxy lan " + use); err != nil {
-				return err
-			}
-			return a.proxyLAN(cmd.Context(), on)
-		},
 	}
+	var flags *lanAccessFlags
+	if on {
+		cmd.Long = "Choose the interfaces to let in (interactively, or with --interface), load the nftables table\n" +
+			"that only lets private addresses in through them, then publish the configuration with\n" +
+			"allow-lan: true (shown as a diff first). If an interface let in has a public address, you are\n" +
+			"asked twice. Running it again changes the interfaces (shared with the panel)."
+		flags = addLANAccessFlags(cmd)
+	}
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if err := a.requireConfirmation("proxy lan " + use); err != nil {
+			return err
+		}
+		var choice lanChoice
+		if flags != nil {
+			choice = flags.choice()
+		}
+		return a.proxyLAN(cmd.Context(), on, choice)
+	}
+	return cmd
 }
 
-// proxyLAN 是 proxy lan on/off 的流程：预览、确认、发布。init 选择局域网代理或网关时也走它。
-func (a *app) proxyLAN(ctx context.Context, on bool) error {
+// proxyLAN 是 proxy lan on/off 的流程：选择放行的入口（开启时）、预览、确认、发布；已经开启时只更新放行的
+// 入口。init 选择局域网代理或网关、还原备份时也走它。
+func (a *app) proxyLAN(ctx context.Context, on bool, choice lanChoice) error {
 	inst := a.installer()
-	pre, err := inst.ProxyLANPreflight(ctx)
+	ssh := os.Getenv("SSH_CONNECTION")
+	pre, err := inst.ProxyLANPreflight(ctx, ssh)
 	if err != nil {
 		return err
 	}
@@ -180,13 +243,33 @@ func (a *app) proxyLAN(ctx context.Context, on bool) error {
 	}
 	pv := newPlanView(plan, false)
 	v := proxyLANView{Plan: &pv, Preflight: pre}
-	state := map[bool]string{true: "on", false: "off"}[on]
+	word := map[bool]string{true: "on", false: "off"}[on]
+	declined := fmt.Sprintf("LAN access not turned %s.", word)
+	if on {
+		if v.Access, err = a.chooseLANAccess(ctx, pre.Interfaces, pre.Access, choice); v.Access == nil {
+			return err
+		}
+	}
 	if pre.On == on && (!plan.Changed() || plan.Current == nil && !on) {
-		return a.render(v, func() error {
-			fmt.Fprintf(a.stdout, "LAN access to the proxy port is already %s.\n", state)
-			if on {
-				a.printProxyAddresses(pre)
+		if !on {
+			return a.render(v, func() error {
+				_, err := fmt.Fprintln(a.stdout, "LAN access to the proxy port is already off.")
+				return err
+			})
+		}
+		changed, err := a.updateLANAccess(ctx, pre.Interfaces, pre.Access, v.Access, "the proxy port", "Interfaces not changed.")
+		if err != nil || a.aborted {
+			return err
+		}
+		if v.Applied = changed && !a.opts.DryRun; v.Applied {
+			if p, err := inst.ProxyLANPreflight(ctx, ssh); err == nil {
+				pre, v.Preflight = p, p
 			}
+		}
+		return a.render(v, func() error {
+			fmt.Fprintln(a.stdout, "LAN access to the proxy port is already on.")
+			a.printAccessUpdate(changed, pre.Access, v.Access, "proxy")
+			a.printProxyAddresses(pre)
 			return nil
 		})
 	}
@@ -199,27 +282,20 @@ func (a *app) proxyLAN(ctx context.Context, on bool) error {
 				return rerr
 			}
 		} else if err != nil {
-			fmt.Fprintf(a.stdout, "\nLAN access not turned %s.\n", state)
+			fmt.Fprintf(a.stdout, "\nLAN access not turned %s.\n", word)
 		} else {
 			fmt.Fprintln(a.stdout, "\nDry run: nothing changed.")
 		}
 		return err
 	}
-	declined := fmt.Sprintf("LAN access not turned %s.", state)
 	if on {
 		if !a.opts.JSON {
-			fmt.Fprintln(a.stdout, "\nDevices with a private address can use the proxy port without a password; mihomo refuses\n"+
-				"other addresses (lan-allowed-ips).")
+			fmt.Fprintf(a.stdout, "\nDevices with a private address can use the proxy port without a password, through: %s.\n"+
+				"Other connections are dropped by the nftables table inet %s. %s\n",
+				a.describeAccess(pre.Access.With(v.Access)), netfilter.AccessTable, privateIncludes)
 		}
-		if len(pre.PublicAddresses) > 0 {
-			if !a.opts.JSON {
-				fmt.Fprintf(a.stdout, "\n%s %s has the public address %s: this server is probably reachable from the\n"+
-					"internet. Only private addresses can use the proxy, but if the server is not on a LAN you use,\n"+
-					"leave this off.\n", a.style.warn("Warning:"), pre.Interface, strings.Join(pre.PublicAddresses, ", "))
-			}
-			if ok, err := a.ask(ctx, "This server has a public address. Open the proxy port to the LAN anyway?", "", declined); !ok {
-				return err
-			}
+		if ok, err := a.confirmPublic(ctx, newlyPublic(pre.Interfaces, pre.Access, pre.On, v.Access), "the proxy port", declined); !ok {
+			return err
 		}
 	}
 	question := "Let devices on the LAN use the proxy port?"
@@ -230,7 +306,7 @@ func (a *app) proxyLAN(ctx context.Context, on bool) error {
 		return err
 	}
 	err = a.spin("Publishing the configuration", func() (err error) {
-		v.Result, err = inst.SetProxyLAN(ctx, on, plan)
+		v.Result, err = inst.SetProxyLAN(ctx, on, plan, v.Access)
 		return err
 	})
 	if errors.Is(err, core.ErrRolledBack) {
@@ -240,9 +316,13 @@ func (a *app) proxyLAN(ctx context.Context, on bool) error {
 		return err
 	}
 	v.Applied = true
+	if p, err := inst.ProxyLANPreflight(ctx, ssh); err == nil {
+		pre, v.Preflight = p, p
+	}
 	return a.render(v, func() error {
-		fmt.Fprintf(a.stdout, "\n%s\n", a.style.good(fmt.Sprintf("LAN access to the proxy port is %s.", state)))
+		fmt.Fprintf(a.stdout, "\n%s\n", a.style.good(fmt.Sprintf("LAN access to the proxy port is %s.", word)))
 		if on {
+			a.printAccess(pre.Access, "proxy")
 			a.printProxyAddresses(pre)
 			fmt.Fprintln(a.stdout, "If a device cannot connect, check other firewalls on this server (they can still block the port).")
 		}

@@ -76,6 +76,9 @@ type Switches struct {
 	Gateway  string `json:"gateway,omitempty"`
 	ProxyLAN bool   `json:"proxy_lan,omitempty"`
 	PanelLAN bool   `json:"panel_lan,omitempty"`
+	// LANInterfaces、LANContainers 是代理端口和面板放行的入口（见 state.LANAccess），选过时才有。
+	LANInterfaces []string `json:"lan_interfaces,omitempty"`
+	LANContainers bool     `json:"lan_containers,omitempty"`
 }
 
 // Any 报告是否有开着的开关。

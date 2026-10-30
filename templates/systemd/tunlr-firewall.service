@@ -1,0 +1,18 @@
+# 由 tunlr 生成，tunlr init 时重写；不要直接修改。
+# nftables.service 启动、重启或重新加载时（Debian 的 /etc/nftables.conf 以 flush ruleset 开头，
+# 连同 tunlr 的表一起清空），随它按 tunlr 的状态重新加载 tunlr 的表。
+[Unit]
+Description=Reload the nftables tables of tunlr after nftables.service (tunlr)
+Documentation=https://tunlr.app
+After=nftables.service
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={{.Tool}} _firewall
+ExecReload={{.Tool}} _firewall
+
+[Install]
+WantedBy=multi-user.target

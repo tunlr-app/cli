@@ -46,6 +46,8 @@ type fakeHost struct {
 	docker []string
 	// failGateway 让加载网关的 nft 表失败。
 	failGateway bool
+	// access 是最近一次加载 inet tunlr_access 的脚本。
+	access string
 	// devicesSync 是最近一次更新记录设备的表的脚本；seen 是该表中各集合的 nft -j 输出，neigh 是
 	// ip -j neigh show 的输出。
 	devicesSync string
@@ -82,8 +84,9 @@ func (h *fakeHost) netfilter(_ context.Context, stdin []byte, name string, args 
 			}
 			table = netfilter.GatewayTable
 		}
-		if strings.Contains(string(stdin), "table inet "+netfilter.PanelTable+" {") {
-			table = netfilter.PanelTable
+		if strings.Contains(string(stdin), "table inet "+netfilter.AccessTable+" {") {
+			table = netfilter.AccessTable
+			h.access = string(stdin)
 		}
 		if strings.Contains(string(stdin), "set inet "+netfilter.DevicesTable+" lan") {
 			// 记录设备的表：只更新集合时表须已存在。

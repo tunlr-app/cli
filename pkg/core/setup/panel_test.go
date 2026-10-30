@@ -97,17 +97,26 @@ func TestPanel(t *testing.T) {
 		t.Errorf("escaped url = %q", p.URL)
 	}
 
-	// 对外监听：隧道经 127.0.0.1，另外给出默认路由网卡和 SSH 连进来的地址的链接。
-	i.Interfaces = lanInterface
-	editPublished(t, i, "mihomo:\n  external-controller: 0.0.0.0:9090\n")
-	p, _ = i.Panel(ctx, PanelOptions{SSHConnection: "198.51.100.7 51234 203.0.113.10 22", Label: "srv"})
-	if !p.Public || p.SSHCommand != "ssh -N -L 9090:127.0.0.1:9090 203.0.113.10" || p.LAN || len(p.LANURLs) != 2 ||
-		!strings.HasPrefix(p.LANURLs[0], "http://192.168.1.20:9090/ui/#/setup?hostname=192.168.1.20&label=srv&port=9090") ||
-		!strings.HasPrefix(p.LANURLs[1], "http://203.0.113.10:9090/") {
-		t.Errorf("public: %+v", p)
+	// 对外监听：隧道经 127.0.0.1，另外按网卡给出默认路由网卡和 SSH 会话进来的网卡（Tailscale）上的链接。
+	i.InterfaceNames = func() ([]string, error) { return []string{"tailscale0", "ens3"}, nil }
+	i.Interfaces = func(name string) (*netfilter.Interface, error) {
+		if name == "tailscale0" {
+			return &netfilter.Interface{Name: name, Up: true, PointToPoint: true, IPv4: []string{"100.100.1.2"}}, nil
+		}
+		return lanInterface(name)
 	}
-	if want := []string{"http://192.168.1.20:9090/ui/", "http://203.0.113.10:9090/ui/"}; !slices.Equal(p.LANBookmarks, want) {
-		t.Errorf("bookmarks = %q", p.LANBookmarks)
+	editPublished(t, i, "mihomo:\n  external-controller: 0.0.0.0:9090\n")
+	p, _ = i.Panel(ctx, PanelOptions{SSHConnection: "100.100.9.9 51234 100.100.1.2 22", Label: "srv"})
+	if !p.Public || p.SSHCommand != "ssh -N -L 9090:127.0.0.1:9090 100.100.1.2" || p.LAN || len(p.LANLinks) != 2 {
+		t.Fatalf("public: %+v", p)
+	}
+	if l := p.LANLinks[0]; l.Interface != "ens3" || !l.Default || l.SSH ||
+		!strings.HasPrefix(l.URL, "http://192.168.1.20:9090/ui/#/setup?hostname=192.168.1.20&label=srv&port=9090") ||
+		l.Bookmark != "http://192.168.1.20:9090/ui/" {
+		t.Errorf("default route link = %+v", l)
+	}
+	if l := p.LANLinks[1]; l.Interface != "tailscale0" || !l.SSH || l.Bookmark != "http://100.100.1.2:9090/ui/" {
+		t.Errorf("ssh link = %+v", l)
 	}
 
 	// 面板关掉了。
@@ -136,14 +145,20 @@ func TestPanelLAN(t *testing.T) {
 	ctx := context.Background()
 	i, h, r := newTunInstaller(t)
 	i.Interfaces = lanInterface
+	i.InterfaceNames = func() ([]string, error) { return []string{"ens3"}, nil }
 	installUnit(t, i)
 
-	pre, err := i.PanelLANPreflight(ctx)
+	pre, err := i.PanelLANPreflight(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pre.On || pre.Interface != "ens3" || len(pre.Addresses) != 1 || len(pre.PublicAddresses) != 0 {
+	if pre.On || len(pre.Interfaces) != 1 || pre.Interfaces[0].Name != "ens3" || len(pre.Interfaces[0].PublicAddresses) != 0 ||
+		!pre.Access.Default || !slices.Equal(pre.Access.Interfaces, []string{"ens3"}) {
 		t.Errorf("preflight = %+v", pre)
+	}
+	access, err := i.ResolveLANAccess(pre.Interfaces, nil, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	plan, err := i.pipeline(nil).PlanPanelLAN(ctx, true)
@@ -153,36 +168,52 @@ func TestPanelLAN(t *testing.T) {
 	if !slices.Contains(plan.Restart, "external-controller") || len(plan.Warnings) != 0 {
 		t.Errorf("restart %q, warnings %v", plan.Restart, plan.Warnings)
 	}
-	if _, err := i.PanelLANOn(ctx, plan); err != nil {
+	if _, err := i.PanelLANOn(ctx, plan, access); err != nil {
 		t.Fatal(err)
 	}
-	// 表先于发布加载。
+	// 表先于发布加载，只放行 ens3 进来的、到 API 端口的连接。
 	up := slices.IndexFunc(h.calls, func(c string) bool { return c == "nft -f -" })
 	restart := slices.IndexFunc(h.calls, func(c string) bool { return strings.Contains(c, "restart") })
-	if up < 0 || (restart >= 0 && restart < up) || !slices.Contains(h.tables, netfilter.PanelTable) {
+	if up < 0 || (restart >= 0 && restart < up) || !slices.Contains(h.tables, netfilter.AccessTable) {
 		t.Errorf("calls = %q, tables %v", h.calls, h.tables)
 	}
-	if st := tunSwitch(t, i); st.PanelLAN == nil {
-		t.Error("switch not saved")
+	if !strings.Contains(h.access, "elements = { 9090 }") || !strings.Contains(h.access, `elements = { "ens3" }`) {
+		t.Errorf("access table:\n%s", h.access)
+	}
+	if st := tunSwitch(t, i); st.PanelLAN == nil || st.LANAccess == nil || !slices.Equal(st.LANAccess.Interfaces, []string{"ens3"}) {
+		t.Errorf("switch not saved: %+v", st)
 	}
 	p, err := i.Panel(ctx, PanelOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !p.LAN || !p.LANRules || !p.Public || p.Controller != "0.0.0.0:9090" || len(p.LANURLs) != 1 {
+	if !p.LAN || !p.LANRules || !p.Public || p.Controller != "0.0.0.0:9090" || len(p.LANLinks) != 1 ||
+		p.Access == nil || p.Access.Default || !slices.Equal(p.Access.Interfaces, []string{"ens3"}) {
 		t.Errorf("panel = %+v", p)
 	}
-	if pre, _ := i.PanelLANPreflight(ctx); !pre.On {
+	if pre, _ := i.PanelLANPreflight(ctx, ""); !pre.On || pre.Access.Default {
 		t.Error("preflight does not see the switch")
 	}
 
 	// _prestart 补上丢失的表。
-	h.tables = slices.DeleteFunc(h.tables, func(t string) bool { return t == netfilter.PanelTable })
+	h.tables = slices.DeleteFunc(h.tables, func(t string) bool { return t == netfilter.AccessTable })
 	if err := i.PreStart(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(h.tables, netfilter.PanelTable) {
+	if !slices.Contains(h.tables, netfilter.AccessTable) {
 		t.Errorf("not repaired: %v", h.tables)
+	}
+
+	// 只改放行的入口：不发布，表随之更新。
+	r.loaded = nil
+	if err := i.SetLANAccess(ctx, &state.LANAccess{Interfaces: []string{}, Containers: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.loaded) != 0 || strings.Contains(h.access, "set interfaces") || !strings.Contains(h.access, `iifname "br-*"`) {
+		t.Errorf("loaded %d, access table:\n%s", len(r.loaded), h.access)
+	}
+	if p, _ := i.Panel(ctx, PanelOptions{}); len(p.LANLinks) != 1 || p.LANLinks[0].Address != "<server>" {
+		t.Errorf("links without allowed interfaces: %+v", p.LANLinks)
 	}
 
 	// mixin 设置了 external-controller 时拒绝，提示改用的命令。
@@ -203,8 +234,9 @@ func TestPanelLAN(t *testing.T) {
 	if _, err := i.PanelLANOff(ctx, plan); err != nil {
 		t.Fatal(err)
 	}
-	if st := tunSwitch(t, i); st.PanelLAN != nil || slices.Contains(h.tables, netfilter.PanelTable) {
-		t.Errorf("switch %v, tables %v", st.PanelLAN, h.tables)
+	// 开关都关闭时删除表；放行的入口留着，下次开启时沿用。
+	if st := tunSwitch(t, i); st.PanelLAN != nil || st.LANAccess == nil || slices.Contains(h.tables, netfilter.AccessTable) {
+		t.Errorf("switch %v, access %v, tables %v", st.PanelLAN, st.LANAccess, h.tables)
 	}
 	if p, _ := i.Panel(ctx, PanelOptions{}); p.LAN || p.Public || p.Controller != "127.0.0.1:9090" {
 		t.Errorf("after off: %+v", p)
@@ -217,12 +249,13 @@ func TestPanelLANPublicAddress(t *testing.T) {
 	i.Interfaces = func(name string) (*netfilter.Interface, error) {
 		return &netfilter.Interface{Name: name, Up: true, IPv4: []string{"203.0.113.10", "10.0.0.5"}}, nil
 	}
-	pre, err := i.PanelLANPreflight(context.Background())
+	i.InterfaceNames = func() ([]string, error) { return []string{"ens3"}, nil }
+	pre, err := i.PanelLANPreflight(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(pre.PublicAddresses, []string{"203.0.113.10"}) {
-		t.Errorf("public = %v", pre.PublicAddresses)
+	if len(pre.Interfaces) != 1 || !slices.Equal(pre.Interfaces[0].PublicAddresses, []string{"203.0.113.10"}) {
+		t.Errorf("interfaces = %+v", pre.Interfaces)
 	}
 }
 

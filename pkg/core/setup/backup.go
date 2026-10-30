@@ -55,6 +55,9 @@ func (i *Installer) collect() (*backup.Backup, error) {
 	if st.Gateway != nil {
 		b.Switches.Gateway = st.Gateway.Interface
 	}
+	if st.LANAccess != nil {
+		b.Switches.LANInterfaces, b.Switches.LANContainers = st.LANAccess.Interfaces, st.LANAccess.Containers
+	}
 	b.Settings, err = os.ReadFile(i.Layout.SettingsFile())
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
@@ -306,6 +309,11 @@ type SwitchSuggestion struct {
 	// 所在的网卡）。Was 是备份中的网卡。
 	Interface string `json:"interface,omitempty"`
 	Was       string `json:"was,omitempty"`
+	// LANInterfaces 是打开代理端口或面板的局域网访问时放行的网卡：备份中选过的、这台机器上也有的；都没有时
+	// 为空（取默认值）。LANWas 是备份中的选择，LANContainers 是备份中是否放行容器。
+	LANInterfaces []string `json:"lan_interfaces,omitempty"`
+	LANWas        []string `json:"lan_was,omitempty"`
+	LANContainers bool     `json:"lan_containers,omitempty"`
 }
 
 // Any 报告是否有要打开的开关。
@@ -333,6 +341,14 @@ func (i *Installer) SuggestSwitches(ctx context.Context, b *backup.Backup) (Swit
 		}
 		if slices.ContainsFunc(cands, func(c LANInterface) bool { return c.Name == sw.Gateway }) {
 			s.Interface = sw.Gateway
+		}
+	}
+	if s.ProxyLAN || s.PanelLAN {
+		s.LANWas, s.LANContainers = sw.LANInterfaces, sw.LANContainers
+		for _, name := range sw.LANInterfaces {
+			if _, err := i.lookupInterface(name); err == nil {
+				s.LANInterfaces = append(s.LANInterfaces, name)
+			}
 		}
 	}
 	return s, nil

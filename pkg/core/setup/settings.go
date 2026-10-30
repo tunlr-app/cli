@@ -24,8 +24,10 @@ func (i *Installer) SaveSettings(ctx context.Context, data, previous []byte, exi
 	if err != nil {
 		return err
 	}
-	defer l.Release()
-	if err := settings.Write(i.Layout.SettingsFile(), data, previous, existed); err != nil {
+	err = settings.Write(i.Layout.SettingsFile(), data, previous, existed)
+	// 释放锁之后再同步 unit：启用 tunlr-firewall.service 会执行 _firewall，它要取锁。
+	l.Release()
+	if err != nil {
 		return err
 	}
 	if err := i.SyncTimers(ctx); err != nil {

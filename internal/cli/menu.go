@@ -555,10 +555,14 @@ func (a *app) trafficItems(s *setup.Status) []menuItem {
 		toggle(s.ProxyLAN,
 			op("Close proxy port to LAN", "Only this server can use the HTTP/SOCKS5 proxy port again", "proxy", "lan", "off"),
 			op("Open proxy port to LAN", "For devices that set this server as their HTTP/SOCKS5 proxy", "proxy", "lan", "on")),
+	}
+	if s.ProxyLAN {
+		items = append(items, op("Change LAN interfaces", lanInterfacesNote, "proxy", "lan", "on"))
+	}
+	items = append(items,
 		toggle(f.QUIC,
 			op("Allow QUIC", "Browsers may use QUIC (HTTP/3) again", "filter", "quic", "off"),
-			op("Block QUIC", "Browsers fall back to TCP, which proxies better", "filter", "quic", "on")),
-	}
+			op("Block QUIC", "Browsers fall back to TCP, which proxies better", "filter", "quic", "on")))
 	if f.Ports {
 		items = append(items,
 			op("Change proxied ports", "Now: "+strings.Join(f.PortList, ","), "filter", "ports", "set"),
@@ -594,14 +598,21 @@ func (a *app) coreItems(s *setup.Status) []menuItem {
 	if s.Service != nil && s.Service.Active() {
 		items = append(items, op("Update geo data now", "mihomo downloads it from geox-url now; it also does so by itself on its period", "update", "run", "geo"))
 	}
-	return append(items,
+	items = append(items,
 		op("Open the panel", "How to reach it: the SSH tunnel and the link", "panel"),
 		toggle(s.PanelLAN,
 			op("Close panel to LAN", "Only this server can reach the panel again; mihomo restarts", "panel", "lan", "off"),
-			op("Open panel to LAN", "Devices on the LAN can open the panel; mihomo restarts", "panel", "lan", "on")),
+			op("Open panel to LAN", "Devices on the LAN can open the panel; mihomo restarts", "panel", "lan", "on")))
+	if s.PanelLAN {
+		items = append(items, op("Change LAN interfaces", lanInterfacesNote, "panel", "lan", "on"))
+	}
+	return append(items,
 		op("New API secret", "Panels that are open must connect again with the new link", "panel", "reset-secret"),
 		op("mihomo details", "Kernel versions kept on disk and the service", "core"))
 }
+
+// lanInterfacesNote 是菜单中修改放行网卡一项的说明。
+const lanInterfacesNote = "Which interfaces LAN devices reach the proxy port and the panel through"
 
 // attention 是第一级最上面需要处理的事项，每项对应一个命令：有还没发布的改动、内核服务失败或没有运行
 // （发布过配置时）、订阅最近一次抓取失败。
@@ -668,13 +679,39 @@ func (a *app) trafficNote(s *setup.Status) string {
 	if s.Tun != nil {
 		parts = append(parts, "TUN "+a.describeTun(s.Tun))
 	}
-	parts = append(parts, "proxy port "+a.describeProxyLAN(s.ProxyLAN), "filters "+a.describeFilterNote(s.Filter))
+	proxy := "proxy port " + a.describeProxyLAN(s.ProxyLAN)
+	if s.ProxyLAN {
+		proxy += a.throughNote(s.LANAccess)
+	}
+	parts = append(parts, proxy, "filters "+a.describeFilterNote(s.Filter))
 	return strings.Join(parts, a.style.dim(" · "))
 }
 
 // coreNote 是“mihomo & panel”的状态：内核服务和面板的局域网访问。
 func (a *app) coreNote(s *setup.Status) string {
-	return a.describeService(s) + a.style.dim(" · ") + "panel " + a.describePanelLAN(s.PanelLAN)
+	panel := "panel " + a.describePanelLAN(s.PanelLAN)
+	if s.PanelLAN {
+		panel += a.throughNote(s.LANAccess)
+	}
+	return a.describeService(s) + a.style.dim(" · ") + panel
+}
+
+// throughNote 是菜单状态行中放行的入口，如 “ (ens3, containers)”。
+func (a *app) throughNote(acc *setup.LANAccess) string {
+	if acc == nil {
+		return ""
+	}
+	parts := slices.Clone(acc.Interfaces)
+	if acc.Gateway != "" && !slices.Contains(parts, acc.Gateway) {
+		parts = append(parts, acc.Gateway)
+	}
+	if acc.Containers {
+		parts = append(parts, "containers")
+	}
+	if len(parts) == 0 {
+		return " " + a.style.warn("(nothing let in)")
+	}
+	return a.style.dim(" (" + strings.Join(parts, ", ") + ")")
 }
 
 func (a *app) describeSubscriptions(s *setup.Status, subs []subscription.Entry) string {

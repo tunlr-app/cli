@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -35,14 +34,14 @@ type Panel struct {
 	Controller string `json:"controller"`
 	// Port 是 API 的端口，隧道两端都用它。
 	Port int `json:"port"`
-	// LAN 是局域网访问开关；LANRules 报告开关开启时 inet tunlr_panel 表是否在。
-	LAN      bool `json:"lan"`
-	LANRules bool `json:"lan_rules"`
-	// Public 报告 API 是否不只监听本机（局域网访问开启，或 mixin 改过）；这时 LANURLs 是直接打开的链接。
-	Public  bool     `json:"public"`
-	LANURLs []string `json:"lan_urls,omitempty"`
-	// LANBookmarks 是与 LANURLs 对应、不带参数的面板地址：浏览器记住了后端之后直接打开它。
-	LANBookmarks []string `json:"lan_bookmarks,omitempty"`
+	// LAN 是局域网访问开关；开关开启时 LANRules 报告 inet tunlr_access 表是否在，Access 是放行的入口。
+	LAN      bool       `json:"lan"`
+	LANRules bool       `json:"lan_rules"`
+	Access   *LANAccess `json:"access,omitempty"`
+	// Public 报告 API 是否不只监听本机（局域网访问开启，或配置在工具之外被改过）；这时 LANLinks 是其他设备
+	// 直接打开的链接，每个地址一条。
+	Public   bool        `json:"public"`
+	LANLinks []PanelLink `json:"lan_links,omitempty"`
 	// Label 是链接中给 zashboard 的后端名称（经隧道的后端另加 “(SSH tunnel)”）。zashboard 只在
 	// 各项完全相同时复用已有的后端，所以名称保持固定，重复打开链接不会多出一个后端。
 	Label string `json:"label"`
@@ -62,6 +61,20 @@ type Panel struct {
 	UIInstalled bool   `json:"ui_installed"`
 	// Running 是运行中的内核版本，内核没有响应时为空。
 	Running string `json:"running,omitempty"`
+}
+
+// PanelLink 是其他设备经本机的一个地址直接打开面板的链接。
+type PanelLink struct {
+	// Interface 是地址所在的网卡，Default、Gateway、SSH 同 LANInterface；API 只监听一个具体地址时
+	// Interface 为空。
+	Interface string `json:"interface,omitempty"`
+	Default   bool   `json:"default,omitempty"`
+	Gateway   bool   `json:"gateway,omitempty"`
+	SSH       bool   `json:"ssh,omitempty"`
+	Address   string `json:"address"`
+	// URL 带着 secret，打开即连上后端；Bookmark 是不带参数的地址，浏览器记住后端之后直接打开它。
+	URL      string `json:"url"`
+	Bookmark string `json:"bookmark"`
 }
 
 // Panel 从生效的配置得出打开面板的方式。没有发布过配置、或配置中没有 external-controller 时返回满足
@@ -90,11 +103,18 @@ func (i *Installer) Panel(ctx context.Context, opts PanelOptions) (*Panel, error
 	if p.Label == "" {
 		p.Label, _ = os.Hostname()
 	}
-	if st, err := state.Load(i.Layout.StateFile()); err == nil && st.PanelLAN != nil {
+	st, err := state.Load(i.Layout.StateFile())
+	if err != nil {
+		st = nil
+	}
+	cands := i.lanAddresses(ctx, st, opts.SSHConnection)
+	if st != nil && st.PanelLAN != nil {
 		p.LAN = true
 		if tables, err := i.rules().Tables(ctx); err == nil {
-			p.LANRules = tables[netfilter.PanelTable]
+			p.LANRules = tables[netfilter.AccessTable]
 		}
+		access := lanAccess(st, cands)
+		p.Access = &access
 	}
 
 	// 隧道的目标：监听所有地址或 localhost 时经 127.0.0.1，否则就是监听的地址。
@@ -129,20 +149,27 @@ func (i *Installer) Panel(ctx context.Context, opts PanelOptions) (*Panel, error
 
 	if host != "localhost" && !isLoopbackIP(host) {
 		p.Public = true
-		hosts := []string{host}
+		links := []PanelLink{{Address: host}}
 		if unspecified {
-			hosts = i.lanAddresses(ctx)
-			if serverIP != "" && !slices.Contains(hosts, serverIP) && net.ParseIP(serverIP).To4() != nil {
-				hosts = append(hosts, serverIP)
+			links = nil
+			for _, c := range cands {
+				// 开关开着时只给放行的网卡上的地址；配置在工具之外被改过时 API 对所有网卡开放，都列出。
+				if p.LAN && !c.Allowed {
+					continue
+				}
+				for _, a := range c.Addresses {
+					links = append(links, PanelLink{Interface: c.Name, Default: c.Default, Gateway: c.Gateway, SSH: c.SSH, Address: a})
+				}
 			}
-			if len(hosts) == 0 {
-				hosts = []string{"<server>"}
+			if len(links) == 0 {
+				links = []PanelLink{{Address: "<server>"}}
 			}
 		}
-		for _, h := range hosts {
-			p.LANURLs = append(p.LANURLs, panelURL(h, port, api.Secret, p.Label))
-			p.LANBookmarks = append(p.LANBookmarks, panelHome(h, port))
+		for k := range links {
+			links[k].URL = panelURL(links[k].Address, port, api.Secret, p.Label)
+			links[k].Bookmark = panelHome(links[k].Address, port)
 		}
+		p.LANLinks = links
 	}
 
 	if facts, err := config.Inspect(cfg); err == nil {
@@ -158,55 +185,45 @@ func (i *Installer) Panel(ctx context.Context, opts PanelOptions) (*Panel, error
 	return p, nil
 }
 
-// lanAddresses 返回 IPv4 默认路由所在网卡的地址，取不到时为空。
-func (i *Installer) lanAddresses(ctx context.Context) []string {
-	iface, err := i.rules().DefaultInterface(ctx)
-	if err != nil {
-		return nil
-	}
-	ifi, err := i.lookupInterface(iface)
-	if err != nil {
-		return nil
-	}
-	return ifi.IPv4
-}
-
 // PanelLANPlan 是开启面板局域网访问前的检查结果。
 type PanelLANPlan struct {
 	// On 报告开关已经开启。
 	On bool `json:"on"`
-	// Interface 是 IPv4 默认路由所在的网卡，Addresses 是它的 IPv4 地址（局域网设备用来打开面板），取不到时为空。
-	Interface string   `json:"interface,omitempty"`
-	Addresses []string `json:"addresses,omitempty"`
-	// PublicAddresses 是其中不属于私有地址段的地址：服务器很可能直接在公网上，开启前要再确认一次。
-	PublicAddresses []string `json:"public_addresses,omitempty"`
+	// Interfaces 是本机可用的网卡和它们的 IPv4 地址（见 LANAddresses），Allowed 的放行；放行的网卡有公网
+	// 地址（PublicAddresses）时服务器很可能直接在公网上，开启前要再确认一次。
+	Interfaces []LANInterface `json:"interfaces,omitempty"`
+	// Access 是放行的入口，与代理端口共用。
+	Access LANAccess `json:"access"`
 }
 
 // PanelLANPreflight 检查能否开启面板的局域网访问：服务已安装（_prestart 负责在重启后重新加载规则）、
-// nft 可用。不满足时返回满足 errors.Is(err, core.ErrCheckFailed) 的错误。
-func (i *Installer) PanelLANPreflight(ctx context.Context) (*PanelLANPlan, error) {
-	if !i.systemd().Installed() {
-		return nil, fmt.Errorf("%w: %w", core.ErrCheckFailed, mihomo.ErrServiceNotInstalled)
-	}
-	if _, err := i.rules().Tables(ctx); err != nil {
-		return nil, fmt.Errorf("%w: nftables is not usable: %w", core.ErrCheckFailed, err)
+// nft 可用；并给出放行的入口。sshConnection 是 $SSH_CONNECTION，可为空。不满足时返回满足
+// errors.Is(err, core.ErrCheckFailed) 的错误。
+func (i *Installer) PanelLANPreflight(ctx context.Context, sshConnection string) (*PanelLANPlan, error) {
+	if err := i.lanAccessPreflight(ctx); err != nil {
+		return nil, err
 	}
 	p := &PanelLANPlan{}
-	if st, err := state.Load(i.Layout.StateFile()); err == nil {
-		p.On = st.PanelLAN != nil
+	st, err := state.Load(i.Layout.StateFile())
+	if err != nil {
+		st = nil
 	}
-	if iface, err := i.rules().DefaultInterface(ctx); err == nil {
-		p.Interface = iface
-		if ifi, err := i.lookupInterface(iface); err == nil {
-			p.Addresses = ifi.IPv4
-		}
-	}
-	for _, a := range p.Addresses {
-		if !privateAddress(a) {
-			p.PublicAddresses = append(p.PublicAddresses, a)
-		}
-	}
+	p.On = st != nil && st.PanelLAN != nil
+	p.Interfaces = i.lanAddresses(ctx, st, sshConnection)
+	p.Access = lanAccess(st, p.Interfaces)
 	return p, nil
+}
+
+// lanAccessPreflight 检查能否对其他设备开放代理端口或面板：服务已安装（_prestart 负责在重启后重新加载
+// 规则）、nft 可用（访问限制靠它）。
+func (i *Installer) lanAccessPreflight(ctx context.Context) error {
+	if !i.systemd().Installed() {
+		return fmt.Errorf("%w: %w", core.ErrCheckFailed, mihomo.ErrServiceNotInstalled)
+	}
+	if _, err := i.rules().Tables(ctx); err != nil {
+		return fmt.Errorf("%w: nftables is not usable: %w", core.ErrCheckFailed, err)
+	}
+	return nil
 }
 
 // privateAddress 报告地址 s 是否在私有地址段中，见 netfilter.PrivateIPv4。
@@ -219,9 +236,10 @@ type PanelLANResult struct {
 }
 
 // PanelLANOn 开启面板的局域网访问并发布 plan（pipeline.PlanPanelLAN(ctx, true) 的结果，已经用户确认）：
-// 加锁 → 加载 nft 表（先于 API 对外监听）→ 开关记为开启 → 发布。发布失败时开关恢复原状、撤掉新加载的表，
-// 配置由流水线回滚。
-func (i *Installer) PanelLANOn(ctx context.Context, plan *pipeline.Plan) (*PanelLANResult, error) {
+// 加锁 → 开关记为开启、保存放行的入口 access（ResolveLANAccess 的结果，为 nil 时不变）→ 加载
+// inet tunlr_access（先于 API 对外监听）→ 发布。配置已经是开启的样子时（plan 没有变化）只补上表。
+// 发布失败时开关和入口恢复原状、表随之恢复，配置由流水线回滚。
+func (i *Installer) PanelLANOn(ctx context.Context, plan *pipeline.Plan, access *state.LANAccess) (*PanelLANResult, error) {
 	l, err := i.lock(ctx)
 	if err != nil {
 		return nil, err
@@ -231,26 +249,26 @@ func (i *Installer) PanelLANOn(ctx context.Context, plan *pipeline.Plan) (*Panel
 	if err != nil {
 		return nil, err
 	}
-	previous := st.PanelLAN
-	if err := i.rules().PanelUp(ctx, pipeline.APIPort); err != nil {
-		return nil, err
-	}
+	previous, previousAccess := st.PanelLAN, st.LANAccess
 	if st.PanelLAN == nil {
 		st.PanelLAN = &state.PanelLAN{Since: i.now().UTC()}
 	}
+	if access != nil {
+		st.LANAccess = access
+	}
 	err = state.Save(i.Layout.StateFile(), st)
-	var applied *pipeline.ApplyResult
 	if err == nil {
+		err = i.syncAccess(ctx, st, nil)
+	}
+	var applied *pipeline.ApplyResult
+	if err == nil && plan.Changed() {
 		applied, err = i.pipeline(nil).ApplyLocked(ctx, plan)
 	}
 	if err != nil {
-		st.PanelLAN = previous
-		uerr := state.Save(i.Layout.StateFile(), st)
-		if previous == nil {
-			uerr = errors.Join(uerr, i.rules().PanelDown(ctx))
-		}
-		return nil, errors.Join(err, uerr)
+		st.PanelLAN, st.LANAccess = previous, previousAccess
+		return nil, errors.Join(err, state.Save(i.Layout.StateFile(), st), i.syncAccess(ctx, st, nil))
 	}
+	i.syncCheckTimer(ctx, st)
 	res := &PanelLANResult{}
 	if applied != nil {
 		res.Revision = applied.Revision
@@ -260,7 +278,7 @@ func (i *Installer) PanelLANOn(ctx context.Context, plan *pipeline.Plan) (*Panel
 }
 
 // PanelLANOff 关闭面板的局域网访问并发布 plan（pipeline.PlanPanelLAN(ctx, false) 的结果，已经用户确认），
-// 发布之后再撤掉 nft 表。发布失败时开关恢复原状，配置由流水线回滚。
+// 发布之后再从 inet tunlr_access 中去掉 API 端口。发布失败时开关恢复原状，配置由流水线回滚。
 func (i *Installer) PanelLANOff(ctx context.Context, plan *pipeline.Plan) (*PanelLANResult, error) {
 	l, err := i.lock(ctx)
 	if err != nil {
@@ -285,26 +303,12 @@ func (i *Installer) PanelLANOff(ctx context.Context, plan *pipeline.Plan) (*Pane
 	if applied != nil {
 		res.Revision = applied.Revision
 	}
-	if err := i.rules().PanelDown(ctx); err != nil {
-		return res, fmt.Errorf("the panel only listens on this server now, but removing the nftables table inet %s failed: %w", netfilter.PanelTable, err)
+	i.syncCheckTimer(ctx, st)
+	if err := i.syncAccess(ctx, st, nil); err != nil {
+		return res, fmt.Errorf("the panel only listens on this server now, but updating the nftables table inet %s failed: %w", netfilter.AccessTable, err)
 	}
 	i.log().Debug("panel lan off")
 	return res, nil
-}
-
-// repairPanel 在面板对局域网开放时补上缺少的 nft 表（_prestart、_check），返回采取的动作。
-func (i *Installer) repairPanel(ctx context.Context, st *state.State) (string, error) {
-	if st == nil || st.PanelLAN == nil {
-		return "", nil
-	}
-	tables, err := i.rules().Tables(ctx)
-	if err != nil || tables[netfilter.PanelTable] {
-		return "", err
-	}
-	if err := i.rules().PanelUp(ctx, pipeline.APIPort); err != nil {
-		return "", err
-	}
-	return "reloaded the nftables table inet " + netfilter.PanelTable, nil
 }
 
 // panelURL 是 zashboard 的设置链接：打开后按 hostname、port、secret 添加名为 label 的后端并连接

@@ -208,11 +208,13 @@ func TestCheckRepairsGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Actions) != 3 || !slices.Contains(h.tables, netfilter.GatewayTable) || !slices.Contains(h.tables, netfilter.DevicesTable) ||
+	// 第四项是拉起没在运行的 tunlr-firewall.service（假的 systemd 报告所有单元都没在运行）。
+	if len(res.Actions) != 4 || !slices.Contains(h.tables, netfilter.GatewayTable) || !slices.Contains(h.tables, netfilter.DevicesTable) ||
 		len(h.docker) != 3 || i.ipForward() != "1" {
 		t.Fatalf("actions %q, tables %v, docker %q, forward %q", res.Actions, h.tables, h.docker, i.ipForward())
 	}
 	// 都在时什么都不做。
+	h.active = true
 	if res, err := i.Check(context.Background()); err != nil || len(res.Actions) != 0 {
 		t.Fatalf("second check: %+v %v", res, err)
 	}

@@ -225,6 +225,7 @@ func (a *app) newRootCommand() *cobra.Command {
 		a.newPostStopCommand(),
 		a.newTunGuardCommand(),
 		a.newCheckCommand(),
+		a.newFirewallCommand(),
 	)
 	return root
 }

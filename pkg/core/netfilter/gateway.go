@@ -154,6 +154,8 @@ func (r *Rules) DefaultInterface(ctx context.Context) (string, error) {
 type Interface struct {
 	Name string
 	Up   bool
+	// PointToPoint 报告它是点对点的网卡：WireGuard、Tailscale 等 VPN 隧道（tunlr0 也是）。
+	PointToPoint bool
 	// IPv4 是网卡的 IPv4 地址（不含前缀长度）。
 	IPv4 []string
 }
@@ -164,7 +166,7 @@ func LookupInterface(name string) (*Interface, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := &Interface{Name: name, Up: ifi.Flags&net.FlagUp != 0}
+	res := &Interface{Name: name, Up: ifi.Flags&net.FlagUp != 0, PointToPoint: ifi.Flags&net.FlagPointToPoint != 0}
 	addrs, err := ifi.Addrs()
 	if err != nil {
 		return nil, err

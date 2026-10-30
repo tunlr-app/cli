@@ -207,7 +207,7 @@ func TestSyncTimers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !h.called("systemctl enable --now "+service.UpdateTimer) || !h.called("systemctl enable --now "+service.AftercarePath) ||
-		!h.called("systemctl disable --now "+service.CheckTimer) {
+		!h.called("systemctl enable --now "+service.FirewallUnit) || !h.called("systemctl disable --now "+service.CheckTimer) {
 		t.Errorf("calls = %q", h.calls)
 	}
 	// 全部订阅都不自动更新时 tunlr-update.timer 仍然启用：随时可能添加订阅，没有到期的更新时它什么都不做。
@@ -227,6 +227,16 @@ func TestSyncTimers(t *testing.T) {
 	h.calls = nil
 	if err := i.SyncTimers(ctx); err != nil || !h.called("systemctl enable --now "+service.CheckTimer) {
 		t.Errorf("TUN on: %v, %q", err, h.calls)
+	}
+	// 只开着局域网访问时同样启用：检查补上被清空的访问限制。
+	st.Tun = ""
+	st.ProxyLAN = &state.ProxyLAN{Since: testNow}
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	h.calls = nil
+	if err := i.SyncTimers(ctx); err != nil || !h.called("systemctl enable --now "+service.CheckTimer) {
+		t.Errorf("LAN access on: %v, %q", err, h.calls)
 	}
 }
 

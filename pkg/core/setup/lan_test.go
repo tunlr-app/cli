@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/tunlr-app/cli/pkg/core/netfilter"
@@ -81,6 +82,62 @@ func TestLANInterfaces(t *testing.T) {
 	if len(got) != 3 || got[0].Name != "ens3" || !got[0].Default || got[1].Name != "br0" || got[2].Name != "eth1" ||
 		len(got[2].PublicAddresses) != 1 || len(got[0].PublicAddresses) != 0 {
 		t.Errorf("candidates = %+v", got)
+	}
+}
+
+func TestLANAddresses(t *testing.T) {
+	i, _, _ := newTunInstaller(t)
+	i.InterfaceNames = func() ([]string, error) {
+		return []string{"lo", "docker0", "eth1", "ens3", "tunlr0", "veth1", "wg0", "tailscale0", "eth2", "vmbr9"}, nil
+	}
+	for _, name := range []string{"eth1", "eth2"} {
+		fakeNIC(t, i.Layout, name, true)
+	}
+	fakeNIC(t, i.Layout, "docker0", false, "veth1")
+	i.Interfaces = func(name string) (*netfilter.Interface, error) {
+		switch name {
+		case "lo":
+			return &netfilter.Interface{Name: name, Up: true, IPv4: []string{"127.0.0.1"}}, nil
+		case "docker0":
+			return &netfilter.Interface{Name: name, Up: true, IPv4: []string{"172.17.0.1"}}, nil
+		case "tunlr0", "wg0":
+			return &netfilter.Interface{Name: name, Up: true, PointToPoint: true, IPv4: []string{"10.9.0.1"}}, nil
+		case "tailscale0":
+			return &netfilter.Interface{Name: name, Up: true, PointToPoint: true, IPv4: []string{"100.100.1.2"}}, nil
+		case "eth2":
+			return &netfilter.Interface{Name: name, Up: true, IPv4: []string{"192.168.2.1"}}, nil
+		case "vmbr9":
+			// 不是硬件网卡、也不是点对点，但 SSH 会话从它进来。
+			return &netfilter.Interface{Name: name, Up: true, IPv4: []string{"10.20.0.1"}}, nil
+		}
+		return lanInterface(name)
+	}
+	st, _, err := state.LoadOrNew(i.Layout.StateFile(), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Gateway = &state.Gateway{Interface: "eth2"}
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	got := i.LANAddresses(context.Background(), "10.20.0.7 50000 10.20.0.1 22")
+	var names []string
+	for _, c := range got {
+		names = append(names, c.Name)
+	}
+	// 网关的局域网网卡 eth2 最前，其次是默认路由所在的 ens3，其余按名称；lo、docker0、veth1、tunlr0 不列。
+	if want := []string{"eth2", "ens3", "eth1", "tailscale0", "vmbr9", "wg0"}; !slices.Equal(names, want) {
+		t.Fatalf("interfaces = %v, want %v", names, want)
+	}
+	if !got[0].Gateway || !got[1].Default || !got[4].SSH || got[3].SSH {
+		t.Errorf("flags = %+v", got)
+	}
+
+	// 经回环地址的 SSH 会话不把 lo 列进来。
+	for _, c := range i.LANAddresses(context.Background(), "127.0.0.1 50000 127.0.0.1 22") {
+		if c.Name == "lo" {
+			t.Error("lo listed")
+		}
 	}
 }
 

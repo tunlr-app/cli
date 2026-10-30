@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -43,9 +45,33 @@ type lanUsage struct {
 	gateway string
 	// panel 让局域网设备打开面板（tunlr panel lan on）。
 	panel bool
+	// interfaces 是代理端口和面板放行的网卡（--lan-interface），为 nil 时取默认值；public 是询问用途时
+	// 确认过的、有公网地址的网卡，在默认值之外另外放行。
+	interfaces []string
+	public     string
 }
 
 func (u lanUsage) any() bool { return u.proxy || u.gateway != "" || u.panel }
+
+// choice 是 proxy lan on、panel lan on 放行的入口。
+func (u lanUsage) choice() lanChoice {
+	c := lanChoice{interfaces: u.interfaces}
+	if u.public != "" {
+		c.also = []string{u.public}
+	}
+	return c
+}
+
+// through 是步骤说明中放行的网卡，取默认值时为空。
+func (u lanUsage) through() string {
+	switch {
+	case u.interfaces != nil:
+		return ", through " + cmp.Or(strings.Join(u.interfaces, ", "), "no interface")
+	case u.public != "":
+		return ", also through " + u.public
+	}
+	return ""
+}
 
 // steps 是确认问题中列出的、init 之后要做的步骤。
 func (u lanUsage) steps() []string {
@@ -59,10 +85,10 @@ func (u lanUsage) steps() []string {
 			"Turn gateway mode on, LAN interface "+iface)
 	}
 	if u.proxy {
-		steps = append(steps, "Let LAN devices use the proxy port (private addresses only)")
+		steps = append(steps, "Let LAN devices use the proxy port (private addresses only"+u.through()+")")
 	}
 	if u.panel {
-		steps = append(steps, "Let LAN devices open the panel (mihomo restarts)")
+		steps = append(steps, "Let LAN devices open the panel (private addresses only"+u.through()+"; mihomo restarts)")
 	}
 	return steps
 }
@@ -82,12 +108,21 @@ func (a *app) newInitCommand() *cobra.Command {
 			"Interactively it asks for a GitHub mirror and a subscription with its proxy filter (all\n" +
 			"optional), and what this server is for: only itself, a proxy for LAN devices (tunlr proxy\n" +
 			"lan on), or their gateway (tunlr tun gateway on); otherwise pass --mirror, --sub\n" +
-			"<name>=<url>, --include, --exclude, --lan-proxy, --gateway and --lan-panel.",
+			"<name>=<url>, --include, --exclude, --lan-proxy, --gateway and --lan-panel (with\n" +
+			"--lan-interface).",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if usage.gateway != "" {
 				usage.proxy = true
+			}
+			if cmd.Flags().Changed("lan-interface") {
+				if !usage.proxy && !usage.panel {
+					return usageErrorf("--lan-interface chooses the interfaces for --lan-proxy, --gateway or --lan-panel")
+				}
+				if usage.interfaces == nil {
+					usage.interfaces = []string{}
+				}
 			}
 			if usage.any() && a.opts.JSON {
 				return usageErrorf("--lan-proxy, --gateway and --lan-panel cannot be combined with --json; run init, then tunlr proxy lan on, tunlr tun gateway on or tunlr panel lan on with --json")
@@ -117,6 +152,12 @@ func (a *app) newInitCommand() *cobra.Command {
 			inst := a.installer()
 			if err := inst.CheckSupport(ctx); err != nil {
 				return err
+			}
+			// 写错的网卡名在动手之前拒绝，免得装好内核后才在开启局域网访问时失败。
+			if len(usage.interfaces) > 0 {
+				if err := inst.CheckInterfaces(inst.LANAddresses(ctx, os.Getenv("SSH_CONNECTION")), usage.interfaces...); err != nil {
+					return err
+				}
 			}
 			if err := a.requireYes("init"); err != nil {
 				return err
@@ -169,6 +210,8 @@ func (a *app) newInitCommand() *cobra.Command {
 	f.BoolVar(&usage.proxy, "lan-proxy", false, "then let LAN devices use the proxy port (tunlr proxy lan on)")
 	f.StringVar(&usage.gateway, "gateway", "", `then make this server the LAN gateway on this interface, or "auto" (tunlr tun gateway on; implies --lan-proxy)`)
 	f.BoolVar(&usage.panel, "lan-panel", false, "then let LAN devices open the panel (tunlr panel lan on)")
+	f.StringSliceVar(&usage.interfaces, "lan-interface", nil, "with --lan-proxy, --gateway or --lan-panel: let in through these interfaces only, comma-separated\n"+
+		"(--interface of tunlr proxy lan on; default: those without a public address)")
 	return cmd
 }
 
@@ -196,13 +239,14 @@ func (a *app) initLAN(ctx context.Context, res *setup.InitResult, u lanUsage) er
 			return err
 		}
 	}
+	choice := u.choice()
 	if u.proxy {
-		if err := step("Proxy port", "opening the proxy port to the LAN", func() error { return a.proxyLAN(ctx, true) }); err != nil {
+		if err := step("Proxy port", "opening the proxy port to the LAN", func() error { return a.proxyLAN(ctx, true, choice) }); err != nil {
 			return err
 		}
 	}
 	if u.panel {
-		return step("Panel", "opening the panel to the LAN", func() error { return a.panelLANOn(ctx) })
+		return step("Panel", "opening the panel to the LAN", func() error { return a.panelLANOn(ctx, choice) })
 	}
 	return nil
 }
@@ -259,6 +303,11 @@ func (a *app) askUsage(ctx context.Context, cands []setup.LANInterface, u *lanUs
 			}
 			if !ok {
 				continue
+			}
+			// 有公网地址的网卡默认不放行：确认过的，代理端口和面板另外放行从它进来的连接（网关的局域网网卡
+			// 总是放行，不用另加）。
+			if choice == 1 {
+				u.public = iface.Name
 			}
 		}
 		u.proxy = true
@@ -551,6 +600,9 @@ func (a *app) printStatus(s *setup.Status) {
 	if s.Installed {
 		fmt.Fprintf(w, "Panel:         %s (open it with: tunlr panel)\n", a.describePanelLAN(s.PanelLAN))
 		fmt.Fprintf(w, "Proxy port:    %s (details: tunlr proxy)\n", a.describeProxyLAN(s.ProxyLAN))
+		if s.LANAccess != nil {
+			fmt.Fprintf(w, "Let in:        %s\n", a.describeAccess(*s.LANAccess))
+		}
 	}
 	if s.Devices != nil {
 		fmt.Fprintf(w, "LAN devices:   %s (list them: tunlr devices)\n", a.describeDevices(s.Devices))

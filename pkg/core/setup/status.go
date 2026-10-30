@@ -36,6 +36,8 @@ type Status struct {
 	PanelLAN bool `json:"panel_lan"`
 	// ProxyLAN 是代理端口的局域网访问开关。
 	ProxyLAN bool `json:"proxy_lan"`
+	// LANAccess 是代理端口和面板放行的入口，两个开关都关闭时为 nil。
+	LANAccess *LANAccess `json:"lan_access,omitempty"`
 	// Drift 是生效的配置与现在发布会得到的配置是否一致，没有发布过时为 nil。
 	Drift *pipeline.Drift `json:"drift,omitempty"`
 	// Devices 汇总使用本机的局域网设备，网关和代理端口的局域网访问都关闭时为 nil。
@@ -139,6 +141,11 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 	}
 	if st != nil {
 		s.PanelLAN, s.ProxyLAN = st.PanelLAN != nil, st.ProxyLAN != nil
+		if s.PanelLAN || s.ProxyLAN {
+			// 不列网卡：status 常被菜单刷新，选过的入口按保存的顺序就够了。
+			access := lanAccess(st, nil)
+			s.LANAccess = &access
+		}
 		s.Filter = filterStatus(st)
 	}
 	list, err := subscription.LoadList(i.Layout.SubscriptionList())

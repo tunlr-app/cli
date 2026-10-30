@@ -3,14 +3,17 @@ package setup
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/backup"
 	"github.com/tunlr-app/cli/pkg/core/config"
+	"github.com/tunlr-app/cli/pkg/core/netfilter"
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/pkg/core/subscription"
@@ -41,6 +44,32 @@ func TestSaveBackupKeepsThree(t *testing.T) {
 	}
 	if fi, err := os.Stat(paths[4]); err != nil || fi.Mode().Perm() != 0o600 && os.PathSeparator == '/' {
 		t.Errorf("newest backup: %v %v", fi, err)
+	}
+}
+
+// TestSuggestLANSwitches 验证还原时建议的放行入口：备份中选过、这台机器上也有的网卡。
+func TestSuggestLANSwitches(t *testing.T) {
+	i := &Installer{Layout: paths.Layout{Root: t.TempDir()}}
+	i.Interfaces = func(name string) (*netfilter.Interface, error) {
+		if name == "ens3" {
+			return &netfilter.Interface{Name: name, Up: true}, nil
+		}
+		return nil, fs.ErrNotExist
+	}
+	st, _, err := state.LoadOrNew(i.Layout.StateFile(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	b := &backup.Backup{Switches: backup.Switches{PanelLAN: true, LANInterfaces: []string{"ens3", "eth9"}, LANContainers: true}}
+	s, err := i.SuggestSwitches(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.PanelLAN || s.ProxyLAN || !slices.Equal(s.LANInterfaces, []string{"ens3"}) || !slices.Equal(s.LANWas, []string{"ens3", "eth9"}) || !s.LANContainers {
+		t.Errorf("suggestion = %+v", s)
 	}
 }
 

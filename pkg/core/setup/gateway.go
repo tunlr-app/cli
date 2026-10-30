@@ -194,6 +194,10 @@ func (i *Installer) GatewayOn(ctx context.Context, iface string) (*GatewayResult
 		}
 		return nil, fmt.Errorf("%w: turning the gateway on failed, the changes are undone: %w", core.ErrRolledBack, err)
 	}
+	// 网关的局域网网卡总是放行到代理端口和面板。失败时 _check 会再补；内核的 lan-allowed-ips 照样只放行私有地址。
+	if err := i.syncAccess(ctx, st, nil); err != nil {
+		i.log().Warn("update the nftables table for LAN access", "err", err)
+	}
 	// 设备列表是附带的：记录设备的表加载失败不影响网关，_prestart 和 _check 会再补。
 	if err := i.syncDevices(ctx, st); err != nil {
 		i.log().Warn("load the nftables table that records LAN devices", "err", err)
@@ -238,6 +242,9 @@ func (i *Installer) gatewayOffLocked(ctx context.Context, st *state.State) error
 	st.Gateway = nil
 	if err := state.Save(i.Layout.StateFile(), st); err != nil {
 		return err
+	}
+	if err := i.syncAccess(ctx, st, nil); err != nil {
+		i.log().Warn("update the nftables table for LAN access", "err", err)
 	}
 	if err := i.syncDevices(ctx, st); err != nil {
 		i.log().Warn("update the nftables table that records LAN devices", "err", err)

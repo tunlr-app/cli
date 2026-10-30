@@ -130,7 +130,8 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 | 定时更新 | `tunlr-update.timer` 每小时唤醒 `tunlr _update`，由它按设置的周期执行到期的更新（见第 7 节“定时任务的治理”） |
 | 内核崩溃后恢复与回滚 | unit 中配置 `OnFailure=`，触发 `tunlr _rescue` |
 | 开启 TUN 后的防失联回滚 | `systemd-run --on-active=<时长>` 创建临时回滚定时器 |
-| 透明代理的规则丢失检测 | TUN 开启期间 `tunlr-check.timer` 每 5 分钟调用 `tunlr _check` |
+| 规则丢失检测 | TUN、网关或局域网访问开启期间 `tunlr-check.timer` 每 5 分钟调用 `tunlr _check`（见 8.4） |
+| `nftables.service` 清空规则后补回 | `tunlr-firewall.service` 随 `nftables.service` 启动、重启、重新加载执行 `tunlr _firewall`（见 8.4） |
 | 面板升级的善后 | `tunlr-aftercare.path` 在 `bin/mihomo` 变化时触发 `tunlr _aftercare`（见第 7 节） |
 | 状态与漂移 | 执行 `status` 时现场计算 |
 
@@ -158,7 +159,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 | `/var/lib/tunlr/kernels/<版本>/mihomo` | 已知可用的内核 | root 所有，保留最近 3 个，见第 7 节 |
 | `/var/lib/tunlr/bin/mihomo` | 运行中的内核，也用于校验配置 | 归内核用户 `tunlr` 所有，面板升级时原地替换 |
 | `/var/lib/tunlr/core/` | mihomo 工作目录（`-d`）：生效的配置、API socket（`api.sock`）、geo 数据、面板、缓存 | 归内核用户 `tunlr` 所有，权限 0750（保护 API socket） |
-| `/etc/systemd/system/tunlr-*.{service,timer,path}` | 工具生成的 unit：`tunlr-core.service`、`tunlr-rescue.service`、`tunlr-update.service`、`tunlr-update.timer`、`tunlr-check.service`、`tunlr-check.timer`、`tunlr-aftercare.service`、`tunlr-aftercare.path` | 每次 `init` 重写 |
+| `/etc/systemd/system/tunlr-*.{service,timer,path}` | 工具生成的 unit：`tunlr-core.service`、`tunlr-rescue.service`、`tunlr-update.service`、`tunlr-update.timer`、`tunlr-check.service`、`tunlr-check.timer`、`tunlr-aftercare.service`、`tunlr-aftercare.path`、`tunlr-firewall.service` | 每次 `init` 重写 |
 | `/usr/local/bin/tunlr` | 工具自身 | unit 引用这个路径，`init` 时不在这里则复制过来 |
 | `/etc/sysctl.d/90-tunlr-gateway.conf` | 网关模式的 `net.ipv4.ip_forward = 1`（MVP 5，见 8.10） | 只在网关开启时存在，`tun gateway off`、`uninstall` 时删除 |
 | `/run/lock/tunlr.lock` | 文件锁 | 放在 `/run` 下，安装前也可用 |
@@ -471,7 +472,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 - **定时任务的治理**：定时机制分三类，区别在于该不该由用户决定。
   | 类别 | 机制 | 可否关闭、改周期 |
   |---|---|---|
-  | 护栏：保证不失联、不带病运行 | `tunlr-rescue.service`（启动失败后换回已知可用内核）、`tunlr-tun-guard`（开启 TUN 后的回滚定时器）、`tunlr-check.timer`（见 8.5）、`tunlr-aftercare.path`（面板升级的善后） | 不能。它们是“应用 → 确认，失败则回滚”的一部分 |
+  | 护栏：保证不失联、不带病运行 | `tunlr-rescue.service`（启动失败后换回已知可用内核）、`tunlr-tun-guard`（开启 TUN 后的回滚定时器）、`tunlr-check.timer` 与 `tunlr-firewall.service`（见 8.4）、`tunlr-aftercare.path`（面板升级的善后） | 不能。它们是“应用 → 确认，失败则回滚”的一部分 |
   | 资源更新：内容会过期 | 订阅（更新后发布）；geo 数据（内核按配置自己更新） | 能：订阅各自设周期，geo 数据按订阅用 `update set geo <订阅>` 设，都可以关闭 |
   | 不做定时 | tunlr 自身的升级 | 只能手动执行，不进 timer |
   - 资源更新只用一个 timer：`tunlr-update.timer` 每小时唤醒一次（`OnCalendar=hourly`、`RandomizedDelaySec=15min`），`_update` 读状态文件，对每个订阅判断“上次执行之后是否已过一个周期”（geo 数据由内核自己更新，从不到期），到期才执行，执行后把时间和结果记下来。没有到期的更新时什么都不做，也不输出，journal 中只留真正执行过的更新。与每种资源一个 timer 相比：改周期只改设置、不用重写 unit 和 `daemon-reload`；新增资源只加一个设置项；下次执行的时间由工具自己算，`status` 和菜单直接显示；各更新顺序执行、不会同时运行；关机错过的更新在开机后的第一次唤醒时补上，不需要 `Persistent=`。代价是不能指定在某个时刻执行，服务器上的更新不在乎几点，可以接受。
@@ -555,7 +556,10 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - `tunlr-core.service` 增加 `ExecStartPre=-+/usr/local/bin/tunlr _prestart`：加载 `inet tunlr` 表和 ip rule（`+` 表示以 root 运行，不受 `User=` 和沙箱限制；`-` 表示失败也照常启动内核，不让规则的问题拖垮代理本身）。
   - 增加 `ExecStopPost=-+/usr/local/bin/tunlr _poststop`：删除 `inet tunlr` 表和工具的 ip rule；内核的 `inet mihomo` 表和优先级 9000～9010 的 ip rule 如果还在（内核被 `SIGKILL` 或崩溃），一并删除。`ExecStopPost` 在进程以任何方式退出后都会执行，所以实测中 `SIGKILL` 后容器断网的问题由此消除，`_rescue` 不必再单独清理。
   - 这两个命令不取文件锁（`tunlr core start` 持锁调用 `systemctl start` 时会死锁），操作本身幂等。
-- **规则被他人清空**：例如重新加载 Debian 的 `nftables.service`，其配置以 `flush ruleset` 开头，会连同内核的表一起清空。增加 `tunlr-check.timer`（每 5 分钟），执行 `_check`：内核在运行而 `inet tunlr` 不见了，重新加载；内核开着 TUN 而 `inet mihomo` 不见了，重启内核由它重建。另外兜底处理回滚定时器没有生效的情况：开关为 `pending` 且过期一分钟以上时关闭 TUN。这些都是透明代理的事，所以这个 timer 随开关启停：`tun on` 布置回滚定时器后启用，`tun off` 停用；开关被回滚定时器或 `_prestart` 关闭时，`_check` 下次执行时发现开关已关，停用自己（不在 `ExecStartPre` 中调用 systemctl）。面板临时打开的 TUN 不在保护范围内。
+- **规则被他人清空**：例如重新加载 Debian 的 `nftables.service`，其配置以 `flush ruleset` 开头，会连同内核的表一起清空。两道补救：
+  - `tunlr-check.timer`（每 5 分钟）执行 `_check`：按状态补上 tunlr 的表（网关的转发设置与规则（8.10）、代理端口和面板的访问限制 `inet tunlr_access`（第 10 节）、记录设备的表（8.12）、内核在运行时的 `inet tunlr`），访问限制每次都按生效的配置重新加载，mixin 改了代理端口也能跟上；透明代理开着而 `inet mihomo` 不见了，重启内核由它重建。另外兜底处理回滚定时器没有生效的情况：开关为 `pending` 且过期一分钟以上时关闭 TUN。
+  - 这个 timer 在透明代理、网关或局域网访问（代理端口、面板）任一开着时启用（`checkWanted`），各开关的 on/off 之后按状态启停，`init` 时也按状态校正；开关被回滚定时器或 `_prestart` 关闭、都已关闭时，`_check` 下次执行时停用自己（不在 `ExecStartPre` 中调用 systemctl）。面板临时打开的 TUN 不在保护范围内。
+  - `tunlr-firewall.service`（安装后总是启用）：`PartOf=`、`ReloadPropagatedFrom=nftables.service`，`nftables.service` 启动、重启、重新加载之后执行 `_firewall`，立即按状态补上同样的表，不等 5 分钟；它取文件锁，最多等 5 分钟（同 `_aftercare`；超时会让单元 failed、此后的 reload 不再传到它，所以不能用 30 秒），不重启内核（内核的 `inet mihomo` 交给 `_check`）。持锁的操作不能同步启动它：`settings set` 等保存设置的操作先释放锁，再同步 unit（`enable --now` 会等 `_firewall` 执行完）。`tunlr-core.service` 排在 `nftables.service` 之后启动，开机时内核启动前的 `_prestart` 加载的表不会被它随后清空。`systemctl stop nftables`（同样清空规则）不会传到它，`stop` 之后再 `start` 也不会把它拉起来（`PartOf=` 只传播 stop 和 restart），没在运行的单元也收不到 reload：`_check` 发现它没在运行时拉起它，表由 `_check` 同时补上。
 
 ### 8.5 开启流程与防失联
 
@@ -581,7 +585,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 
 - `config apply`、`_update`、`sub use` 照常合成，`tunlr:tun` 随开关写入，定时更新不会改变 TUN 状态。
 - `status`：开关（`pending` 时显示剩余时间）、内核实际的 TUN 状态、两张表是否存在。
-- `uninstall`：停止服务时 `_poststop` 清理规则（服务没在运行或 unit 是旧版时再直接清理一次）；删除 `tunlr-check.timer`，停止可能存在的回滚定时器；开关记为 `off`，重新 `init` 后 TUN 保持关闭。
+- `uninstall`：停止服务时 `_poststop` 清理规则（服务没在运行或 unit 是旧版时再直接清理一次）；删除 `tunlr-check.timer`、`tunlr-firewall.service` 和 tunlr 的其余表（含 `inet tunlr_access`），停止可能存在的回滚定时器；开关记为 `off`，重新 `init` 后 TUN 保持关闭。
 - `doctor`（MVP 4）复用第 1 步的前置检查。
 - 代码：规则模板、加载与清理、前置检查在 `pkg/core/netfilter`；开关与开启流程在 `pkg/core/setup`；CLI 只有 `internal/cli/tun.go`。nft 模板做 golden 测试，规则本身按 CLAUDE.md 在 network namespace 中做集成测试。
 
@@ -667,7 +671,8 @@ tunlr-dev（环境同 8.2，装有 Docker：`ip_forward` 由 Docker 在运行时
 
 - 网关的规则不随内核停止删除（`_poststop` 不动它们），这样内核不在时仍是失败时关闭。
 - `_prestart`（含开机）在开关开启时重新加载 `inet tunlr_gateway` 表和 `DOCKER-USER` 规则（nft 规则不跨重启保存）。Docker 晚于内核服务启动时，`DOCKER-USER` 链那时还不存在，由 `_check` 补上。
-- `_check`（随 TUN 启用，每 5 分钟）在开关开启时检查表和 `DOCKER-USER` 规则，缺了就补（例如 `flush ruleset`、Docker 重建了链）。
+- `_check`（每 5 分钟）和 `_firewall`（`nftables.service` 重新加载之后）在开关开启时检查表和 `DOCKER-USER` 规则，缺了就补（例如 `flush ruleset`、Docker 重建了链），见 8.4。
+- 局域网网卡总是被代理端口和面板的访问限制放行（第 10 节“对其他设备开放的端口”）：经网关上网的设备也能直接用代理端口、打开面板（开着时）。
 - `tun off` 先关闭网关（同一把锁中），并在确认时说明；防失联回滚关闭 TUN 时同样先关闭网关。
 - `uninstall` 关闭网关，删除 sysctl 文件。
 
@@ -730,7 +735,7 @@ tunlr-dev（环境同 8.2，装有 Docker：`ip_forward` 由 Docker 在运行时
   - 邻居表（`ip -j neigh`）：给记录中没有 MAC 的设备补全；`--all` 时列出其他局域网设备（只列接着真实网络的网卡上、私有地址的邻居，判断方法同 8.10“网卡是否接着真实网络”），方便提前设置。
   - 名称：用户起的名称优先，其次向路由器（IPv4 默认路由的下一跳）反向解析，取第一段；连接打上工具的标记，透明代理开启时不被内核劫持 DNS。总时限 0.5 秒：tunlr-dev 的上级路由器不提供 DNS，每次都等到超时；家用路由器上的解析尚未实测。
 - 状态：`online`（5 分钟内有流量）、`idle`（24 小时内来过）、`away`（有记录但 24 小时内没来过）；`--all` 中没有使用本机的为 `not using`。服务器重启后集合清空，设备再次使用即重新出现。
-- `inet tunlr_devices` 在网关或代理端口局域网访问开启时加载，两者都关闭时删除。集合 `lan`、`ports` 随开关更新（`tun gateway on/off`、`proxy lan on/off`），只替换这两个集合，不重建表，已记下的设备保留；`ports` 取生效配置的 `mixed-port`，mixin 改了端口时由 `_prestart` 和 `tunlr devices` 更新。`_check` 补缺，`uninstall` 删除；`_poststop` 保留它。记录设备是附带功能，表加载失败只记日志，不影响开关。
+- `inet tunlr_devices` 在网关或代理端口局域网访问开启时加载，两者都关闭时删除。集合 `lan`、`ports` 随开关更新（`tun gateway on/off`、`proxy lan on/off`），只替换这两个集合，不重建表，已记下的设备保留；`ports` 取生效配置的 `mixed-port`，mixin 改了端口时由 `_prestart` 和 `tunlr devices` 更新。`_check`、`_firewall` 补缺，`uninstall` 删除；`_poststop` 保留它。记录设备是附带功能，表加载失败只记日志，不影响开关。
 - 只在本机显示，不保存历史；持久保存的只有用户设置过走法或名称的设备（状态文件的 `devices`：MAC、IP、名称、走法）。没有名称、走法为默认的记录自动去掉。
 - 在 tunlr-dev 上实测（netns 模拟的设备经代理端口访问）：几秒内出现在列表中，状态 `online`；设为直连后内核对它的连接显示规则 `SrcIPCIDR`、链路 `DIRECT`；设回 `proxy`、`forget`、关闭代理端口的局域网访问后，规则、记录和表都已清理。
 - 在 tunlr-dev 上实测网关一路（开启透明代理和网关，局域网网卡为 netns 的 veth）：设备上网后出现在列表中，用途 `gateway`、状态 `online`；设为直连后它的连接显示规则 `SrcIPCIDR`、链路 `DIRECT`，设回 `proxy` 后新连接重新按订阅的规则匹配；重启内核后已记下的设备仍在；`forget`、关闭网关和透明代理后表、规则、记录都已清理。
@@ -798,7 +803,7 @@ tunlr filter ports set <端口>|default     更改只代理的端口
 纳入：
 
 1. **本机模式与网关模式**：二者需要的 sysctl、防火墙设置不同。（MVP 5，用 `tunlr tun gateway on/off` 切换，见 8.10；`init` 询问这台服务器的用途时可以一并开启，见第 10 节“家庭网络中的用法”）
-2. **端口访问安全**：代理端口默认只给本机用；允许局域网访问（`tunlr proxy lan on`）时由 `lan-allowed-ips` 只放行私有地址段，其他来源必须设置认证，避免成为开放代理。（MVP 5，见第 6 节“端口安全”）
+2. **端口访问安全**：代理端口默认只给本机用；允许局域网访问（`tunlr proxy lan on`）时由 nft 表 `inet tunlr_access` 只放行从选定网卡进来、来自私有地址段的连接，内核的 `lan-allowed-ips` 另外只放行私有地址段，其他来源必须设置认证，避免成为开放代理。（MVP 5，见第 6 节“端口安全”）
 3. 流量过滤：`tunlr filter`（8.13），设备直连、来源地址段直连、拒绝 QUIC、只代理常用端口；不做绕过内核的系统层，目标地址不进 TUN 用 mixin。
 4. 自定义保留地址段：用 mixin 写 `tun.route-exclude-address`（不是受管的键），已可用。
 5. 开机联网检测与防自启死循环：已实现，`tunlr-core.service` 有 `After=/Wants=network-online.target`、`StartLimitBurst`、`OnFailure=tunlr-rescue.service`；开机时 `_prestart` 关闭过期仍未确认的 TUN（8.5）。
@@ -855,11 +860,11 @@ tunlr tun                 透明代理与网关模式的状态
 tunlr tun on | off        透明代理（--mode 预留给将来的 tproxy）
 tunlr tun gateway on | off   网关模式：局域网设备经本机分流（见 8.10；--interface 指定局域网网卡，交互时有多块候选就选择；on 时 TUN 关着就先开）
 tunlr proxy               局域网设备要填的代理地址
-tunlr proxy lan on | off  允许局域网设备使用代理端口（默认关闭，只放行私有地址）
+tunlr proxy lan on | off  允许局域网设备使用代理端口（默认关闭，只放行选定网卡进来的私有地址；--interface、--containers 选入口，与面板共用）
 tunlr proxy env [--unset] 当前 shell 的代理变量：输出 export 语句，eval "$(tunlr proxy env)"
 tunlr panel               面板的 SSH 隧道命令与链接
 tunlr panel reset-secret  换新的 API secret（diff 确认后发布，内核重启）
-tunlr panel lan on | off  允许局域网设备直接打开面板（默认关闭）
+tunlr panel lan on | off  允许局域网设备直接打开面板（默认关闭；入口同 proxy lan on）
 tunlr devices             使用本机的局域网设备（--all 含未使用的）；name、forget 起名、删除记录（见 8.12）
 tunlr filter              流量过滤：device、source 设备与地址段直连，quic 拒绝 QUIC，ports 只代理常用端口（见 8.13）
 
@@ -872,14 +877,15 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
 
 `completion`（cobra 自带的 shell 补全）可用但不显示在帮助中。
 
-内部命令（供 systemd 调用，不显示在帮助中）：`tunlr _check`、`tunlr _rescue`、`tunlr _update`、`tunlr _aftercare`，以及透明代理用的 `_prestart`、`_poststop`、`_tun-guard`（见 8.4、8.5）。
+内部命令（供 systemd 调用，不显示在帮助中）：`tunlr _check`、`tunlr _firewall`、`tunlr _rescue`、`tunlr _update`、`tunlr _aftercare`，以及透明代理用的 `_prestart`、`_poststop`、`_tun-guard`（见 8.4、8.5）。
 
 服务与安装相关命令的行为：
 
-- `init`：可重复执行，再次执行即修复。依次：检查环境（root、systemd、架构）→ 把自身复制到 `/usr/local/bin/tunlr` → 创建用户 `tunlr` → 建目录并设置属主与权限 → 没有内核时安装最新版 → 写入 unit 和 timer、`daemon-reload`、启用 `tunlr-core.service`、`tunlr-update.timer` 与 `tunlr-aftercare.path` → 给了订阅就添加 → 有启用的订阅时发布配置并启动内核、做健康检查。交互模式下询问 GitHub 镜像、订阅地址及其节点筛选（都可以留空）；非交互模式由 `--mirror`、`--sub <名称>=<地址>`、`--include`、`--exclude` 给出，没给就跳过。
+- `init`：可重复执行，再次执行即修复。依次：检查环境（root、systemd、架构）→ 把自身复制到 `/usr/local/bin/tunlr` → 创建用户 `tunlr` → 建目录并设置属主与权限 → 没有内核时安装最新版 → 写入 unit 和 timer、`daemon-reload`、启用 `tunlr-core.service`、`tunlr-update.timer`、`tunlr-aftercare.path` 与 `tunlr-firewall.service`（`tunlr-check.timer` 按开关启停，见 8.4）→ 给了订阅就添加 → 有启用的订阅时发布配置并启动内核、做健康检查。交互模式下询问 GitHub 镜像、订阅地址及其节点筛选（都可以留空）；非交互模式由 `--mirror`、`--sub <名称>=<地址>`、`--include`、`--exclude` 给出，没给就跳过。
   - 之后询问这台服务器的用途（见下文“家庭网络中的用法”）：只给本机用（默认，如 VPS）、只给局域网设备当代理、给局域网设备当网关和代理（两种用法同时可用，选项文字写明，免得看起来是三选一）。后两项再问是否也让局域网设备打开面板（默认是）；选网关且有多块候选网卡（已启用、有 IPv4 地址、接着真实网络，见 8.10，默认路由所在的排最前）时选择网卡；所选网卡有公网地址时再确认一次，回答否回到用途的问题。
   - 已经开启过透明代理、网关或代理端口局域网访问时不问（再次 init 是修复，不改用途）；没有订阅时也不问（内核不会启动）。
-  - 非交互模式由 `--lan-proxy`、`--gateway <网卡|auto>`（同时开启 `--lan-proxy`）、`--lan-panel` 给出。它们与 `--json` 同用时报用法错误：后续步骤各有输出，合不成一份 JSON，分别执行 `proxy lan on`、`tun gateway on`、`panel lan on` 即可。
+  - 非交互模式由 `--lan-proxy`、`--gateway <网卡|auto>`（同时开启 `--lan-proxy`）、`--lan-panel` 给出，`--lan-interface` 指定代理端口和面板放行的网卡（同 `proxy lan on --interface`，没给时取默认值，见第 10 节“对其他设备开放的端口”）；写错的网卡名在检查环境之后、动手之前就拒绝，不会装好内核后才在最后一步失败。它们与 `--json` 同用时报用法错误：后续步骤各有输出，合不成一份 JSON，分别执行 `proxy lan on`、`tun gateway on`、`panel lan on` 即可。
+  - 放行的网卡不另外提问：默认值（没有公网地址的网卡）覆盖常见情况，网关的局域网网卡总是放行；只当代理、确认过的公网网卡在默认值之外另外放行。以后用 `proxy lan on` 或菜单的“Change LAN interfaces”修改。
   - 这些步骤列在“Set up tunlr now?”的确认中，init 成功后依次走 `tun gateway on`（TUN 关着时先开 TUN）、`proxy lan on`、`panel lan on` 的流程，不再逐一确认（公网地址的确认已经在提问时做过）。某一步失败时报“tunlr is installed, but … failed”，退出码沿用那一步的（如 4 为已回滚），已经装好的部分不撤销。
   - 选“只给本机用”时，结果的最后提示 `tunlr tun on`、`tunlr proxy lan on`、`tunlr tun gateway on`。
 - `core start`、`core stop`、`core restart`：执行 `systemctl`，`core start`、`core restart` 之后做健康检查。`core logs` 执行 `journalctl -u tunlr-core.service`，透传 `-f`、`-n`。
@@ -902,7 +908,7 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
   - `backup restore` 要求这台机器已经 `init`（有状态文件）。读取时检查格式版本（比当前新则拒绝；格式 2 起打包订阅列表，格式 1 的备份不再能还原）、文件名（只认上面几类，mixin 与订阅名称照常校验）、设置文件、订阅列表（同手改时的校验），以及启用的订阅有内容；错误信息不含订阅地址。
   - 设置文件、订阅列表、`mixin.d` 中的 `.yaml`（含订阅 mixin 的目录）与订阅内容整体替换（不合并，结果可以预料；原来的内容在自动备份中），状态只替换 API secret、设备和过滤项，订阅的抓取记录清空（各订阅视为立即到期，下一次定时更新重新抓取）；实例 ID、内核、开关、定时任务的记录保持本机的。设备按地址记录，换了局域网就匹配不到，照样还原，diff 中可见。
   - 先按还原后的样子合成并校验（`pipeline.PlanRestore`，不写入任何东西），显示 diff，确认后在锁内：把当前内容自动备份到 `/var/lib/tunlr/backups`（保留 3 份）→ 写入 → 发布 → 同步 timer。全有或全无：发布失败时写回自动备份的内容，配置由流水线回滚，退出码 4；拒绝或预览时什么都不写。这一点与 `config edit`、`settings edit` 不同：还原只做一半，状态难以看明白。
-  - 开关不自动打开：网卡、局域网、是否有公网地址都跟着机器，TUN 还有失联的风险。还原后比较备份与本机，备份时开着、这里关着的（网关的网卡在这里不存在时改用默认路由所在的网卡）在交互模式下列成多选、默认全选，选中的依次走 `tun gateway on`（或 `tun on`）、`proxy lan on`、`panel lan on` 的流程，同 `init`；非交互或 `--yes` 时只列出命令，`--json` 中为 `commands`。
+  - 开关不自动打开：网卡、局域网、是否有公网地址都跟着机器，TUN 还有失联的风险。还原后比较备份与本机，备份时开着、这里关着的（网关的网卡在这里不存在时改用默认路由所在的网卡；代理端口和面板放行备份中选过、这里也有的网卡，都没有时取默认值）在交互模式下列成多选、默认全选，选中的依次走 `tun gateway on`（或 `tun on`）、`proxy lan on`、`panel lan on` 的流程，同 `init`；非交互或 `--yes` 时只列出命令，`--json` 中为 `commands`。
   - 自动备份就是“撤销还原”的入口：`tunlr backup` 按时间列出（订阅、mixin 数和路径，`--json` 中为列表），`backup restore` 不给文件时在交互模式下从中选择；非交互时必须给出文件。
   - 菜单的“Maintenance”分类有备份到文件、还原备份两项；`backup restore` 不给文件时列出自动备份，末尾一项是输入本机上的文件，没有自动备份时直接问文件。
 - `sub use [名称]`：交互模式下询问是否立即发布，`--apply` 直接发布（同 `config apply`，非交互时需配合 `--yes`）。`--dry-run` 不切换，只按这个订阅被启用时的样子给出 plan。
@@ -946,9 +952,9 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
   | 分类 | 状态 | 第二级 |
   |---|---|---|
   | Subs & config | 启用的订阅 · 共几个 · 修订号（有没发布的改动、无法合成、在 tunlr 之外改过时标出） | 添加、切换（多于一个时）、修改（`sub set`，含 geo 数据设置）、立即抓取、删除（多于一个时）；编辑 mixin、发布、回滚（有历史时）；列出订阅、配置详情 |
-  | Traffic | TUN 与网关 · 代理端口的局域网访问 · 过滤摘要 | TUN 开关、网关开关、代理端口的局域网开关、QUIC 开关、只代理部分端口（开启时为改端口、恢复全部两项）、网段直连的添加与删除（有时）；TUN、代理端口、过滤三项详情 |
+  | Traffic | TUN 与网关 · 代理端口的局域网访问 · 过滤摘要 | TUN 开关、网关开关、代理端口的局域网开关（开着时另有“Change LAN interfaces”，即 `proxy lan on` 的网卡多选）、QUIC 开关、只代理部分端口（开启时为改端口、恢复全部两项）、网段直连的添加与删除（有时）；TUN、代理端口、过滤三项详情 |
   | LAN devices | 在线、空闲的设备数；网关和代理端口都只对本机时说明没有设备使用本机 | 列出、列出全部、起名、设备走法（`filter device`）、删除记录 |
-  | mihomo & panel | 运行中 · 版本 / 未运行 / 失败 · 面板的局域网访问 | 启动或重启、停止，最近的日志，升级，换回已知可用版本（有时），让内核立即更新 geo 数据（运行中时，`update run geo`）；面板的打开方式、局域网开关、更换 secret；内核详情 |
+  | mihomo & panel | 运行中 · 版本 / 未运行 / 失败 · 面板的局域网访问 | 启动或重启、停止，最近的日志，升级，换回已知可用版本（有时），让内核立即更新 geo 数据（运行中时，`update run geo`）；面板的打开方式、局域网开关（开着时另有“Change LAN interfaces”）、更换 secret；内核详情 |
   | Maintenance | 自动备份的份数 | 备份到文件、还原备份、编辑工具设置、诊断（`doctor`）、修复安装（`init`） |
 
   “Traffic”管“什么流量经过 mihomo”（规则），“LAN devices”管“具体是哪台设备”（对象）；二者合成一组会超过十项，huh 的 Select 又没有不可选的小节标题，所以分开。
@@ -986,7 +992,7 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
   - `label` 是 zashboard 后端列表中的名称，取主机名，经隧道的另加 `(SSH tunnel)`。zashboard 的 `addBackend` 只在各项（含 label、secret）完全相同时复用已有的后端，否则新增一个，所以 label 保持固定，重复打开链接不会多出后端；`panel reset-secret` 之后旧的后端留在浏览器中，提示用户去面板的设置里删除。
   - 后端存在浏览器的 localStorage 中，第一次用链接打开之后直接打开 `http://<地址>:<端口>/ui/` 即可，输出中一并给出这个地址。
   - zashboard 可以从 `./zashboard-settings.json`（键为 localStorage 的键）或内核的 `/storage/zashboard` 导入设置，但都要用户先在浏览器里打开“自动导入”或手动导入；暂不预置，等有确定要预置的设置再做。
-- API 不只监听本机时（局域网访问开启，或配置在工具之外被改过），另外给出直接打开的链接：监听所有地址时，取默认路由网卡的 IPv4 地址，以及 SSH 会话进来的地址（如 Tailscale）。隧道照样列出，在外网时用。
+- API 不只监听本机时（局域网访问开启，或配置在工具之外被改过），另外给出直接打开的链接：监听所有地址时，放行的网卡上每个 IPv4 地址一条（配置在工具之外被改过时为本机每个可用的地址），注明所在的网卡，并列出放行的入口（见下文“对其他设备开放的端口”“其他设备访问本机用的地址”）。隧道照样列出，在外网时用。
 - 显示面板是否已下载（`external-ui` 目录）、内核是否在运行：没有面板时说明内核加载配置时按 `external-ui-url` 下载（失败时看 `tunlr core logs`），内核没有运行时提示 `tunlr core start`。
 - 不使用 zashboard 的 `disableTunMode`、`disableUpgradeCore` 参数：不限制面板能力（见第 3 节）。
 - `tunlr panel reset-secret`：生成新的 secret 并发布（diff、确认，同 `config apply`；`secret` 需要重启内核才生效）。`secret` 归 `tunlr:panel`，mixin 不能设置。用于 secret 可能泄漏时。
@@ -994,15 +1000,13 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
 
 **面板的局域网访问（`tunlr panel lan on | off`）**：家庭网络中，其他设备（手机、平板）要能直接打开面板调整，不便每台都建 SSH 隧道。默认关闭。
 
-- 开关存在状态文件中（`panel_lan`），像透明代理开关一样作为合成的输入：`tunlr:panel` 中写 `external-controller: 0.0.0.0:9090`（关闭时写 `127.0.0.1:9090`）（实测内核按 `*:9090` 双栈监听，所以 nft 表也限制 IPv6 来源；链接只给 IPv4 地址）。经流水线发布：diff、确认、`mihomo -t`；`external-controller` 需要重启内核才生效，失败时回滚，开关恢复原状。
+- 开关存在状态文件中（`panel_lan`），像透明代理开关一样作为合成的输入：`tunlr:panel` 中写 `external-controller: 0.0.0.0:9090`（关闭时写 `127.0.0.1:9090`）（实测内核按 `*:9090` 双栈监听，所以访问限制也管 IPv6；链接只给 IPv4 地址）。经流水线发布：diff、确认、`mihomo -t`；`external-controller` 需要重启内核才生效，失败时回滚，开关恢复原状。
 - `external-controller` 归 `tunlr:panel`，mixin 设置了它时合成就会拒绝，提示改用 `tunlr panel lan on/off`。面板经明文 HTTP 访问，secret 在局域网中可见，`lan on` 时说明。
-- 内核 API 不能限制来源，只监听 `0.0.0.0` 在公网 VPS 上等于把面板交给整个互联网。所以开关开启时另外加载 nft 表 `inet tunlr_panel`：input 链（优先级 `filter - 1`，策略 accept）中，目标为 API 端口、来源不是本机、也不在私有地址段（见下一条）的 TCP 包丢弃。在 tunlr-dev 上实测：从私有地址访问返回 200，从临时加在 lo 上的 `198.51.100.77` 访问超时。
-- **私有地址段只定义一处**（`netfilter.PrivateIPv4`、`PrivateIPv6`，2026-10-29）：`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`（RFC 1918）、`100.64.0.0/10`（RFC 6598 共享地址空间，运营商级 NAT 的内侧，部分 VPN 也用它）、`169.254.0.0/16`（链路本地）；IPv6 为 `fc00::/7`（唯一本地地址）、`fe80::/10`（链路本地）。含义是“不会从公网直接到达的地址”，tunlr 用它在局域网与公网之间划界：面板的 nft 表、代理端口的 `lan-allowed-ips`（另加回环）、网关断开时放行的目标（8.10）、设备记录的来源（8.12）、网卡和设备是否有公网地址的判断、命令帮助中的说明都由它而来，nft 模板经模板变量取用。原来同一份列表在模板、Go 代码和帮助文字中写了七遍，改一处漏一处就会让各功能放行的范围不同。模板 `config.yaml` 中的 `lan-allowed-ips` 只为固定位置，测试保证它与 `config.LANAllowedIPs` 相同。
-  - 先加载表再发布配置，关闭时先发布再删表，API 对外的任何时刻都有这层保护。
-  - 规则不跨重启保存：`_prestart` 在内核启动前补上；`_check` 只随透明代理运行，所以 `nft flush ruleset` 之后要到下次启动内核才补上，`doctor` 和 `tunlr panel` 会指出缺失。`_poststop` 保留它。`uninstall` 删除。
-  - 这张表只能多挡一层，不能放行：机器上其他防火墙挡了这个端口时，它照样打不开，`lan on` 完成后提示检查已有的防火墙。
-- 默认路由网卡的 IPv4 地址不是私有地址时（服务器很可能直接在公网上），`lan on` 先给出警告，再单独确认一次（`--yes` 时两次都视为同意）。nft 表仍然只放行私有地址段。
+- 内核 API 不能限制来源，只监听 `0.0.0.0` 在公网 VPS 上等于把面板交给整个互联网。访问限制全靠 nft 表 `inet tunlr_access`，与代理端口共用，见下文“对其他设备开放的端口”。
+- 已经开启时再执行 `panel lan on` 不发布，只更新放行的入口、补上缺少的表。
 - 回滚、自动关闭透明代理改写独占的键时，`external-controller` 和 `secret` 也按当前开关写入：回滚到开启前的修订，面板照样对局域网开放，与 nft 表一致。
+
+**私有地址段只定义一处**（`netfilter.PrivateIPv4`、`PrivateIPv6`，2026-10-29）：`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`（RFC 1918）、`100.64.0.0/10`（RFC 6598 共享地址空间，运营商级 NAT 的内侧，部分 VPN 也用它）、`169.254.0.0/16`（链路本地）；IPv6 为 `fc00::/7`（唯一本地地址）、`fe80::/10`（链路本地）。含义是“不会从公网直接到达的地址”，tunlr 用它在局域网与公网之间划界：代理端口和面板的访问限制（`inet tunlr_access` 与 `lan-allowed-ips`，后者另加回环）、网关断开时放行的目标（8.10）、设备记录的来源（8.12）、网卡和设备是否有公网地址的判断、命令帮助中的说明都由它而来，nft 模板经模板变量取用。原来同一份列表在模板、Go 代码和帮助文字中写了七遍，改一处漏一处就会让各功能放行的范围不同。模板 `config.yaml` 中的 `lan-allowed-ips` 只为固定位置，测试保证它与 `config.LANAllowedIPs` 相同。
 
 **家庭网络中的用法**：家里一台 Linux 服务器运行代理，其他设备有两种用法，`init` 的用途问题对应这两种（以及只给本机用）：
 
@@ -1016,10 +1020,35 @@ tunlr core rollback       换回上一个已知可用版本（不下载）
 **代理端口的局域网访问（`tunlr proxy lan on | off`）**：
 
 - 开关存在状态文件中（`proxy_lan`），由独占的受管 mixin `tunlr:proxy` 写成配置：`allow-lan` 按开关写 `true` 或 `false`；`lan-allowed-ips` 总是写成私有地址段（`config.LANAllowedIPs`：`127.0.0.0/8`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`100.64.0.0/10`、`169.254.0.0/16`、`::1/128`、`fc00::/7`、`fe80::/10`）。模板中也写了这份列表，紧跟 `allow-lan`，让它在配置中的位置固定、开关的 diff 只有一行（不放在模板里时合并会把它追加到配置末尾的规则之后）。mixin 设置这两个键时合成拒绝，提示改用 `tunlr proxy lan on/off`；要密码时在 mixin 中写 `authentication`。
-- 来源由内核限制，不需要 nft 表（与面板不同：API 不能限制来源）。在 tunlr-dev（v1.19.33）上实测：没有 `lan-allowed-ips` 时放行所有来源；只写私有地址段时局域网来源可用，临时加在 lo 上的 `198.51.100.77` 被拒绝。回环地址也受这个列表限制，所以必须包含 `127.0.0.0/8` 和 `::1/128`。`::1/128` 在 YAML 流式列表中要加引号，所以写成块列表。
-- `allow-lan` 热重载即生效（内核重新绑定 `*:7890`），不重启内核。经流水线发布：diff、确认、`mihomo -t`，失败时回滚，开关恢复原状。
-- 默认路由网卡的 IPv4 地址是公网地址时，`lan on` 先警告，再单独确认一次。
-- `tunlr proxy` 显示开关和局域网设备要填的地址（默认路由网卡的 IPv4 地址加 `mixed-port`）；`status`、`doctor`（检查生效配置与开关是否一致）、菜单的“Traffic”分类中也有。
+- 内核按 `lan-allowed-ips` 只放行私有地址段，作为 nft 表（见下文“对其他设备开放的端口”）之外的第二层：表被清空、还没补上的几分钟里，代理端口仍然不对公网开放。在 tunlr-dev（v1.19.33）上实测：没有 `lan-allowed-ips` 时放行所有来源；只写私有地址段时局域网来源可用，临时加在 lo 上的 `198.51.100.77` 被拒绝。回环地址也受这个列表限制，所以必须包含 `127.0.0.0/8` 和 `::1/128`。`::1/128` 在 YAML 流式列表中要加引号，所以写成块列表。
+- `allow-lan` 热重载即生效（内核重新绑定 `*:7890`），不重启内核。经流水线发布：diff、确认、`mihomo -t`，失败时回滚，开关恢复原状。已经开启时再执行 `proxy lan on` 不发布，只更新放行的入口。
+- `tunlr proxy` 显示开关、放行的入口和其他设备要填的地址（放行的网卡上每个 IPv4 地址加 `mixed-port`，注明网卡，见下文）；`status`、`doctor`（检查生效配置与开关是否一致）、菜单的“Traffic”分类中也有。
+
+**对其他设备开放的端口：访问限制**（`inet tunlr_access`，2026-10-30）：代理端口和面板开启局域网访问后，内核都监听所有地址（`allow-lan` 不写 `bind-address` 时为 `*`；`external-controller: 0.0.0.0:9090`），哪些连接能进来全部由一张 nft 表决定：只放行从选定网卡进来、来自私有地址段的连接。
+
+- 为什么不靠内核绑定地址：`bind-address` 只能写一个地址（或 `*`），`external-controller` 也只有一个 `host:port`，满足不了局域网加 Tailscale；地址由 DHCP 分配，变了或网卡起得比内核晚时就绑不上；绑定地址也挡不住从别的网卡进来、目标是这个地址的包。按入口网卡（`iifname`）限制没有这些问题，网卡名也比地址稳定。
+- 表的结构（模板 `templates/nft/access.nft`，golden 测试）：
+  - `prerouting` 链挂在 `raw` 优先级（早于任何 DNAT，例如内核 TUN 的 auto-redirect），看到的是原始的目标地址和端口；`fib daddr type local` 只管发给本机的包，转发的不受影响。
+  - 命名集合 `ports`（开放的端口）与 `interfaces`（放行的网卡）；目标端口在 `ports` 中的 TCP、UDP 包跳到 `guard` 链：`lo` 进来的放行（本机访问自己的任何地址都经 `lo`）；`interfaces` 中的网卡进来、来源在私有地址段（IPv4、IPv6 各一条）的放行；选了容器时 `docker0` 和 `br-*`（compose 网络）进来、来源私有的放行（`ifname` 集合不能放通配符，所以单独写规则）；其余丢弃。容器选项只覆盖 Docker 默认的网桥名，其他网桥（Podman 的 `podman0`、自定义名称的 Docker 网络）用 `--interface` 按名字放行，不另做探测；`--containers` 的帮助说明这一点。
+  - 端口：代理端口的开关开着时为生效配置中的 `mixed-port`、`port`、`socks-port`、`redir-port`、`tproxy-port`（mixin 自己写的 `listeners` 不管，由写它的人负责）；面板的开着时加上 API 端口 9090。两个开关都关着时删表。
+  - 整个文件“建表、删表、再建”在一个事务中替换旧表，内容由状态整体算出，不做增量修改。
+- 放行的入口两个开关共用，存在状态文件中（`lan_access`：`interfaces`、`containers`），关掉开关时保留，下次开启沿用：
+  - 没有选过时的默认值：没有公网地址的网卡；VPN（点对点网卡）只取当前 SSH 会话进来的那块——经它登录说明它连着自己的设备，其他 VPN 可能连着机场或商业 VPN。只有公网网卡的服务器默认什么都不放行，`lan on` 报用法错误，提示用 `--interface` 选。
+  - 网关的局域网网卡总是放行（网关开着时），不必选，也不在多选中列出。
+  - 选择：`proxy lan on`、`panel lan on` 的 `--interface a,b`（`--interface ""` 表示不放行任何网卡，只靠容器或网关；这里没有的网卡报用法错误并列出候选，免得写错的名字什么都放行不了，选过、暂时不在的照旧可以保留）、`--containers`（`--containers=false` 取消）；交互且没给参数时列出网卡（地址、默认路由、SSH 会话、VPN、公网地址）、选过但现在不在的网卡和“本机的容器”的多选，预先勾上现在放行的；一个都不选时再问。`--yes`、`--dry-run`、非交互时沿用选过的或默认值。已经开启时再执行 `lan on` 就是改入口：只保存、重新加载表，不发布；菜单中开关开着时有“Change LAN interfaces”。
+  - 放行有公网地址的网卡前先警告，再单独确认一次（`--yes` 时视为同意）：开关原来关着时对所有放行的公网网卡，开着时只对新加的。
+- 先加载表再发布配置，关闭时先发布再更新表（去掉端口，没有端口时删表），端口对外的任何时刻都只放行这些入口。开启时没有任何入口也照样加载（只放行 `lo`），不会因为少了选择而全开。
+- 规则不跨重启保存：`_prestart` 在内核启动前加载；`_check` 和 `_firewall` 补上被清空的表并让端口跟上生效的配置（见 8.4）。`_poststop` 保留它，`uninstall` 删除。`doctor` 的“LAN access rules”检查表在不在（不在时 fail，修复为 `systemctl start tunlr-check.service`）、有没有放行的入口，以及放行的网卡是否存在、有没有公网地址（warn）。
+- 这张表只能多挡一层，不能放行：机器上其他防火墙挡了这个端口时，它照样打不开，`lan on` 完成后提示检查已有的防火墙。
+- 在 tunlr-dev 上实测（network namespace 经 veth 访问本机，代理端口和面板都开着）：没有放行的 veth 进来的连接两个端口都被丢弃，本机经 `lo` 照常可达；放行 veth 后私有来源可达，换成 `198.51.100.0/24` 的来源被丢弃（`doctor` 报该网卡有公网地址）；名为 `br-*` 的网卡要 `--containers` 才放行。删掉表后 `systemctl reload nftables`、`restart nftables` 都由 `tunlr-firewall.service` 立即补上（`restart` 时连同 `inet tunlr`），`_check` 同样补上。netns 集成测试（`TUNLR_TEST_NETNS=1`）覆盖这张表的加载（重复加载、`br-*` 通配、`fib`、`th` 表达式）和没有端口时删表。
+- 显示：`proxy lan`、`panel lan` 不带参数时只显示现状（开关、端口、地址、放行的入口），没有安装时也能显示，不做开启前的检查。
+- `tunlr proxy`、`tunlr proxy lan`、`tunlr panel`、`tunlr panel lan` 显示“Let in through: …”（放行的网卡、网关的局域网网卡、容器）；`--json` 中为 `access`（`interfaces`、`gateway`、`containers`，没有选过时 `default`）。`status` 在任一开关开着时多一行 `Let in:`（`--json` 中为 `lan_access`），菜单 Traffic、mihomo & panel 的状态行在开着的开关后括号注明网卡，什么都不放行时标出。备份记下放行的入口，还原后开启时沿用（只取这台机器上也有的网卡）。
+
+**其他设备访问本机用的地址**（2026-10-30）：服务器常有多个地址（两块局域网网卡、Tailscale、Docker 网桥），只给出默认路由网卡的地址不够：网关模式选了另一块网卡时，那边的设备拿到的地址是错的。
+
+- `setup.LANAddresses` 列出可用的网卡和它们的 IPv4 地址：接着真实网络的网卡（判断同网关选网卡，8.10）、点对点的网卡（WireGuard、Tailscale 等 VPN，按内核的 `IFF_POINTOPOINT` 判断，不按名称猜；`tunlr0` 除外），以及当前 SSH 会话进来的网卡（`$SSH_CONNECTION` 本机一端的地址所在，经回环地址的除外）。容器网桥、veth 不列：容器经网桥访问本机，用不着这里的地址（放行容器另有选项）。它们也是选择放行入口时的候选。
+- 开关开着时只给放行的网卡上的地址。网关模式的局域网网卡排最前，其次是默认路由所在的网卡，其余按名称排序；每个地址注明网卡和“gateway LAN”“default route”“this SSH session”。只有一个地址时照旧写成一行。`--json` 中按网卡给出（`interfaces`，带 `allowed`；面板为 `lan_links`，每个地址一条，带网卡）。
+- 私有地址段比家里的局域网宽：从放行的网卡进来的 VPN 设备（Tailscale 用 `100.64.0.0/10`）同样放行。`proxy lan`、`panel lan` 的帮助和 `lan on` 的说明中写明。
 
 设计思路：高频的服务控制放在顶层，与 `systemctl` 的直觉一致；只保留 `sub`、`tun`、`env` 三组子命令（`sub use` 的说法与 `kubectl config use-context`、`nvm use` 一致）；合并含义重叠的命令。检验标准：没看过文档的人能猜对大部分常用操作。
 

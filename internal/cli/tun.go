@@ -349,12 +349,22 @@ func (a *app) newTunGuardCommand() *cobra.Command {
 
 // newCheckCommand 是 tunlr-check.timer 每 5 分钟执行的内部命令。
 func (a *app) newCheckCommand() *cobra.Command {
+	return a.newRepairCommand("_check", func(ctx context.Context) (*setup.CheckResult, error) { return a.installer().Check(ctx) })
+}
+
+// newFirewallCommand 是 tunlr-firewall.service 在 nftables.service 启动、重启或重新加载后执行的内部命令。
+func (a *app) newFirewallCommand() *cobra.Command {
+	return a.newRepairCommand("_firewall", func(ctx context.Context) (*setup.CheckResult, error) { return a.installer().Firewall(ctx) })
+}
+
+// newRepairCommand 是补上规则的内部命令：列出采取的动作。
+func (a *app) newRepairCommand(use string, run func(ctx context.Context) (*setup.CheckResult, error)) *cobra.Command {
 	return &cobra.Command{
-		Use:    "_check",
+		Use:    use,
 		Hidden: true,
 		Args:   usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			res, err := a.installer().Check(cmd.Context())
+			res, err := run(cmd.Context())
 			if res == nil {
 				return err
 			}

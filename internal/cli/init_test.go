@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -35,6 +36,9 @@ func TestAskUsage(t *testing.T) {
 		{name: "public declined", cands: []setup.LANInterface{eth1}, picks: []string{"Proxy", "Only"}, confirms: []bool{false}},
 		{name: "public accepted", cands: []setup.LANInterface{eth1}, picks: []string{"Gateway", "No"}, confirms: []bool{true},
 			want: lanUsage{proxy: true, gateway: "eth1"}, steps: 3},
+		// 只做局域网代理时，确认过的公网网卡另外放行（网关的局域网网卡本来就放行）。
+		{name: "public proxy accepted", cands: []setup.LANInterface{eth1}, picks: []string{"Proxy", "Yes"}, confirms: []bool{true},
+			want: lanUsage{proxy: true, panel: true, public: "eth1"}, steps: 2},
 		// 没有候选时不能选网关；局域网代理仍然可以（地址留给 proxy lan on 去找）。
 		{name: "no interface", picks: []string{"Gateway", "Proxy", "No"}, want: lanUsage{proxy: true}, steps: 1},
 	}
@@ -46,7 +50,7 @@ func TestAskUsage(t *testing.T) {
 			if err := a.askUsage(context.Background(), tt.cands, &u); err != nil {
 				t.Fatal(err)
 			}
-			if u != tt.want {
+			if !reflect.DeepEqual(u, tt.want) {
 				t.Errorf("usage = %+v, want %+v", u, tt.want)
 			}
 			if len(p.picks) != 0 || len(p.confirms) != 0 {

@@ -256,8 +256,9 @@ func (i *Installer) InitSteps(ctx context.Context, opts InitOptions) ([]string, 
 		steps = append(steps, "Install mihomo "+v+", verified against the official sha256")
 	}
 	sd := i.systemd()
-	steps = append(steps, fmt.Sprintf("Install and enable %s, %s (subscriptions %s unless set otherwise) and %s (checks mihomo after the panel upgrades it)",
-		service.CoreUnit, service.UpdateTimer, settings.DescribePeriod(subscription.DefaultUpdate), service.AftercarePath))
+	steps = append(steps, fmt.Sprintf("Install and enable %s, %s (subscriptions %s unless set otherwise), %s (checks mihomo after the panel upgrades it) "+
+		"and %s (reloads tunlr's nftables rules after nftables.service)",
+		service.CoreUnit, service.UpdateTimer, settings.DescribePeriod(subscription.DefaultUpdate), service.AftercarePath, service.FirewallUnit))
 
 	list, err := subscription.LoadList(i.Layout.SubscriptionList())
 	if err != nil {
@@ -382,12 +383,12 @@ func (i *Installer) Uninstall(ctx context.Context, purge bool) (*UninstallResult
 	} else if left {
 		res.Removed = append(res.Removed, "nftables table inet "+netfilter.KernelTable)
 	}
-	// 内核已经停止，面板的表不再需要；开关留在状态文件中，重新 init 后 _prestart 照样加载。
-	if tables, err := i.rules().Tables(ctx); err == nil && tables[netfilter.PanelTable] {
-		if err := i.rules().PanelDown(ctx); err != nil {
+	// 内核已经停止，访问限制的表不再需要；开关留在状态文件中，重新 init 后 _prestart 照样加载。
+	if tables, err := i.rules().Tables(ctx); err == nil && tables[netfilter.AccessTable] {
+		if err := i.rules().AccessDown(ctx); err != nil {
 			return nil, err
 		}
-		res.Removed = append(res.Removed, "nftables table inet "+netfilter.PanelTable)
+		res.Removed = append(res.Removed, "nftables table inet "+netfilter.AccessTable)
 	}
 	if tables, err := i.rules().Tables(ctx); err == nil && tables[netfilter.DevicesTable] {
 		if err := i.rules().DevicesDown(ctx); err != nil {

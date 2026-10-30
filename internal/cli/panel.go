@@ -15,12 +15,14 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/netfilter"
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
 	"github.com/tunlr-app/cli/pkg/core/setup"
+	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
-// panelLANView 是 panel lan on/off 在 --json 输出中的形式。
+// panelLANView 是 panel lan on/off 在 --json 输出中的形式。Access 是开启时保存的放行入口。
 type panelLANView struct {
 	Plan      planView              `json:"plan"`
 	Preflight *setup.PanelLANPlan   `json:"preflight,omitempty"`
+	Access    *state.LANAccess      `json:"access,omitempty"`
 	Applied   bool                  `json:"applied"`
 	Result    *setup.PanelLANResult `json:"result,omitempty"`
 }
@@ -108,16 +110,25 @@ func (a *app) printPanelLAN(p *setup.Panel) {
 	switch {
 	case p.LAN && !p.LANRules:
 		fmt.Fprintf(w, "%s the nftables table inet %s is missing, so the panel accepts connections from any\n"+
-			"address; tunlr panel lan on restores it.\n\n", a.style.bad("Warning:"), netfilter.PanelTable)
+			"address; tunlr panel lan on restores it.\n\n", a.style.bad("Warning:"), netfilter.AccessTable)
 	case !p.LAN:
 		fmt.Fprintf(w, "%s the API listens on %s, reachable from the network (edited outside tunlr?);\n"+
 			"anyone who can reach it and knows the secret controls mihomo.\n\n", a.style.warn("Warning:"), p.Controller)
 	}
-	fmt.Fprintln(w, "From devices on the LAN, open:")
-	for _, u := range p.LANURLs {
-		fmt.Fprintf(w, "  %s\n", u)
+	if p.Access != nil {
+		a.printAccess(*p.Access, "panel")
 	}
-	fmt.Fprintf(w, "The browser remembers it as %q; later just open %s\n", p.Label, strings.Join(p.LANBookmarks, " or "))
+	if len(p.LANLinks) == 1 {
+		fmt.Fprintln(w, "From devices on the LAN, open:")
+		fmt.Fprintf(w, "  %s\n", p.LANLinks[0].URL)
+		fmt.Fprintf(w, "The browser remembers it as %q; later just open %s\n", p.Label, p.LANLinks[0].Bookmark)
+		return
+	}
+	fmt.Fprintln(w, "From other devices, open the link with this server's address on their network:")
+	for _, l := range p.LANLinks {
+		fmt.Fprintf(w, "  %s\n    %s\n", a.style.dim(lanNote(l.Interface, l.Default, l.Gateway, l.SSH)+":"), l.URL)
+	}
+	fmt.Fprintf(w, "The browser remembers it as %q; later just open http://<that address>:%d/ui/\n", p.Label, p.Port)
 }
 
 // describePanelLAN 用于 status 和菜单的面板访问状态。
@@ -150,8 +161,8 @@ func (a *app) resetSecret(cmd *cobra.Command) error {
 	}
 	fmt.Fprintln(a.stdout, "\nBrowsers that opened the old link have to connect again with the new one:")
 	fmt.Fprintf(a.stdout, "  %s\n", p.URL)
-	for _, u := range p.LANURLs {
-		fmt.Fprintf(a.stdout, "  %s\n", u)
+	for _, l := range p.LANLinks {
+		fmt.Fprintf(a.stdout, "  %s\n", l.URL)
 	}
 	fmt.Fprintf(a.stdout, "zashboard keeps the old backend %q with the old secret beside the new one;\n"+
 		"delete it in the panel's settings (Backend).\n", p.Label)
@@ -163,25 +174,35 @@ func privateRanges() string {
 	return strings.Join(slices.Concat(netfilter.PrivateIPv4, netfilter.PrivateIPv6), ", ")
 }
 
+// privateIncludes 说明私有地址段比家里的局域网宽：从放行的网卡进来的 VPN 设备同样放行。
+const privateIncludes = "Private addresses also cover\ndevices on VPNs such as Tailscale (100.64.0.0/10) through an interface let in."
+
 func (a *app) newPanelLANCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "lan",
 		Short: "Show whether devices on the LAN can open the panel; turn it on or off",
 		Long: "By default the panel is only reachable from this server (through an SSH tunnel). With LAN\n" +
-			"access on, mihomo's API listens on all addresses, and an nftables table drops\n" +
-			"connections to it from addresses that are not private (" + privateRanges() + "),\n" +
-			"so phones and tablets at home can open it.\n" +
-			"The API secret still protects it, but travels unencrypted over the LAN.",
+			"access on, mihomo's API listens on all addresses, and the nftables table inet " + netfilter.AccessTable + "\n" +
+			"only lets in connections through the chosen interfaces from private addresses\n" +
+			"(" + privateRanges() + "), so phones and tablets at home can\n" +
+			"open it. " + privateIncludes + "\n" +
+			"By default the interfaces without a public address are let in; choose them with tunlr panel\n" +
+			"lan on --interface (shared with the proxy port). The API secret still protects the panel,\n" +
+			"but travels unencrypted over the LAN.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := a.installer().Status(cmd.Context())
 			if err != nil {
 				return err
 			}
-			result := map[string]bool{"on": s.PanelLAN}
-			return a.render(result, func() error {
+			v := struct {
+				On     bool             `json:"on"`
+				Access *setup.LANAccess `json:"access,omitempty"`
+			}{s.PanelLAN, s.LANAccess}
+			return a.render(v, func() error {
 				fmt.Fprintf(a.stdout, "Panel LAN access: %s\n", a.describePanelLAN(s.PanelLAN))
 				if s.PanelLAN {
+					a.printAccess(*s.LANAccess, "panel")
 					fmt.Fprintln(a.stdout, "(tunlr panel shows the links; tunlr panel lan off turns it off)")
 				} else {
 					fmt.Fprintln(a.stdout, "(tunlr panel lan on lets devices on the LAN open it)")
@@ -195,27 +216,31 @@ func (a *app) newPanelLANCommand() *cobra.Command {
 }
 
 func (a *app) newPanelLANOnCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "on",
 		Short: "Let devices on the LAN open the panel (mihomo restarts)",
-		Long: "Load the nftables table that only lets private addresses reach the API port, then publish\n" +
-			"the configuration with external-controller: " + pipeline.LANController + " (shown as a diff first);\n" +
-			"mihomo restarts. If this server has a public address, you are asked twice.\n" +
-			"Running it again restores a missing nftables table.",
+		Long: "Choose the interfaces to let in (interactively, or with --interface), load the nftables table\n" +
+			"that only lets private addresses in through them, then publish the configuration with\n" +
+			"external-controller: " + pipeline.LANController + " (shown as a diff first); mihomo restarts. If an\n" +
+			"interface let in has a public address, you are asked twice. Running it again changes the\n" +
+			"interfaces (shared with the proxy port) and restores a missing nftables table.",
 		Args: usageArgs(cobra.NoArgs),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := a.requireConfirmation("panel lan on"); err != nil {
-				return err
-			}
-			return a.panelLANOn(cmd.Context())
-		},
 	}
+	flags := addLANAccessFlags(cmd)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if err := a.requireConfirmation("panel lan on"); err != nil {
+			return err
+		}
+		return a.panelLANOn(cmd.Context(), flags.choice())
+	}
+	return cmd
 }
 
-// panelLANOn 是 panel lan on 的流程：前置检查、预览、确认、发布。init 选择让局域网设备打开面板时也走它。
-func (a *app) panelLANOn(ctx context.Context) error {
+// panelLANOn 是 panel lan on 的流程：前置检查、选择放行的入口、预览、确认、发布；已经开启时只更新放行的
+// 入口。init 选择让局域网设备打开面板、还原备份时也走它。
+func (a *app) panelLANOn(ctx context.Context, choice lanChoice) error {
 	inst := a.installer()
-	pre, err := inst.PanelLANPreflight(ctx)
+	pre, err := inst.PanelLANPreflight(ctx, os.Getenv("SSH_CONNECTION"))
 	if err != nil {
 		return err
 	}
@@ -224,16 +249,26 @@ func (a *app) panelLANOn(ctx context.Context) error {
 		return err
 	}
 	v := panelLANView{Plan: newPlanView(plan, false), Preflight: pre}
+	if v.Access, err = a.chooseLANAccess(ctx, pre.Interfaces, pre.Access, choice); v.Access == nil {
+		return err
+	}
 	if pre.On && !plan.Changed() {
-		// 配置已经是开启的样子：只补上可能缺少的表，不需要确认。
-		if !a.opts.DryRun {
-			if v.Result, err = inst.PanelLANOn(ctx, plan); err != nil {
-				return err
-			}
-		}
-		return a.render(v, func() error {
-			_, err := fmt.Fprintln(a.stdout, "LAN access to the panel is already on (tunlr panel shows the links).")
+		// 配置已经是开启的样子：只更新放行的入口，补上可能缺少的表。
+		changed, err := a.updateLANAccess(ctx, pre.Interfaces, pre.Access, v.Access, "the panel", "Interfaces not changed.")
+		if err != nil || a.aborted {
 			return err
+		}
+		v.Applied = changed && !a.opts.DryRun
+		return a.render(v, func() error {
+			fmt.Fprintln(a.stdout, "LAN access to the panel is already on.")
+			if !v.Applied {
+				a.printAccessUpdate(changed, pre.Access, v.Access, "panel")
+				fmt.Fprintln(a.stdout, "(tunlr panel shows the links)")
+			} else if p, err := a.panel(ctx); err == nil {
+				fmt.Fprintf(a.stdout, "%s\n", a.style.good("Interfaces updated."))
+				a.printPanelLAN(p)
+			}
+			return nil
 		})
 	}
 	if !a.opts.JSON {
@@ -252,25 +287,20 @@ func (a *app) panelLANOn(ctx context.Context) error {
 		return err
 	}
 	if !a.opts.JSON {
-		fmt.Fprintf(a.stdout, "\nDevices with a private address can open the panel at port %d; others are dropped by the\n"+
-			"nftables table inet %s. The API secret travels unencrypted over the LAN.\n", pipeline.APIPort, netfilter.PanelTable)
+		fmt.Fprintf(a.stdout, "\nDevices with a private address can open the panel at port %d, through: %s.\n"+
+			"Other connections are dropped by the nftables table inet %s. %s\n"+
+			"The API secret travels unencrypted over the LAN.\n",
+			pipeline.APIPort, a.describeAccess(pre.Access.With(v.Access)), netfilter.AccessTable, privateIncludes)
 	}
-	if len(pre.PublicAddresses) > 0 {
-		if !a.opts.JSON {
-			fmt.Fprintf(a.stdout, "\n%s %s has the public address %s: this server is probably reachable from the\n"+
-				"internet. Only private addresses can reach the panel, but if the server is not on a LAN you\n"+
-				"use, an SSH tunnel (tunlr panel) is the safer way.\n",
-				a.style.warn("Warning:"), pre.Interface, strings.Join(pre.PublicAddresses, ", "))
-		}
-		if ok, err := a.ask(ctx, "This server has a public address. Open the panel to the LAN anyway?", "", "LAN access not turned on."); !ok {
-			return err
-		}
+	declined := "LAN access not turned on."
+	if ok, err := a.confirmPublic(ctx, newlyPublic(pre.Interfaces, pre.Access, pre.On, v.Access), "the panel", declined); !ok {
+		return err
 	}
-	if ok, err := a.ask(ctx, "Let devices on the LAN open the panel?", "mihomo restarts", "LAN access not turned on."); !ok {
+	if ok, err := a.ask(ctx, "Let devices on the LAN open the panel?", "mihomo restarts", declined); !ok {
 		return err
 	}
 	err = a.spin("Publishing the configuration", func() (err error) {
-		v.Result, err = inst.PanelLANOn(ctx, plan)
+		v.Result, err = inst.PanelLANOn(ctx, plan, v.Access)
 		return err
 	})
 	if errors.Is(err, core.ErrRolledBack) {

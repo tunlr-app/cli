@@ -195,8 +195,9 @@ func (i *Installer) installChecks(ctx context.Context, h *doctor.Host, quick boo
 	i.checkTun(ctx, c, st, running != "")
 	i.checkGateway(ctx, c, st)
 	i.checkExposure(c)
-	i.checkPanelLAN(ctx, c, st)
+	i.checkPanelLAN(c, st)
 	i.checkProxyLAN(c, st)
+	i.checkLANAccess(ctx, c, st)
 	i.checkPorts(ctx, h, c, running != "")
 	subs, err := i.subscriptions().List()
 	i.checkSubscriptions(c, subs, err)
@@ -317,15 +318,15 @@ func (i *Installer) checkMixins(ctx context.Context, c *doctor.Checker) {
 	}
 }
 
-// checkTimers 检查 timer 和 path unit 是否与 TUN 开关一致（见 SyncTimers），以及有没有遗留的回滚定时器。
+// checkTimers 检查 timer、path unit 和 tunlr-firewall.service 是否按状态启用（见 SyncTimers），以及有没有
+// 遗留的回滚定时器。
 func (i *Installer) checkTimers(ctx context.Context, c *doctor.Checker, st *state.State) {
 	sd := i.systemd()
-	tun := st != nil && st.TunEnabled()
 	var wrong []string
 	for _, t := range []struct {
 		name string
 		want bool
-	}{{service.UpdateTimer, true}, {service.AftercarePath, true}, {service.CheckTimer, tun}} {
+	}{{service.UpdateTimer, true}, {service.AftercarePath, true}, {service.FirewallUnit, true}, {service.CheckTimer, checkWanted(st)}} {
 		if got := sd.TimerEnabled(ctx, t.name); got != t.want {
 			wrong = append(wrong, fmt.Sprintf("%s is %s", t.name, map[bool]string{true: "enabled", false: "disabled"}[got]))
 		}
@@ -428,18 +429,8 @@ func (i *Installer) checkExposure(c *doctor.Checker) {
 }
 
 // checkPanelLAN 在面板对局域网开放时检查 nft 表是否在、生效的配置是否按开关监听；开关关闭时不出现。
-func (i *Installer) checkPanelLAN(ctx context.Context, c *doctor.Checker, st *state.State) {
+func (i *Installer) checkPanelLAN(c *doctor.Checker, st *state.State) {
 	if st == nil || st.PanelLAN == nil {
-		return
-	}
-	tables, err := i.rules().Tables(ctx)
-	switch {
-	case err != nil:
-		c.Add("panel", doctor.Fail, "Panel LAN access", err.Error(), "")
-		return
-	case !tables[netfilter.PanelTable]:
-		c.Add("panel", doctor.Fail, "Panel LAN access", "the nftables table inet "+netfilter.PanelTable+
-			" is missing, so the panel accepts connections from any address", "tunlr panel lan on restores it")
 		return
 	}
 	cfg, err := i.pipeline(nil).Current()
@@ -451,7 +442,64 @@ func (i *Installer) checkPanelLAN(ctx context.Context, c *doctor.Checker, st *st
 			strconv.Quote(api.Controller)+" (edited outside tunlr?)", "tunlr config apply")
 		return
 	}
-	c.Add("panel", doctor.OK, "Panel LAN access", "on; port "+strconv.Itoa(pipeline.APIPort)+" only accepts private addresses", "")
+	c.Add("panel", doctor.OK, "Panel LAN access", "on; port "+strconv.Itoa(pipeline.APIPort)+" listens on all addresses (see LAN access rules)", "")
+}
+
+// checkLANAccess 在代理端口或面板对其他设备开放时检查 inet tunlr_access：表在、端口与生效的配置一致（只能看
+// 表在不在，内容由 _check 每次按状态重新加载），放行的网卡存在、没有公网地址；开关都关闭时不出现。
+func (i *Installer) checkLANAccess(ctx context.Context, c *doctor.Checker, st *state.State) {
+	want := i.accessRules(st, nil)
+	if len(want.Ports) == 0 {
+		return
+	}
+	const key, title = "lan-access", "LAN access rules"
+	tables, err := i.rules().Tables(ctx)
+	switch {
+	case err != nil:
+		c.Add(key, doctor.Fail, title, err.Error(), "")
+		return
+	case !tables[netfilter.AccessTable]:
+		c.Add(key, doctor.Fail, title, "the nftables table inet "+netfilter.AccessTable+" is missing, so the ports open to other "+
+			"devices accept them through any interface (the panel from any address)", "systemctl start "+service.CheckUnit)
+		return
+	}
+	var fails, warns []string
+	if len(want.Interfaces) == 0 && !want.Containers {
+		fails = append(fails, "no interface is let in, so only this server can reach them")
+	}
+	for _, name := range want.Interfaces {
+		ifi, err := i.lookupInterface(name)
+		if err != nil {
+			warns = append(warns, "the interface "+name+" does not exist")
+			continue
+		}
+		for _, a := range ifi.IPv4 {
+			if !privateAddress(a) {
+				warns = append(warns, name+" has the public address "+a)
+			}
+		}
+	}
+	ports := make([]string, len(want.Ports))
+	for k, p := range want.Ports {
+		ports[k] = strconv.Itoa(p)
+	}
+	through := strings.Join(want.Interfaces, ", ")
+	if want.Containers {
+		through = strings.TrimPrefix(through+", containers", ", ")
+	}
+	// 入口两个开关共用，提示开着的那个的命令。
+	fix := "tunlr panel lan on --interface …"
+	if st.ProxyLAN != nil {
+		fix = "tunlr proxy lan on --interface …"
+	}
+	switch {
+	case len(fails) > 0:
+		c.Add(key, doctor.Fail, title, strings.Join(append(fails, warns...), "; "), fix)
+	case len(warns) > 0:
+		c.Add(key, doctor.Warn, title, strings.Join(warns, "; "), fix)
+	default:
+		c.Add(key, doctor.OK, title, "ports "+strings.Join(ports, ", ")+" accept private addresses through "+through, "")
+	}
 }
 
 // checkProxyLAN 在代理端口对局域网开放时检查生效的配置是否与开关一致；开关关闭时不出现（对外开放的配置由

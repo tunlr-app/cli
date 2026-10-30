@@ -171,8 +171,9 @@ func periodOf(d time.Duration) string {
 }
 
 // SyncTimers 按状态启用或停用 timer 和 path unit：tunlr-update.timer 总是启用（随时可能添加订阅，没有到期的
-// 更新时它什么都不做）；tunlr-aftercare.path 总是启用，面板随时可以升级内核；透明代理开启（含正在检测）时
-// 启用 tunlr-check.timer，它检查的都是透明代理的事。还没有安装 unit 时什么都不做。
+// 更新时它什么都不做）；tunlr-aftercare.path 总是启用，面板随时可以升级内核；tunlr-firewall.service 总是
+// 启用，随 nftables.service 重新加载工具的表（没有要加载的时什么都不做）；透明代理、网关或局域网访问开着时
+// 启用 tunlr-check.timer（见 checkWanted）。还没有安装 unit 时什么都不做。
 func (i *Installer) SyncTimers(ctx context.Context) error {
 	sd := i.systemd()
 	if !sd.Installed() {
@@ -184,7 +185,8 @@ func (i *Installer) SyncTimers(ctx context.Context) error {
 	}
 	return errors.Join(sd.SetTimer(ctx, service.UpdateTimer, true),
 		sd.SetTimer(ctx, service.AftercarePath, true),
-		sd.SetTimer(ctx, service.CheckTimer, st != nil && st.TunEnabled()))
+		sd.SetTimer(ctx, service.FirewallUnit, true),
+		sd.SetTimer(ctx, service.CheckTimer, checkWanted(st)))
 }
 
 // UpdateOptions 是 Update 的参数。

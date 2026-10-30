@@ -210,7 +210,7 @@ func (p *Pipeline) PlanTun(ctx context.Context, on bool) (*Plan, error) {
 const APIPort = 9090
 
 // LANController 是面板的局域网访问开启时 external-controller 的值：监听所有 IPv4 地址，
-// 来源由 nft 表 inet tunlr_panel 限制为私有地址段。
+// 由 nft 表 inet tunlr_access 只放行从选定网卡进来、来自私有地址段的连接。
 var LANController = fmt.Sprintf("0.0.0.0:%d", APIPort)
 
 // PlanPanelLAN 同 Plan，但按面板局域网访问开关为 on 时的样子合成，不看状态文件中的开关。调用方在发布前

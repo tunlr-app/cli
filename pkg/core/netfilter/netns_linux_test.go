@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,27 @@ func TestNetns(t *testing.T) {
 	}
 	if out, _ := inNS(ctx, nil, "iptables", "-S", DockerChain); string(out) != "-N DOCKER-USER\n-A DOCKER-USER -j RETURN\n" {
 		t.Errorf("DOCKER-USER after down:\n%s", out)
+	}
+
+	// 访问限制：重复加载幂等，通配的容器网桥规则和 fib、th 表达式能被 nft 接受；没有端口时删表。
+	access := Access{Ports: []int{7890, 9090}, Interfaces: []string{"lo"}, Containers: true}
+	for range 2 {
+		if err := r.AccessUp(ctx, access); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if tables, _ := r.Tables(ctx); !tables[AccessTable] {
+		t.Fatalf("access table not loaded: %v", tables)
+	}
+	if out, err := inNS(ctx, nil, "nft", "list", "table", "inet", AccessTable); err != nil ||
+		!strings.Contains(string(out), `iifname "br-*"`) || !strings.Contains(string(out), "th dport @ports") {
+		t.Errorf("access table: %v\n%s", err, out)
+	}
+	if err := r.AccessUp(ctx, Access{}); err != nil {
+		t.Fatal(err)
+	}
+	if tables, _ := r.Tables(ctx); tables[AccessTable] {
+		t.Errorf("access table left after down: %v", tables)
 	}
 
 	left, err := r.Down(ctx)

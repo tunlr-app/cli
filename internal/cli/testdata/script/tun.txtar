@@ -29,5 +29,5 @@ stdout '^TUN: +off$'
 
 # 内部命令不出现在帮助中
 exec tunlr --help
-! stdout '_prestart|_poststop|_check|_tun-guard'
+! stdout '_prestart|_poststop|_check|_tun-guard|_firewall'
 stdout 'tun +Show the transparent proxy'

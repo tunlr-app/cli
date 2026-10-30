@@ -36,10 +36,12 @@ const (
 	// AftercareUnit 由 AftercarePath 在 bin/mihomo 变化时触发，核对换过的内核（面板升级的善后）。
 	AftercareUnit = "tunlr-aftercare.service"
 	AftercarePath = "tunlr-aftercare.path"
+	// FirewallUnit 随 nftables.service 启动、重启和重新加载，重新加载工具的表（它会清空所有表）。
+	FirewallUnit = "tunlr-firewall.service"
 )
 
 // Units 是工具生成的全部 unit。
-var Units = []string{CoreUnit, RescueUnit, UpdateUnit, UpdateTimer, CheckUnit, CheckTimer, AftercareUnit, AftercarePath}
+var Units = []string{CoreUnit, RescueUnit, UpdateUnit, UpdateTimer, CheckUnit, CheckTimer, AftercareUnit, AftercarePath, FirewallUnit}
 
 // GuardUnit 是开启透明代理时布置的回滚定时器：systemd-run 建立的临时 unit（.timer 与 .service），
 // 不写入磁盘，重启后消失（届时由 _prestart 处理过期的开关）。
@@ -194,7 +196,7 @@ func (s *Systemd) TimerEnabled(ctx context.Context, timer string) bool {
 func (s *Systemd) Uninstall(ctx context.Context) error {
 	var errs []error
 	s.DisarmGuard(ctx)
-	if _, err := s.systemctl(ctx, "disable", "--now", UpdateTimer, CheckTimer, AftercarePath, CoreUnit); err != nil && s.Installed() {
+	if _, err := s.systemctl(ctx, "disable", "--now", UpdateTimer, CheckTimer, AftercarePath, FirewallUnit, CoreUnit); err != nil && s.Installed() {
 		errs = append(errs, err)
 	}
 	for _, name := range Units {
@@ -205,7 +207,7 @@ func (s *Systemd) Uninstall(ctx context.Context) error {
 	if _, err := s.systemctl(ctx, "daemon-reload"); err != nil {
 		errs = append(errs, err)
 	}
-	if _, err := s.systemctl(ctx, "reset-failed", CoreUnit, RescueUnit, UpdateUnit, CheckUnit, AftercareUnit); err != nil {
+	if _, err := s.systemctl(ctx, "reset-failed", CoreUnit, RescueUnit, UpdateUnit, CheckUnit, AftercareUnit, FirewallUnit); err != nil {
 		// unit 已经删除且没有 failed 状态时 systemctl 报告找不到，不算失败。
 		_ = err
 	}

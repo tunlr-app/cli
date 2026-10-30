@@ -20,10 +20,10 @@ var Nft []byte
 //go:embed nft/gateway.nft
 var GatewayNft []byte
 
-// PanelNft 是面板对局域网开放时的 nftables 规则（text/template），由 nft -f 加载。
+// AccessNft 是代理端口、面板对其他设备开放时的 nftables 规则（text/template），由 nft -f 加载。
 //
-//go:embed nft/panel.nft
-var PanelNft []byte
+//go:embed nft/access.nft
+var AccessNft []byte
 
 // DevicesNft 是记录局域网设备的 nftables 表（text/template），由 nft -f 加载。
 //

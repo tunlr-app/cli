@@ -213,6 +213,61 @@ func TestDoctorInstalled(t *testing.T) {
 	}
 }
 
+// TestDoctorLANAccess 验证代理端口或面板对其他设备开放时对 inet tunlr_access 的检查。
+func TestDoctorLANAccess(t *testing.T) {
+	ctx := context.Background()
+	i, h := newDoctorInstaller(t)
+	i.Interfaces = func(name string) (*netfilter.Interface, error) {
+		switch name {
+		case "ens3":
+			return &netfilter.Interface{Name: name, Up: true, IPv4: []string{"192.168.1.20"}}, nil
+		case "eth1":
+			return &netfilter.Interface{Name: name, Up: true, IPv4: []string{"203.0.113.5"}}, nil
+		}
+		return nil, fs.ErrNotExist
+	}
+	check := func() doctor.Check {
+		t.Helper()
+		var c doctor.Checker
+		st, err := state.Load(i.Layout.StateFile())
+		if err != nil {
+			t.Fatal(err)
+		}
+		i.checkLANAccess(ctx, &c, st)
+		return checkMap(&doctor.Report{Checks: c.List})[".lan-access"]
+	}
+	st, _, err := state.LoadOrNew(i.Layout.StateFile(), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.PanelLAN = &state.PanelLAN{Since: testNow}
+	st.LANAccess = &state.LANAccess{Interfaces: []string{"ens3"}}
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	if c := check(); c.Status != doctor.Fail || !strings.Contains(c.Message, "is missing") {
+		t.Errorf("missing table: %+v", c)
+	}
+	h.tables = []string{netfilter.AccessTable}
+	if c := check(); c.Status != doctor.OK || !strings.Contains(c.Message, "ens3") {
+		t.Errorf("in place: %+v", c)
+	}
+	st.LANAccess.Interfaces = []string{"ens3", "eth1", "gone0"}
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	if c := check(); c.Status != doctor.Warn || !strings.Contains(c.Message, "eth1 has the public address") || !strings.Contains(c.Message, "gone0 does not exist") {
+		t.Errorf("public and gone: %+v", c)
+	}
+	st.LANAccess.Interfaces = nil
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	if c := check(); c.Status != doctor.Fail || !strings.Contains(c.Message, "no interface") || c.Hint != "tunlr panel lan on --interface …" {
+		t.Errorf("nothing let in: %+v", c)
+	}
+}
+
 func TestDoctorSubscriptions(t *testing.T) {
 	i, _ := newDoctorInstaller(t)
 	day := 24 * time.Hour

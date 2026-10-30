@@ -228,10 +228,8 @@ func (i *Installer) TunOff(ctx context.Context, plan *pipeline.Plan) (*TunResult
 		return nil, errors.Join(err, state.Save(i.Layout.StateFile(), st))
 	}
 	i.systemd().DisarmGuard(ctx)
-	if err := i.systemd().SetTimer(ctx, service.CheckTimer, false); err != nil {
-		// TUN 已经关闭；停用失败时 _check 下次执行时会停用自己。
-		i.log().Warn("stop "+service.CheckTimer, "err", err)
-	}
+	// 局域网访问开着时 tunlr-check.timer 照样要在。
+	i.syncCheckTimer(ctx, st)
 	res := &TunResult{}
 	if applied != nil {
 		res.Revision = applied.Revision
@@ -305,8 +303,9 @@ func (i *Installer) tunGuard(ctx context.Context, wait bool) error {
 }
 
 // PreStart 是内核服务启动前（ExecStartPre，以 root）执行的 _prestart：开关仍为 pending 且已过期限时
-// 先关闭 TUN（重启机器会丢掉回滚定时器），再加载工具的规则；网关开启、面板对局域网开放时重新加载
-// 它们的规则（nft 规则不跨重启保存），面板的表在内核开始监听之前就位。不等待文件锁：tunlr core start 等命令持锁调用 systemctl start 时会死锁。
+// 先关闭 TUN（重启机器会丢掉回滚定时器），再加载工具的规则；网关开启、代理端口或面板对其他设备开放时重新
+// 加载它们的规则（nft 规则不跨重启保存），访问限制在内核开始监听之前就位。不等待文件锁：tunlr core start
+// 等命令持锁调用 systemctl start 时会死锁。
 func (i *Installer) PreStart(ctx context.Context) error {
 	st, err := state.Load(i.Layout.StateFile())
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -325,10 +324,10 @@ func (i *Installer) PreStart(ctx context.Context) error {
 	} else if len(actions) > 0 {
 		i.log().Info("gateway: " + strings.Join(actions, "; "))
 	}
-	if action, err := i.repairPanel(ctx, st); err != nil {
+	if action, err := i.repairAccess(ctx, st); err != nil {
 		errs = append(errs, err)
 	} else if action != "" {
-		i.log().Info("panel: " + action)
+		i.log().Info("LAN access: " + action)
 	}
 	// 记录设备的表：同时按生效配置更新代理端口（mixin 可能改了 mixed-port）。失败不阻止内核启动。
 	if err := i.syncDevices(ctx, st); err != nil {
@@ -353,13 +352,14 @@ type CheckResult struct {
 	Actions []string `json:"actions,omitempty"`
 }
 
-// Check 是 tunlr-check.timer 每 5 分钟执行的 _check：内核在运行而工具的表不见了时重新加载；内核开着
-// TUN 而它的表不见了（例如重新加载 nftables.service 时 flush ruleset）时重启内核，由内核重建；开关为
-// pending 且已过期限一分钟以上（回滚定时器没有生效）时关闭 TUN；网关开启时补上缺少的转发设置和规则
-// （例如 Docker 晚于内核启动、重建了 DOCKER-USER 链）。
+// Check 是 tunlr-check.timer 每 5 分钟执行的 _check：补上被清空的规则（例如手动 nft flush ruleset；
+// 重新加载 nftables.service 时由 _firewall 立即补上）：网关的转发设置和规则（也包括 Docker 晚于内核启动、
+// 重建了 DOCKER-USER 链）、代理端口和面板的访问限制、记录设备的表，内核在运行时工具的 inet tunlr；
+// 内核开着 TUN 而它的表不见了时重启内核，由内核重建。开关为 pending 且已过期限一分钟以上（回滚定时器
+// 没有生效）时关闭 TUN。
 //
-// 这些都是透明代理的事：tunlr-check.timer 随开关启停（tun on 启用，tun off 停用）。开关已经关闭时
-// （如回滚定时器或 _prestart 关闭了 TUN）停用自己。面板临时打开的 TUN 不在保护范围内。
+// tunlr-check.timer 在透明代理、网关或局域网访问开着时启用（见 checkWanted），都关闭后（如回滚定时器
+// 或 _prestart 关闭了 TUN）停用自己。面板临时打开的 TUN 不在保护范围内。
 func (i *Installer) Check(ctx context.Context) (*CheckResult, error) {
 	res := &CheckResult{}
 	st, err := state.Load(i.Layout.StateFile())
@@ -371,31 +371,32 @@ func (i *Installer) Check(ctx context.Context) (*CheckResult, error) {
 			return res, err
 		}
 		res.Actions = append(res.Actions, "turned off the TUN that was never confirmed")
-		st.SetTun("", time.Time{})
+		if st, err = state.Load(i.Layout.StateFile()); err != nil {
+			return res, err
+		}
 	}
-	// 面板的表与透明代理无关，但 _check 只随透明代理运行，顺便补上。
-	if action, err := i.repairPanel(ctx, st); err != nil {
-		return res, fmt.Errorf("repairing the panel rules: %w", err)
-	} else if action != "" {
-		res.Actions = append(res.Actions, action)
-	}
-	if action, err := i.repairDevices(ctx, st); err != nil {
-		return res, fmt.Errorf("repairing the table that records LAN devices: %w", err)
-	} else if action != "" {
-		res.Actions = append(res.Actions, action)
-	}
-	if st == nil || !st.TunEnabled() {
+	if !checkWanted(st) {
 		if err := i.systemd().SetTimer(ctx, service.CheckTimer, false); err != nil {
 			return res, err
 		}
-		res.Actions = append(res.Actions, "stopped "+service.CheckTimer+": the transparent proxy is off")
+		res.Actions = append(res.Actions, "stopped "+service.CheckTimer+": TUN, the gateway and LAN access are off")
 		return res, nil
 	}
-	// 网关的规则不论内核是否在运行都要在：内核不在时靠它让局域网设备断网，而不是直连。
-	actions, err := i.repairGateway(ctx, st)
+	actions, err := i.repairTables(ctx, st)
 	res.Actions = append(res.Actions, actions...)
 	if err != nil {
-		return res, fmt.Errorf("repairing the gateway: %w", err)
+		return res, err
+	}
+	// tunlr-firewall.service 随 nftables.service 停止后不随它启动（PartOf 只传播停止和重启），停着时收不到
+	// 之后的重新加载：这里拉起来。_check 不持锁，_firewall 取锁不会等它。
+	if status, err := i.systemd().Status(ctx, service.FirewallUnit); err == nil && !status.Active() {
+		if err := i.systemd().SetTimer(ctx, service.FirewallUnit, true); err != nil {
+			return res, fmt.Errorf("starting %s: %w", service.FirewallUnit, err)
+		}
+		res.Actions = append(res.Actions, "started "+service.FirewallUnit)
+	}
+	if !st.TunEnabled() {
+		return res, nil
 	}
 
 	status, err := i.systemd().Status(ctx, service.CoreUnit)
@@ -405,12 +406,6 @@ func (i *Installer) Check(ctx context.Context) (*CheckResult, error) {
 	tables, err := i.rules().Tables(ctx)
 	if err != nil {
 		return res, err
-	}
-	if !tables[netfilter.Table] {
-		if err := i.rules().Up(ctx); err != nil {
-			return res, err
-		}
-		res.Actions = append(res.Actions, "reloaded the nftables table inet "+netfilter.Table)
 	}
 	on, err := mihomo.NewClient(i.Layout.CoreSocket()).TunEnabled(ctx)
 	if err != nil || !on || tables[netfilter.KernelTable] {
