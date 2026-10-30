@@ -112,6 +112,20 @@ func (a *app) newInternalUpdateCommand() *cobra.Command {
 	}
 }
 
+// newInternalAftercareCommand 是 tunlr-aftercare.path 在 bin/mihomo 变化时触发的内部命令：核对换过的内核
+// （面板升级的善后），结果进入 journal。
+func (a *app) newInternalAftercareCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "_aftercare",
+		Hidden: true,
+		Args:   usageArgs(cobra.NoArgs),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := a.installer().Aftercare(cmd.Context())
+			return a.renderUpdate(&setup.UpdateResult{Tasks: []string{}, Steps: []setup.Step{s}}, err)
+		},
+	}
+}
+
 // renderUpdate 输出每一步的结果。err 是 Update 返回的错误：有步骤失败时结果已经说明了原因，
 // 不再重复输出错误，只让退出码为非零。
 func (a *app) renderUpdate(res *setup.UpdateResult, err error) error {

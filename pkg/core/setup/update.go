@@ -170,9 +170,9 @@ func periodOf(d time.Duration) string {
 	return fmt.Sprintf("%dh", h)
 }
 
-// SyncTimers 按状态启用或停用 timer：tunlr-update.timer 总是启用，即使没有订阅定时更新：面板随时可以
-// 升级内核，之后要核对（见 aftercare；没有要做的事时它什么都不输出）；透明代理开启（含正在检测）时启用 tunlr-check.timer，它检查的都是透明代理的事。还没有安装
-// unit 时什么都不做。
+// SyncTimers 按状态启用或停用 timer 和 path unit：tunlr-update.timer 总是启用（随时可能添加订阅，没有到期的
+// 更新时它什么都不做）；tunlr-aftercare.path 总是启用，面板随时可以升级内核；透明代理开启（含正在检测）时
+// 启用 tunlr-check.timer，它检查的都是透明代理的事。还没有安装 unit 时什么都不做。
 func (i *Installer) SyncTimers(ctx context.Context) error {
 	sd := i.systemd()
 	if !sd.Installed() {
@@ -183,6 +183,7 @@ func (i *Installer) SyncTimers(ctx context.Context) error {
 		return err
 	}
 	return errors.Join(sd.SetTimer(ctx, service.UpdateTimer, true),
+		sd.SetTimer(ctx, service.AftercarePath, true),
 		sd.SetTimer(ctx, service.CheckTimer, st != nil && st.TunEnabled()))
 }
 
@@ -208,9 +209,8 @@ func (r *UpdateResult) Failed() int {
 }
 
 // Update 执行更新（见 UpdateOptions.Tasks）：先逐个更新订阅（失败时保留上一次的内容），启用的订阅更新
-// 成功后按它和 mixin 发布（同 apply --yes）；再让内核更新 geo 数据（只在手动执行时）。最后做面板升级的
-// 善后：每次都做，只在发现面板换过内核时记入结果，没有到期的任务时不留下任何结果。一步失败时记录原因并
-// 继续后面的步骤。订阅的执行情况记在各自的抓取记录中。有任何一步失败时返回错误，结果中仍包含每一步的情况。
+// 成功后按它和 mixin 发布（同 apply --yes）；再让内核更新 geo 数据（只在手动执行时）。没有到期的任务时
+// 不留下任何结果。一步失败时记录原因并继续后面的步骤。订阅的执行情况记在各自的抓取记录中。有任何一步失败时返回错误，结果中仍包含每一步的情况。
 func (i *Installer) Update(ctx context.Context, opts UpdateOptions) (*UpdateResult, error) {
 	res := &UpdateResult{Tasks: []string{}, Steps: []Step{}}
 	for _, t := range opts.Tasks {
@@ -288,11 +288,6 @@ func (i *Installer) Update(ctx context.Context, opts UpdateOptions) (*UpdateResu
 	if geo {
 		add("geo", "Having mihomo update the geo data", func() (string, string) { return i.updateGeo(ctx) })
 	}
-	// 善后每次都做，只在发现面板换过内核或出错时记入结果：内核正常时与用户要执行的任务无关。
-	if status, msg, acted := i.aftercare(ctx, owner); acted {
-		push("kernel", status, msg)
-	}
-
 	if n := res.Failed(); n > 0 {
 		errs = append(errs, fmt.Errorf("%d of %d update steps failed", n, len(res.Steps)))
 	}
@@ -352,21 +347,25 @@ func (i *Installer) publish(ctx context.Context, owner *fsutil.Owner) (string, s
 	return StepOK, msg
 }
 
-// aftercare 是面板升级内核的善后；acted 报告是否发现面板换过内核（核对或换回了它）或出了错。
-func (i *Installer) aftercare(ctx context.Context, owner *fsutil.Owner) (status, msg string, acted bool) {
+// Aftercare 核对换过的内核（tunlr-aftercare.path 在 bin/mihomo 变化时触发的 _aftercare，见
+// mihomo.Manager.Aftercare），返回一步结果（名为 kernel）；失败时同时返回错误。
+func (i *Installer) Aftercare(ctx context.Context) (Step, error) {
+	owner, _ := service.KernelUser(i.Layout)
 	res, err := i.kernels(owner, mihomo.Arch{}).Aftercare(ctx)
-	if err != nil {
-		return StepFailed, err.Error(), true
+	s := Step{Name: "kernel", Status: StepOK}
+	switch {
+	case err != nil:
+		s.Status, s.Message = StepFailed, err.Error()
+	case res.Action == mihomo.AftercareNone:
+		s.Status, s.Message = StepSkipped, "mihomo is not installed or not running; it is checked when it starts"
+	case res.Action == mihomo.AftercareKnown:
+		s.Message = "bin/mihomo is a known-good version"
+	case res.Action == mihomo.AftercareVerified:
+		s.Message = fmt.Sprintf("verified %s (upgraded from the panel) against the official build", res.Version)
+	default:
+		s.Message = fmt.Sprintf("replaced the kernel with %s: %s", res.Version, res.Reason)
 	}
-	switch res.Action {
-	case mihomo.AftercareNone:
-		return StepSkipped, "mihomo is not installed or not running", false
-	case mihomo.AftercareKnown:
-		return StepOK, "the running kernel is a known-good version", false
-	case mihomo.AftercareVerified:
-		return StepOK, fmt.Sprintf("verified %s (upgraded from the panel) against the official build", res.Version), true
-	}
-	return StepOK, fmt.Sprintf("replaced the kernel with %s: %s", res.Version, res.Reason), true
+	return s, err
 }
 
 // updateGeo 让内核按生效的配置中的 geox-url 立即更新 geo 数据，内核自己加载，无需重启。tunlr 不校验内核

@@ -317,21 +317,15 @@ func (i *Installer) checkMixins(ctx context.Context, c *doctor.Checker) {
 	}
 }
 
-// checkTimers 检查两个 timer 是否与设置和 TUN 开关一致，以及有没有遗留的回滚定时器。
+// checkTimers 检查 timer 和 path unit 是否与 TUN 开关一致（见 SyncTimers），以及有没有遗留的回滚定时器。
 func (i *Installer) checkTimers(ctx context.Context, c *doctor.Checker, st *state.State) {
-	scheds, err := i.Schedules()
-	if err != nil {
-		c.Add("timers", doctor.Fail, "Timers", err.Error(), "")
-		return
-	}
 	sd := i.systemd()
-	wantUpdate := slices.ContainsFunc(scheds, func(s Schedule) bool { return !s.Next.IsZero() })
 	tun := st != nil && st.TunEnabled()
 	var wrong []string
 	for _, t := range []struct {
 		name string
 		want bool
-	}{{service.UpdateTimer, wantUpdate}, {service.CheckTimer, tun}} {
+	}{{service.UpdateTimer, true}, {service.AftercarePath, true}, {service.CheckTimer, tun}} {
 		if got := sd.TimerEnabled(ctx, t.name); got != t.want {
 			wrong = append(wrong, fmt.Sprintf("%s is %s", t.name, map[bool]string{true: "enabled", false: "disabled"}[got]))
 		}

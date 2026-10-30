@@ -220,6 +220,7 @@ func (a *app) newRootCommand() *cobra.Command {
 	root.AddCommand(
 		a.newRescueCommand(),
 		a.newInternalUpdateCommand(),
+		a.newInternalAftercareCommand(),
 		a.newPreStartCommand(),
 		a.newPostStopCommand(),
 		a.newTunGuardCommand(),

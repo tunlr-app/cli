@@ -256,8 +256,8 @@ func (i *Installer) InitSteps(ctx context.Context, opts InitOptions) ([]string, 
 		steps = append(steps, "Install mihomo "+v+", verified against the official sha256")
 	}
 	sd := i.systemd()
-	steps = append(steps, fmt.Sprintf("Install and enable %s and %s (subscriptions %s unless set otherwise)",
-		service.CoreUnit, service.UpdateTimer, settings.DescribePeriod(subscription.DefaultUpdate)))
+	steps = append(steps, fmt.Sprintf("Install and enable %s, %s (subscriptions %s unless set otherwise) and %s (checks mihomo after the panel upgrades it)",
+		service.CoreUnit, service.UpdateTimer, settings.DescribePeriod(subscription.DefaultUpdate), service.AftercarePath))
 
 	list, err := subscription.LoadList(i.Layout.SubscriptionList())
 	if err != nil {

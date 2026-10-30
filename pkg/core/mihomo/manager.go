@@ -34,6 +34,11 @@ const (
 	lockWait = 30 * time.Second
 	// rescueLockWait 是救援等待锁的时间：拿不到锁说明升级等操作正在进行并会自己回滚，救援不与它争抢。
 	rescueLockWait = time.Second
+	// aftercareLockWait 是善后等待 tunlr 自己换内核（升级、换回、救援，含重启和健康检查）完成的时间。
+	aftercareLockWait = 5 * time.Minute
+	// aftercareWait 是善后等待运行中的内核换成 bin/mihomo 并响应 API 的时间：面板升级时内核先替换文件，
+	// 再在原进程中重新执行自己。
+	aftercareWait = time.Minute
 )
 
 var (
@@ -75,6 +80,8 @@ type Manager struct {
 	Now func() time.Time
 	// Log 为空时不记录日志。
 	Log *slog.Logger
+	// RunsBinary 报告进程 pid 执行的是不是 bin/mihomo，为空时比较 /proc/<pid>/exe。
+	RunsBinary func(pid int) (bool, error)
 }
 
 // Health 是一次通过的健康检查。
@@ -413,10 +420,17 @@ type AftercareResult struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// Aftercare 核对面板升级后的内核：bin/mihomo 不是已知可用版本时，查询运行中的版本，下载该版本的
+// Aftercare 核对换过的内核（tunlr-aftercare.path 在 bin/mihomo 变化时触发，多半是面板升级了内核）：先等
+// tunlr 自己的操作释放锁；bin/mihomo 不是已知可用版本时，等运行中的内核换成它，查询其版本，下载该版本的
 // 官方资产比较。一致则记为已知可用；不一致则换成校验过的二进制，下载不到时换回最近的已知可用版本，
-// 并重启做健康检查。
+// 并重启做健康检查。内核没有运行时交给救援（起不来时由 systemd 触发）和下次启动。
 func (m *Manager) Aftercare(ctx context.Context) (*AftercareResult, error) {
+	// tunlr 自己换内核时也会触发；等它完成（记为已知可用）再看，不与它争抢。
+	l, err := m.lock(ctx, aftercareLockWait)
+	if err != nil {
+		return nil, err
+	}
+	l.Release()
 	cur, err := m.currentSum()
 	if err != nil || cur == "" {
 		return &AftercareResult{Action: AftercareNone}, err
@@ -428,9 +442,8 @@ func (m *Manager) Aftercare(ctx context.Context) (*AftercareResult, error) {
 	if st.FindKernel(cur) != nil {
 		return &AftercareResult{Action: AftercareKnown}, nil
 	}
-	version, err := NewClient(m.Layout.CoreSocket()).Version(ctx)
+	version, err := m.runningVersion(ctx)
 	if errors.Is(err, ErrNotRunning) {
-		// 没有运行的内核交给救援：起不来时由 systemd 触发。
 		return &AftercareResult{Action: AftercareNone}, nil
 	}
 	if err != nil {
@@ -469,6 +482,59 @@ func (m *Manager) Aftercare(ctx context.Context) (*AftercareResult, error) {
 	}
 	res.Version = up.To
 	return res, nil
+}
+
+// runningVersion 等运行中的内核执行的是 bin/mihomo 并响应 API，返回它的版本：面板升级时内核先替换文件、
+// 再在原进程中重新执行自己，这之前查到的是旧版本。服务没有运行时返回 ErrNotRunning，等不到时报错。
+func (m *Manager) runningVersion(ctx context.Context) (string, error) {
+	deadline := time.Now().Add(aftercareWait)
+	for {
+		st, err := m.Service.Status(ctx, service.CoreUnit)
+		if err != nil {
+			return "", err
+		}
+		if !st.Active() && st.ActiveState != "activating" && st.ActiveState != "reloading" {
+			return "", ErrNotRunning
+		}
+		if st.MainPID > 0 {
+			runs, err := m.runsBinary(st.MainPID)
+			if err != nil {
+				return "", err
+			}
+			if runs {
+				if v, err := NewClient(m.Layout.CoreSocket()).Version(ctx); err == nil {
+					return v, nil
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("the running mihomo did not switch to the new bin/mihomo within %s", aftercareWait)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// runsBinary 报告进程 pid 执行的是不是 bin/mihomo（同一个文件）。
+func (m *Manager) runsBinary(pid int) (bool, error) {
+	if m.RunsBinary != nil {
+		return m.RunsBinary(pid)
+	}
+	exe, err := os.Stat(fmt.Sprintf("/proc/%d/exe", pid))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	bin, err := os.Stat(m.Layout.CoreBinary())
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(exe, bin), nil
 }
 
 // fetchOfficial 下载 version 对应本机平台的官方资产。

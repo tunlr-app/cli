@@ -3,8 +3,8 @@
 # 用 tunlr settings edit 编辑会在保存时检查；改动涉及配置时（GitHub 镜像）随即给出 diff，确认后发布。直接改文件的，用 tunlr config plan 预览、tunlr config apply 发布。
 # tunlr settings 列出各项当前的值。
 
-# GitHub 下载镜像的前缀：tunlr 下载内核和面板时经过它，仍按官方 sha256 校验。不设置时直连 GitHub。
-# 配置中 https://github.com/ 开头的 geo 数据和面板的下载地址随之改为经镜像（内核自己下载），发布后生效。
+# GitHub 下载镜像的前缀：tunlr 下载内核时经过它，仍按官方 sha256 校验。不设置时直连 GitHub。
+# 配置中 https://github.com/ 开头的 geo 数据和面板的下载地址随之改为经镜像（内核自己下载，不校验），发布后生效。
 # github-mirror: https://gh-proxy.com/
 
 # 抓取订阅时默认的 User-Agent，机场按它决定返回的格式。单个订阅可以在添加时另设：

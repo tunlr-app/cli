@@ -1,12 +1,8 @@
 package pipeline
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -871,73 +867,6 @@ func TestMirrorRules(t *testing.T) {
 			t.Errorf("mirrorRules(%q) = %q, want %q", mirror, got, want)
 		}
 	}
-}
-
-// TestApplyInstallsUI 验证发布时下载并校验面板，已有面板时不再下载；下载失败不影响发布。
-func TestApplyInstallsUI(t *testing.T) {
-	p, _, _ := newPipeline(t)
-	res, err := p.Apply(context.Background(), mustPlan(t, p))
-	if err != nil || res.UIInstalled != "" || res.UIError == nil || !strings.Contains(res.UIError.Error(), "install the panel") {
-		t.Fatalf("unreachable GitHub: %+v, %v", res, err)
-	}
-
-	archive := zipOf(t, map[string]string{"dist/index.html": "<html>"})
-	p.Download = fakeRelease(t, "Zephyruso/zashboard", "dist.zip", archive)
-	useSubscription(t, p.Layout, "main", subscriptionV1)
-	res, err = p.Apply(context.Background(), mustPlan(t, p))
-	want := filepath.Join(p.Layout.CoreDir(), "ui", "zashboard")
-	if err != nil || res.UIInstalled != want || res.UIError != nil {
-		t.Fatalf("result = %+v, %v", res, err)
-	}
-	if got, _ := os.ReadFile(filepath.Join(want, "index.html")); string(got) != "<html>" {
-		t.Errorf("index.html = %q", got)
-	}
-
-	// 用户在 mixin 中换了面板：交给内核。
-	os.RemoveAll(want)
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-ui.yaml"), "mihomo:\n  external-ui-url: https://example.net/other.zip\n")
-	res, err = p.Apply(context.Background(), mustPlan(t, p))
-	if err != nil || res.UIInstalled != "" || res.UIError != nil {
-		t.Fatalf("other panel: %+v, %v", res, err)
-	}
-}
-
-func zipOf(t *testing.T, files map[string]string) []byte {
-	t.Helper()
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	for name, content := range files {
-		w, err := zw.Create(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		w.Write([]byte(content))
-	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
-// fakeRelease 模拟 repo 最新发布中的一个资产，返回指向它的下载客户端。
-func fakeRelease(t *testing.T, repo, name string, data []byte) *download.Client {
-	sum := sha256.Sum256(data)
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/" + repo + "/releases/latest":
-			json.NewEncoder(w).Encode(map[string]any{"assets": []download.Asset{{
-				Name: name, Size: int64(len(data)), URL: srv.URL + "/" + name,
-				Digest: "sha256:" + hex.EncodeToString(sum[:]),
-			}}})
-		case "/" + name:
-			w.Write(data)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return &download.Client{APIBase: srv.URL}
 }
 
 // TestSubscriptionDNS 验证采用订阅的 dns：listen 由 tunlr:dns 提供、用户的 mixin 可以覆盖，开启 TUN 时

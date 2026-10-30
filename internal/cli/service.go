@@ -76,7 +76,8 @@ func (a *app) newInitCommand() *cobra.Command {
 		Short: "Install or repair tunlr: kernel, systemd service and scheduled updates",
 		Long: "Set up this server: copy tunlr to /usr/local/bin, create the user tunlr that runs\n" +
 			"mihomo, install the latest mihomo release (checksum verified), install and enable\n" +
-			"tunlr-core.service and tunlr-update.timer (see: tunlr update), add a subscription,\n" +
+			"tunlr-core.service, tunlr-update.timer (see: tunlr update) and tunlr-aftercare.path\n" +
+			"(checks mihomo after the panel upgrades it), add a subscription,\n" +
 			"publish the configuration and start mihomo. Running it again repairs the installation.\n\n" +
 			"Interactively it asks for a GitHub mirror and a subscription with its proxy filter (all\n" +
 			"optional), and what this server is for: only itself, a proxy for LAN devices (tunlr proxy\n" +

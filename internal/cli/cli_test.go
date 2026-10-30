@@ -143,7 +143,7 @@ func cmdInstallMihomo(ts *testscript.TestScript, neg bool, args []string) {
 func setupScript(env *testscript.Env) error {
 	root := filepath.Join(env.WorkDir, "root")
 	env.Setenv(rootEnv, root)
-	// 面板已存在，发布时不去 GitHub 下载。
+	// 面板已存在（内核下载过），tunlr panel 不提示还没有面板。
 	if err := os.MkdirAll(filepath.Join(paths.Layout{Root: root}.CoreDir(), "ui", "zashboard"), 0o755); err != nil {
 		return err
 	}

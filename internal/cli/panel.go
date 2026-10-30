@@ -71,7 +71,7 @@ func (a *app) printPanel(p *setup.Panel) {
 		fmt.Fprintf(w, "%s mihomo is not running; start it with: tunlr core start\n\n", a.style.warn("Note:"))
 	}
 	if p.UIDir != "" && !p.UIInstalled {
-		fmt.Fprintf(w, "%s the panel is not installed in %s yet; tunlr config apply installs it.\n\n", a.style.warn("Note:"), p.UIDir)
+		fmt.Fprintf(w, "%s the panel is not in %s yet; mihomo downloads it from external-ui-url when it\nloads the configuration (through github-mirror if set; see: tunlr core logs).\n\n", a.style.warn("Note:"), p.UIDir)
 	}
 	if p.Public {
 		a.printPanelLAN(p)

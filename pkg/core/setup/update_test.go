@@ -206,11 +206,11 @@ func TestSyncTimers(t *testing.T) {
 	if err := i.SyncTimers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !h.called("systemctl enable --now "+service.UpdateTimer) || !h.called("systemctl disable --now "+service.CheckTimer) {
+	if !h.called("systemctl enable --now "+service.UpdateTimer) || !h.called("systemctl enable --now "+service.AftercarePath) ||
+		!h.called("systemctl disable --now "+service.CheckTimer) {
 		t.Errorf("calls = %q", h.calls)
 	}
-	// 全部订阅都不自动更新、配置中也关闭了 geo 数据的自动更新时，tunlr-update.timer 仍然启用：面板随时
-	// 可以升级内核，之后要核对。
+	// 全部订阅都不自动更新时 tunlr-update.timer 仍然启用：随时可能添加订阅，没有到期的更新时它什么都不做。
 	editList(t, i, func(l *subscription.List) { l.Subscriptions[0].Update = settings.PeriodOff })
 
 	writeCoreConfig(t, i, "geo-auto-update: false\n")

@@ -1,0 +1,11 @@
+# 由 tunlr 生成，tunlr init 时重写；不要直接修改。
+# bin/mihomo 被替换时（多半是面板升级了内核）触发 tunlr-aftercare.service 核对它。
+[Unit]
+Description=Watch the mihomo binary for upgrades from the panel (tunlr)
+Documentation=https://tunlr.app
+
+[Path]
+PathChanged={{.Binary}}
+
+[Install]
+WantedBy=multi-user.target

@@ -186,6 +186,7 @@ func newTestManager(t *testing.T, d *download.Client) (*Manager, *fakeService) {
 	return &Manager{
 		Layout: l, Service: svc, Download: d, Arch: Arch{GOARCH: "amd64", Level: 3},
 		StartTimeout: 2 * time.Second, Settle: 10 * time.Millisecond,
+		RunsBinary: func(int) (bool, error) { return true, nil },
 	}, svc
 }
 
@@ -372,14 +373,17 @@ func TestManagerAftercare(t *testing.T) {
 		t.Fatalf("binary after aftercare = %q", got)
 	}
 
-	// 查不到运行中版本的官方构建（如 alpha）：换回最近的已知可用版本。
+	// 查不到运行中版本的官方构建（如 alpha）：换回最近的已知可用版本。面板替换文件后内核还没有重新执行
+	// 自己时，等它换成新文件再查版本，不拿旧版本去比。
 	if err := m.writeBinary([]byte("mihomo alpha-abc123 build")); err != nil {
 		t.Fatal(err)
 	}
 	svc.Restart(ctx, service.CoreUnit)
+	checks := 0
+	m.RunsBinary = func(int) (bool, error) { checks++; return checks > 1, nil }
 	res, err = m.Aftercare(ctx)
-	if err != nil || res.Action != AftercareReplaced || res.Version != "v1.19.35" {
-		t.Fatalf("Aftercare of an alpha kernel = %+v, %v", res, err)
+	if err != nil || res.Action != AftercareReplaced || res.Version != "v1.19.35" || checks < 2 {
+		t.Fatalf("Aftercare of an alpha kernel = %+v, %v, checks %d", res, err, checks)
 	}
 }
 

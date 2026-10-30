@@ -1,0 +1,11 @@
+# 由 tunlr 生成，tunlr init 时重写；不要直接修改。
+# tunlr-aftercare.path 在 bin/mihomo 变化时触发。
+[Unit]
+Description=Check a changed mihomo binary against the official build (tunlr)
+Documentation=https://tunlr.app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{.Tool}} _aftercare

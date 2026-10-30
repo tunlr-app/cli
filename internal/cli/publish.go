@@ -73,9 +73,6 @@ type applyView struct {
 	Reloaded      bool     `json:"reloaded"`
 	Restarted     bool     `json:"restarted"`
 	RestartNeeded []string `json:"restart_needed,omitempty"`
-	// UIInstalled 是本次新安装的面板目录；UIError 是安装失败的原因（不影响发布）。
-	UIInstalled string `json:"ui_installed,omitempty"`
-	UIError     string `json:"ui_error,omitempty"`
 }
 
 type revisionView struct {
@@ -556,19 +553,10 @@ func (a *app) publish(cmd *cobra.Command, plan *pipeline.Plan, question string) 
 	if err != nil {
 		return err
 	}
-	v.Applied, v.Revision, v.Reloaded, v.UIInstalled = true, res.Revision, res.Reloaded, res.UIInstalled
+	v.Applied, v.Revision, v.Reloaded = true, res.Revision, res.Reloaded
 	v.Restarted, v.RestartNeeded = res.Restarted, res.RestartNeeded
-	if res.UIError != nil {
-		v.UIError = res.UIError.Error()
-	}
 	return a.render(v, func() error {
 		fmt.Fprintf(a.stdout, "\n%s to %s.\n", a.style.good(fmt.Sprintf("Published revision %d", res.Revision.Number)), a.layout.CoreConfig())
-		if res.UIInstalled != "" {
-			fmt.Fprintf(a.stdout, "Installed the panel (zashboard, checksum verified) in %s.\n", res.UIInstalled)
-		}
-		if res.UIError != nil {
-			fmt.Fprintf(a.stdout, "Could not install the panel: %v; mihomo will try to download it itself.\n", res.UIError)
-		}
 		var err error
 		switch {
 		case res.Restarted:

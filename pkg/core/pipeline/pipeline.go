@@ -41,9 +41,6 @@ import (
 // DefaultKeep 是保留的历史修订数。
 const DefaultKeep = 10
 
-// uiTimeout 是安装面板的时限。面板不是必需的，下载太慢时放弃，交给内核。
-const uiTimeout = 5 * time.Minute
-
 // lockWait 是等待其他 tunlr 操作释放锁的最长时间。
 const lockWait = 30 * time.Second
 
@@ -77,7 +74,7 @@ type Pipeline struct {
 	Version string
 	// Validator 为空时使用 Layout.CoreBinary() 的 mihomo -t，缺失的 geo 数据由它按配置中的 geox-url 下载。
 	Validator Validator
-	// Download 为空时按工具设置中的镜像下载（面板）。
+	// Download 为空时按工具设置中的镜像下载（内核救援等经 kernels 用到）。
 	Download *download.Client
 	// Reloader 为空时经 Layout.CoreSocket() 的 API 让内核重新加载 Layout.CoreConfig()。
 	// 返回 mihomo.ErrNotRunning 表示内核没有运行，配置会在内核启动时生效。
@@ -637,11 +634,6 @@ type ApplyResult struct {
 	Restarted bool
 	// RestartNeeded 是热重载后仍需重启内核才能生效的键：内核不是由服务运行的，工具无法重启它。
 	RestartNeeded []string
-	// UIInstalled 是本次新安装的面板目录，没有安装时为空。
-	UIInstalled string
-	// UIError 是安装面板失败的原因。面板不是发布的必要条件，失败时照常发布，
-	// 由内核按 external-ui-url 自己下载。
-	UIError error
 }
 
 // Apply 发布 plan：存档发布前不是由 tunlr 发布的配置，原子写入新配置，让运行中的内核加载，
@@ -657,23 +649,15 @@ func (p *Pipeline) Apply(ctx context.Context, plan *Plan) (*ApplyResult, error) 
 	if !plan.Changed() {
 		return nil, nil
 	}
-	// 面板下载可能较慢，在加锁之前进行，不阻塞定时任务；安装是原子的。
-	uiDir, uiErr := p.installUI(ctx, plan.facts)
-
 	l, err := p.lock(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer l.Release()
-
-	result, err := p.ApplyLocked(ctx, plan)
-	if result != nil {
-		result.UIInstalled, result.UIError = uiDir, uiErr
-	}
-	return result, err
+	return p.ApplyLocked(ctx, plan)
 }
 
-// ApplyLocked 同 Apply，但调用方须持有文件锁，也不安装面板。用于与其他改动一起在锁内完成的发布，
+// ApplyLocked 同 Apply，但调用方须持有文件锁。用于与其他改动一起在锁内完成的发布，
 // 如透明代理开关。
 func (p *Pipeline) ApplyLocked(ctx context.Context, plan *Plan) (*ApplyResult, error) {
 	if plan.Inactive {
@@ -873,33 +857,6 @@ func (p *Pipeline) owner() *fsutil.Owner {
 	return p.Owner
 }
 
-// installUI 在面板目录不存在时下载并校验 zashboard，免得内核自己从未经校验的地址下载。
-// 只处理 external-ui-url 仍是 zashboard 官方地址（或经镜像的地址）的配置，
-// 用户在 mixin 中换了面板时交给内核。返回新安装的目录。
-func (p *Pipeline) installUI(ctx context.Context, facts *config.Facts) (string, error) {
-	set, err := settings.Load(p.Layout.SettingsFile())
-	if err != nil {
-		return "", err
-	}
-	dir, url := facts.ExternalUI(p.Layout.CoreDir())
-	if dir == "" {
-		return "", nil
-	}
-	if url != mihomo.ZashboardURL && url != download.MirrorURL(set.GitHubMirror, mihomo.ZashboardURL) {
-		return "", nil
-	}
-	if err := p.ensureCoreDir(); err != nil {
-		return "", err
-	}
-	ctx, cancel := context.WithTimeout(ctx, uiTimeout)
-	defer cancel()
-	installed, err := mihomo.EnsureUI(ctx, p.downloader(set), dir, p.owner())
-	if !installed {
-		return "", err
-	}
-	return dir, nil
-}
-
 // CheckCurrent 用 mihomo -t 校验生效的配置，只读：mihomo -t 现场下载的 geo 数据不保留。
 // 没有生效的配置时 exists 为 false。
 func (p *Pipeline) CheckCurrent(ctx context.Context) (exists bool, err error) {
@@ -939,13 +896,6 @@ func (p *Pipeline) validator(fresh []mihomo.GeoFile, staged string, keep bool) (
 		Keep:    keep,
 		RunAs:   p.owner(),
 	}, nil
-}
-
-func (p *Pipeline) downloader(set *settings.Settings) *download.Client {
-	if p.Download != nil {
-		return p.Download
-	}
-	return &download.Client{Mirror: set.GitHubMirror}
 }
 
 func (p *Pipeline) history() *config.History {
