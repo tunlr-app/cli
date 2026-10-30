@@ -573,7 +573,7 @@ func TestTunSwitch(t *testing.T) {
 	if !strings.Contains(plan.Diff, "-  enable: false\n+  enable: true\n") || len(plan.Restart) > 0 {
 		t.Fatalf("diff:\n%s\nrestart: %v", plan.Diff, plan.Restart)
 	}
-	for _, want := range []string{"  device: tunlr0\n", "  auto-redirect: true\n", "  strict-route: false\n", "  iproute2-rule-index: 9000\n"} {
+	for _, want := range []string{"  device: tunlr0\n", "  auto-redirect: true\n", "  strict-route: false\n", "  auto-detect-interface: true\n", "  iproute2-rule-index: 9000\n"} {
 		if !strings.Contains(string(plan.Config), want) {
 			t.Errorf("config lacks %q", want)
 		}
@@ -705,6 +705,7 @@ func TestManagedConflicts(t *testing.T) {
 		{"mihomo:\n  secret: mine\n", "mixin 10-a.yaml:2: secret is managed by tunlr:panel (change it with: tunlr panel lan on/off, tunlr panel reset-secret)"},
 		{"mihomo:\n  x: 1\n  external-controller: 0.0.0.0:9091\n", "mixin 10-a.yaml:3: external-controller is managed by tunlr:panel"},
 		{"mihomo:\n  tun:\n    stack: system\n    enable: true\n", "mixin 10-a.yaml:4: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off)"},
+		{"mihomo:\n  tun:\n    auto-detect-interface: false\n", "mixin 10-a.yaml:3: tun.auto-detect-interface is managed by tunlr:tun"},
 		{"mihomo:\n  external-controller-unix: x.sock\n", "mixin 10-a.yaml:2: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
 	} {
 		writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), tt.mixin)

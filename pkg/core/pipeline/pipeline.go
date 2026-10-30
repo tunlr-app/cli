@@ -988,6 +988,7 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
     auto-route: true
     auto-redirect: true
     strict-route: false
+    auto-detect-interface: true
     device: %s
     iproute2-table-index: %d
     iproute2-rule-index: %d

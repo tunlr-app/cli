@@ -540,8 +540,9 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 - **开关**：`tunlr tun on`、`tunlr tun off`；不带子命令的 `tunlr tun` 显示状态。`--mode` 预留给将来的 tproxy，现在不提供。
 - **开关存在状态文件中**（`state.json` 的 `tun`），不放在 `settings.yaml`：手改设置文件打开 TUN 会绕过防失联检测。状态有三种：`off`、`pending`（已发布、检测中，带回滚期限）、`on`。新增的字段可以省略，旧状态文件视为 `off`，不需要迁移。
 - **配置复用分层合成**，`tun on/off` 本身只改开关，然后走与 `config apply` 相同的流水线（`-t` 校验、原子写入、热重载、失败回滚、记入历史）。实测热重载即可开关 TUN，`tun` 不加入需要重启的键。
-  - 模板（用户可以用 mixin 覆盖）：`stack: mixed`、`auto-detect-interface: true`、`dns-hijack: [any:53, tcp://any:53]`，附注释说明为什么不排除私有地址段。
-  - 由 `tunlr:tun` 独占（mixin 写了就拒绝发布，提示用 `tunlr tun on/off`）：`tun.enable`（取自开关：`pending` 与 `on` 为 true）、`auto-route: true`、`auto-redirect: true`、`strict-route: false`、`device: tunlr0`、`iproute2-table-index: 2022`、`iproute2-rule-index: 9000`。工具补的规则、清理和检测都依赖这些值；固定网卡名也让 `doctor` 和日志一眼认出它。
+  - 模板（用户可以用 mixin 覆盖）：`stack: mixed`、`dns-hijack: [any:53, tcp://any:53]`，附注释说明为什么不排除私有地址段。
+  - 由 `tunlr:tun` 独占（mixin 写了就拒绝发布，提示用 `tunlr tun on/off`）：`tun.enable`（取自开关：`pending` 与 `on` 为 true）、`auto-route: true`、`auto-redirect: true`、`strict-route: false`、`auto-detect-interface: true`、`device: tunlr0`、`iproute2-table-index: 2022`、`iproute2-rule-index: 9000`。工具补的规则、清理和检测都依赖这些值；固定网卡名也让 `doctor` 和日志一眼认出它。
+  - **防回环靠 `auto-detect-interface`**（2026-10-30）：auto-route 的 ip rule 把本机发出的流量（`not iif lo` 以外的）都送进路由表 2022，其中的默认路由经 `tunlr0`，内核自己到节点、上游 DNS 的连接也会被送回 TUN。`auto-detect-interface` 让内核的出站连接绑定默认路由所在、不是 TUN 的网卡，绑定后只查那块网卡的路由，不再进 TUN；网卡变了随之切换。sing-tun 的 auto-route 不设 `routing-mark`（只有配合 `route-address-set` 的标记模式才设），所以这是唯一的防线，原来放在模板中、mixin 可以关掉，关掉后本机流量在 TUN 里打转，只能等回滚定时器救回。现在归 `tunlr:tun` 独占。全局 `interface-name`（固定出口网卡）仍可在 mixin 中设置，它优先于自动检测，同样不回环。
   - 不写进 `mixin.d`，理由见第 6 节“受管 mixin”。
 - **回滚与开关**：`config rollback` 恢复旧修订的内容后，再按当前开关写入独占的受管 mixin（与合成时最后一层相同）。否则回滚到开关不同的修订，配置就与工具的规则和防失联状态对不上。`config plan` 照常显示差异。
 - **面板运行时切换**（见 3.3）：面板打开 TUN 不写回配置，也不经防失联检测。工具的规则不依赖开关（见 8.4），所以面板打开时同样生效。`status` 在内核实际状态与开关不一致时提示，执行 `tun on/off` 即以开关为准。
