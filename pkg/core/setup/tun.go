@@ -99,7 +99,7 @@ func (i *Installer) TunPreflight(ctx context.Context) (warnings []string, err er
 	if _, err := mihomo.NewClient(i.Layout.CoreSocket()).Version(ctx); err != nil {
 		return nil, fmt.Errorf("%w: mihomo is not responding (%v); start it first: tunlr core start", core.ErrCheckFailed, err)
 	}
-	return doctor.Failures(i.host().Tun(ctx, i.rules()))
+	return doctor.Failures(i.host().Tun(ctx, i.rules(), i.coreUID()))
 }
 
 // TunOn 开启透明代理并发布 plan（pipeline.PlanTun(ctx, true) 的结果，已经用户确认）：
@@ -423,6 +423,14 @@ func (i *Installer) rules() *netfilter.Rules {
 		return i.Rules
 	}
 	return &netfilter.Rules{}
+}
+
+// coreUID 返回内核用户的 UID，不知道（尚未 init、测试用的布局）时为 -1。
+func (i *Installer) coreUID() int {
+	if o, err := service.KernelUser(i.Layout); err == nil && o != nil {
+		return o.UID
+	}
+	return -1
 }
 
 func (i *Installer) now() time.Time {

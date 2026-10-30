@@ -340,9 +340,9 @@ func parseOSRelease(data []byte) map[string]string {
 	return rel
 }
 
-// Tun 检查能否开启透明代理（第二组）：TUN 设备、nft 与 ip 命令、ip rule 优先级、UFW 和 firewalld、
-// iptables-legacy。tun on 有 fail 就不开启。
-func (h *Host) Tun(ctx context.Context, rules *netfilter.Rules) []Check {
+// Tun 检查能否开启透明代理（第二组）：TUN 设备、nft 与 ip 命令、ip rule 优先级、内核出站的网卡、UFW 和
+// firewalld、iptables-legacy。coreUID 是内核用户的 UID，不知道时为 -1。tun on 有 fail 就不开启。
+func (h *Host) Tun(ctx context.Context, rules *netfilter.Rules, coreUID int) []Check {
 	c := &Checker{Group: GroupTun}
 	if h.goos() != "linux" {
 		c.Add("device", Skip, "TUN device", "not Linux", "")
@@ -377,6 +377,14 @@ func (h *Host) Tun(ctx context.Context, rules *netfilter.Rules) []Check {
 			c.Add("ip-rules", OK, "ip rule priorities", fmt.Sprintf("%d-%d are free", netfilter.RulePriority, netfilter.RuleIndex+10), "")
 		}
 	}
+	switch {
+	case !h.Root():
+		c.Add("egress", Skip, "Route out", NeedsRoot, "")
+	case !tools:
+		c.Add("egress", Skip, "Route out", "the ip command is missing", "")
+	default:
+		c.egress(ctx, rules, coreUID)
+	}
 
 	if fws := rules.ActiveFirewalls(ctx); len(fws) > 0 {
 		c.Add("firewall", Warn, "Firewall", strings.Join(fws, ", ")+" is active; its input policy may block the traffic mihomo redirects (not tested yet)",
@@ -387,6 +395,26 @@ func (h *Host) Tun(ctx context.Context, rules *netfilter.Rules) []Check {
 
 	c.legacyIptables(ctx, h)
 	return c.List
+}
+
+// egress 检查内核自己的连接（到节点、上游 DNS）出本机的网卡。它是 VPN（点对点的网卡）时，服务器上的
+// 全隧道 VPN 接管了出站：VPN 自己的包可能被 TUN 截下、经内核又送回 VPN，与 TUN 互相套住（未实测，
+// 见 DESIGN.md 8.4），只警告。
+func (c *Checker) egress(ctx context.Context, rules *netfilter.Rules, coreUID int) {
+	const title = "Route out"
+	dev, p2p, err := rules.Egress(ctx, coreUID)
+	switch {
+	case err != nil:
+		c.Add("egress", Skip, title, "cannot look up the route to the internet: "+err.Error(), "")
+	case dev == netfilter.Device:
+		c.Add("egress", Skip, title, "mihomo's own connections are routed into TUN, so the interface behind it cannot be told", "")
+	case p2p:
+		c.Add("egress", Warn, title, "mihomo's own connections leave through "+dev+", a VPN (point-to-point) interface; "+
+			"a VPN that takes all traffic may loop with TUN (not tested yet)",
+			"check that the VPN's own packets bypass it, or set interface-name to a physical interface in a mixin")
+	default:
+		c.Add("egress", OK, title, "mihomo's own connections leave through "+dev, "")
+	}
 }
 
 // legacyIptables 检查 iptables-legacy 中是否有规则：与 nftables 混用时，规则的先后难以预料。

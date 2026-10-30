@@ -48,7 +48,7 @@ func (i *Installer) Doctor(ctx context.Context, opts DoctorOptions) (*doctor.Rep
 	h := i.host()
 	r := &doctor.Report{}
 	r.Checks = append(r.Checks, h.Support(ctx)...)
-	r.Checks = append(r.Checks, h.Tun(ctx, i.rules())...)
+	r.Checks = append(r.Checks, h.Tun(ctx, i.rules(), i.coreUID())...)
 	r.Checks = append(r.Checks, i.installChecks(ctx, h, opts.Quick)...)
 	if opts.Quick {
 		return r, nil
@@ -193,6 +193,7 @@ func (i *Installer) installChecks(ctx context.Context, h *doctor.Host, quick boo
 		i.checkTimers(ctx, c, st)
 	}
 	i.checkTun(ctx, c, st, running != "")
+	i.checkLoop(ctx, c, owner, running != "")
 	i.checkGateway(ctx, c, st)
 	i.checkExposure(c)
 	i.checkPanelLAN(c, st)
@@ -366,6 +367,72 @@ func (i *Installer) checkTun(ctx context.Context, c *doctor.Checker, st *state.S
 	default:
 		c.Add("tun", doctor.OK, "Transparent proxy", "switch "+ts.Switch+", matches mihomo", "")
 	}
+}
+
+// checkLoop 在内核开着 TUN 时（不论开关，面板打开的也算）检查防回环的两道设置是否生效（DESIGN.md 8.4）；
+// 没有开着时不出现。owner 是内核用户，测试用的布局中为 nil。
+func (i *Installer) checkLoop(ctx context.Context, c *doctor.Checker, owner *fsutil.Owner, running bool) {
+	if !running {
+		return
+	}
+	tun, err := mihomo.NewClient(i.Layout.CoreSocket()).Tun(ctx)
+	if err != nil || !tun.Enable {
+		return
+	}
+	uid := -1
+	var missing []string
+	if owner != nil {
+		uid = owner.UID
+		missing, err = i.rules().UIDRuleMissing(ctx, uid)
+	}
+	status, msg, hint := loopGuards(tun, uid, missing, err)
+	c.Add("loop", status, "Loop prevention", msg, hint)
+}
+
+// loopGuards 判断防回环的两道设置：运行中的配置开着 auto-detect-interface；exclude-uid 含有内核用户现在的
+// UID（uid，不知道时为 -1），且 sing-tun 在每个地址族都加了让它绕过 TUN 的 ip rule（missing 是缺这条规则
+// 的地址族，rulesErr 是列出 ip rule 的错误）。两道都不在时内核自己的连接会回到 TUN，判 fail；缺一道判 warn。
+func loopGuards(tun *mihomo.TunConfig, uid int, missing []string, rulesErr error) (status, msg, hint string) {
+	var problems []string
+	auto := tun.AutoDetectInterface
+	if !auto {
+		problems = append(problems, "auto-detect-interface is off")
+	}
+	byUID := false
+	switch {
+	case uid < 0:
+		problems = append(problems, "the kernel user "+service.CoreUser+" does not exist")
+	case len(tun.ExcludeUID) == 0:
+		problems = append(problems, "exclude-uid is not set")
+	case !slices.Contains(tun.ExcludeUID, uid):
+		problems = append(problems, fmt.Sprintf("exclude-uid is %v, not the uid of %s (%d); was the user recreated?", tun.ExcludeUID, service.CoreUser, uid))
+	case rulesErr != nil:
+		problems = append(problems, "cannot list the ip rules: "+rulesErr.Error())
+	case len(missing) > 0:
+		names := map[string]string{"-4": "IPv4", "-6": "IPv6"}
+		var fams []string
+		for _, f := range missing {
+			fams = append(fams, names[f])
+		}
+		problems = append(problems, fmt.Sprintf("the ip rule that lets uid %d bypass TUN is missing (%s)", uid, strings.Join(fams, ", ")))
+	default:
+		byUID = true
+	}
+	// 配置对、只是规则不在时重启内核让 sing-tun 重建；其余按 tunlr:tun 重新发布。
+	hint = "tunlr config apply"
+	switch {
+	case uid < 0:
+		hint = "tunlr init"
+	case auto && rulesErr == nil && len(missing) > 0 && slices.Contains(tun.ExcludeUID, uid):
+		hint = "tunlr core restart"
+	}
+	switch {
+	case !auto && !byUID:
+		return doctor.Fail, "mihomo's own connections may loop back into TUN: " + strings.Join(problems, "; "), hint
+	case len(problems) > 0:
+		return doctor.Warn, "one of the two guards is missing: " + strings.Join(problems, "; "), hint
+	}
+	return doctor.OK, fmt.Sprintf("auto-detect-interface is on, and uid %d (%s) bypasses TUN", uid, service.CoreUser), ""
 }
 
 // checkGateway 在网关开启时检查各项是否到位（见 DESIGN.md 8.10）；网关关闭时不出现。

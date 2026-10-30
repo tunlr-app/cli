@@ -83,8 +83,8 @@
   | 组 | 检查 | 何时 |
   |---|---|---|
   | `system` 支持条件 | Linux、root、PID 1 为 systemd、amd64 或 arm64（amd64 报告 CPU 级别，低于 v3 警告）、不在 WSL 中、不在容器中、发行版版本 | 总是。`init` 复用：有 fail 就拒绝安装 |
-  | `tun` 透明代理条件 | `/dev/net/tun`、`nft`、`ip`、需要的 ip rule 优先级没有被占用、UFW 和 firewalld、iptables-legacy 中的规则 | 总是。`tun on` 复用：有 fail 就不开启，warn 照常显示 |
-  | `install` 安装是否健康 | unit 与当前版本的模板一致；`/usr/local/bin/tunlr` 与正在运行的这个相同；内核用户存在，`bin/`、`core/` 归它所有；内核服务已启用、在运行，没有 failed 或反复重启；内核二进制存在且是已知可用版本；设置和状态文件能读取；生效配置存在并通过 `mihomo -t`；两个 timer 与设置和 TUN 开关一致，没有遗留的回滚定时器；TUN 开关与内核实际状态一致，内核在运行时两张 nft 表都在；配置中的端口没有被其他程序占用；订阅最近一次抓取是否失败、是否已到期或 7 天内到期、流量是否用完或超过 90% | 已安装（有 `tunlr-core.service`）时。没有安装时只有一项 skip，提示 `tunlr init` |
+  | `tun` 透明代理条件 | `/dev/net/tun`、`nft`、`ip`、需要的 ip rule 优先级没有被占用、内核出站的网卡（经 VPN 时 warn，见 8.4“防回环”）、UFW 和 firewalld、iptables-legacy 中的规则 | 总是。`tun on` 复用：有 fail 就不开启，warn 照常显示 |
+  | `install` 安装是否健康 | unit 与当前版本的模板一致；`/usr/local/bin/tunlr` 与正在运行的这个相同；内核用户存在，`bin/`、`core/` 归它所有；内核服务已启用、在运行，没有 failed 或反复重启；内核二进制存在且是已知可用版本；设置和状态文件能读取；生效配置存在并通过 `mihomo -t`；两个 timer 与设置和 TUN 开关一致，没有遗留的回滚定时器；TUN 开关与内核实际状态一致，内核在运行时两张 nft 表都在；内核开着 TUN 时防回环的两道设置都生效（见 8.4）；配置中的端口没有被其他程序占用；订阅最近一次抓取是否失败、是否已到期或 7 天内到期、流量是否用完或超过 90% | 已安装（有 `tunlr-core.service`）时。没有安装时只有一项 skip，提示 `tunlr init` |
   | `network` 网络 | 能解析域名；能访问 api.github.com（校验值的来源）；配置了镜像时镜像能连上；本机时钟与 GitHub 的偏差（超过 90 秒警告，VMess 等协议会失败；超过 1 天判失败，TLS 会失败）；内核在运行时经 mixed-port 访问一个测试地址 | 默认执行，并行进行，总时长约 10 秒；`--offline` 跳过 |
 
 - **分级**：ok、warn、fail、skip。有任何 fail 时退出码 3；只有 warn 时为 0。
@@ -541,8 +541,14 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
 - **开关存在状态文件中**（`state.json` 的 `tun`），不放在 `settings.yaml`：手改设置文件打开 TUN 会绕过防失联检测。状态有三种：`off`、`pending`（已发布、检测中，带回滚期限）、`on`。新增的字段可以省略，旧状态文件视为 `off`，不需要迁移。
 - **配置复用分层合成**，`tun on/off` 本身只改开关，然后走与 `config apply` 相同的流水线（`-t` 校验、原子写入、热重载、失败回滚、记入历史）。实测热重载即可开关 TUN，`tun` 不加入需要重启的键。
   - 模板（用户可以用 mixin 覆盖）：`stack: mixed`、`dns-hijack: [any:53, tcp://any:53]`，附注释说明为什么不排除私有地址段。
-  - 由 `tunlr:tun` 独占（mixin 写了就拒绝发布，提示用 `tunlr tun on/off`）：`tun.enable`（取自开关：`pending` 与 `on` 为 true）、`auto-route: true`、`auto-redirect: true`、`strict-route: false`、`auto-detect-interface: true`、`device: tunlr0`、`iproute2-table-index: 2022`、`iproute2-rule-index: 9000`。工具补的规则、清理和检测都依赖这些值；固定网卡名也让 `doctor` 和日志一眼认出它。
-  - **防回环靠 `auto-detect-interface`**（2026-10-30）：auto-route 的 ip rule 把本机发出的流量（`not iif lo` 以外的）都送进路由表 2022，其中的默认路由经 `tunlr0`，内核自己到节点、上游 DNS 的连接也会被送回 TUN。`auto-detect-interface` 让内核的出站连接绑定默认路由所在、不是 TUN 的网卡，绑定后只查那块网卡的路由，不再进 TUN；网卡变了随之切换。sing-tun 的 auto-route 不设 `routing-mark`（只有配合 `route-address-set` 的标记模式才设），所以这是唯一的防线，原来放在模板中、mixin 可以关掉，关掉后本机流量在 TUN 里打转，只能等回滚定时器救回。现在归 `tunlr:tun` 独占。全局 `interface-name`（固定出口网卡）仍可在 mixin 中设置，它优先于自动检测，同样不回环。
+  - 由 `tunlr:tun` 独占（mixin 写了就拒绝发布，提示用 `tunlr tun on/off`）：`tun.enable`（取自开关：`pending` 与 `on` 为 true）、`auto-route: true`、`auto-redirect: true`、`strict-route: false`、`auto-detect-interface: true`、`exclude-uid: [<内核用户的 UID>]`、`device: tunlr0`、`iproute2-table-index: 2022`、`iproute2-rule-index: 9000`。工具补的规则、清理和检测都依赖这些值；固定网卡名也让 `doctor` 和日志一眼认出它。
+  - **防回环有两道，互不依赖**（2026-10-30）：auto-route 的 ip rule 把本机发出的流量都送进路由表 2022，其中的默认路由经 `tunlr0`，内核自己到节点、上游 DNS 的连接也会被送回 TUN；auto-redirect 的 nat output 链再把出口为 `tunlr0` 的 TCP 重定向给内核。sing-tun 的 auto-route 不设 `routing-mark`（只有配合 `route-address-set` 的标记模式才设）。
+    - `auto-detect-interface`：内核的出站连接绑定默认路由所在、不是 TUN 的网卡，只查那块网卡的路由；网卡变了随之切换。原来放在模板中、mixin 可以关掉，现在独占。全局 `interface-name`（固定出口网卡）仍可在 mixin 中设置，它优先于自动检测，同样不回环。
+    - `exclude-uid`：内核以独立用户 `tunlr` 运行，sing-tun 为它加一条 `uidrange <UID> goto 9010`（排在 9000，早于其余规则），这个用户的包查主路由表，不进 TUN；出口不是 `tunlr0`，auto-redirect 的 output 规则（`oifname "tunlr0"`）也不重定向它。本机其他进程（包括以 root 运行的 tunlr）照常经 TUN。UID 在合成时查 `/etc/passwd`；尚未 init、用户不存在时不写，仍然独占（mixin 不能写，想排除其他用户用 `exclude-uid-range`）。用户被重建、UID 变了时，下次发布配置跟上。
+    - 在 tunlr-dev（v1.19.33）上实测：开启 TUN 后 ip rule 出现 `9000: from all uidrange 999-999 goto 9010`；把生效配置改成 `auto-detect-interface: false` 热重载，只靠 `exclude-uid` 时访问正常（连接 1 个）；再去掉 `exclude-uid` 作为对照，请求全部超时，连接数涨到 5791，即回环。
+    - 检查：`doctor` 的 install 组在内核开着 TUN 时（面板打开的也算）检查“Loop prevention”：运行中的配置（`GET /configs` 的 `tun` 段）开着 `auto-detect-interface`；`exclude-uid` 含有内核用户现在的 UID，sing-tun 建了 auto-route 规则的每个地址族都有对应的 `uidrange` 规则。两道都不在判 fail，缺一道判 warn。修复：UID 对不上（用户被重建过）或配置不对时 `tunlr config apply` 按 `tunlr:tun` 重新发布；配置对、只是规则不在时 `tunlr core restart`。
+    - 服务器自己跑全隧道 VPN（wg-quick 把默认路由放进自己的表、OpenVPN 的 `0.0.0.0/1` 与 `128.0.0.0/1`、Tailscale 的出口节点）时，`auto-detect-interface` 可能把内核绑到 VPN 网卡，`exclude-uid` 的规则之后也按 VPN 的策略路由走；VPN 自己的包由系统内核发出，不带内核用户的 UID，可能被 TUN 截下、经内核又送回 VPN，互相套住。未实测。`tun on` 的前置检查和 `doctor` 的 tun 组为此检查“Route out”：以内核用户的身份查到公网地址（`1.1.1.1`，只用 `ip route get` 查路由，不发包）的出口网卡，按策略路由查，上述几种都算在内；它是点对点网卡（`IFF_POINTOPOINT`）时 warn，不阻止开启——Tailscale 的包带它自己的 fwmark，在 5210 走主路由表，大概率能用。提示确认 VPN 自己的包绕开 TUN，或在 mixin 中用 `interface-name` 指定物理网卡。
+    - 约束：`exclude-uid` 让内核用户的全部流量绕过 TUN，所以这个用户只运行 mihomo。将来新增的组件（如 agent）需要经代理时，要用别的用户运行。
   - 不写进 `mixin.d`，理由见第 6 节“受管 mixin”。
 - **回滚与开关**：`config rollback` 恢复旧修订的内容后，再按当前开关写入独占的受管 mixin（与合成时最后一层相同）。否则回滚到开关不同的修订，配置就与工具的规则和防失联状态对不上。`config plan` 照常显示差异。
 - **面板运行时切换**（见 3.3）：面板打开 TUN 不写回配置，也不经防失联检测。工具的规则不依赖开关（见 8.4），所以面板打开时同样生效。`status` 在内核实际状态与开关不一致时提示，执行 `tun on/off` 即以开关为准。

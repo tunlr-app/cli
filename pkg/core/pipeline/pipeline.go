@@ -296,7 +296,7 @@ func (p *Pipeline) Managed() ([]config.Managed, error) {
 	if err != nil {
 		return nil, err
 	}
-	return managed(st.APISecret, switchesOf(st), set), nil
+	return managed(st.APISecret, p.switchesOf(st), set), nil
 }
 
 // switches 是决定受管 mixin 内容的开关。
@@ -305,10 +305,16 @@ type switches struct {
 	// direct 是走法为直连的设备的地址。
 	direct []string
 	filter state.Filter
+	// coreUID 是内核用户的 UID，TUN 按它排除内核自己的流量；不知道（尚未 init、测试用的布局）时为 -1。
+	coreUID int
 }
 
-func switchesOf(st *state.State) switches {
-	return switches{tun: st.TunEnabled(), panelLAN: st.PanelLAN != nil, proxyLAN: st.ProxyLAN != nil, direct: st.DirectIPs(), filter: st.Filter}
+func (p *Pipeline) switchesOf(st *state.State) switches {
+	sw := switches{tun: st.TunEnabled(), panelLAN: st.PanelLAN != nil, proxyLAN: st.ProxyLAN != nil, direct: st.DirectIPs(), filter: st.Filter, coreUID: -1}
+	if o := p.owner(); o != nil {
+		sw.coreUID = o.UID
+	}
+	return sw
 }
 
 type planOptions struct {
@@ -376,7 +382,7 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		}
 		plan.newSecret, plan.oldSecret = secret, st.APISecret
 	}
-	sw := switchesOf(st)
+	sw := p.switchesOf(st)
 	if opts.tun != nil {
 		sw.tun = *opts.tun
 	}
@@ -511,7 +517,7 @@ func (p *Pipeline) PlanEnforce(ctx context.Context) (*Plan, error) {
 		return nil, err
 	}
 	plan := &Plan{Kind: KindApply, Subscription: l.Active}
-	if plan.Config, plan.facts, err = config.Enforce(current, managed(st.APISecret, switchesOf(st), set)); err != nil {
+	if plan.Config, plan.facts, err = config.Enforce(current, managed(st.APISecret, p.switchesOf(st), set)); err != nil {
 		return nil, fmt.Errorf("the published configuration: %w", err)
 	}
 	if err := p.finish(ctx, plan); err != nil {
@@ -560,7 +566,7 @@ func (p *Pipeline) PlanRollback(ctx context.Context, n int) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, facts, err := config.Enforce(data, managed(st.APISecret, switchesOf(st), set))
+	data, facts, err := config.Enforce(data, managed(st.APISecret, p.switchesOf(st), set))
 	if err != nil {
 		return nil, fmt.Errorf("revision %d: %w", n, err)
 	}
@@ -938,7 +944,8 @@ const DNSListen = "127.0.0.1:1053"
 //
 //	tunlr:core   内核的 Unix socket，工具经它调用 API
 //	tunlr:tun    透明代理：enable 取自开关，其余是固定值，工具补充的规则、清理和检测依赖它们；
-//	             面板临时打开 TUN 时也按这些值工作；开启时还要求 dns.enable: true，dns-hijack 靠它
+//	             面板临时打开 TUN 时也按这些值工作；开启时还要求 dns.enable: true，dns-hijack 靠它；
+//	             防回环的 auto-detect-interface 与 exclude-uid（内核用户，不知道时不写，仍然独占）
 //	tunlr:panel  API 的监听地址（面板的局域网访问开关）和 secret
 //	tunlr:proxy  代理端口的局域网访问开关：开启时 allow-lan: true，lan-allowed-ips 限制为私有地址段
 //	             （config.LANAllowedIPs），内核拒绝其他来源；关闭时 allow-lan: false
@@ -952,6 +959,11 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 	tunDNS := ""
 	if sw.tun {
 		tunDNS = "  dns:\n    enable: true\n"
+	}
+	// 内核用户的流量不进 TUN：auto-detect-interface 之外的第二道防回环，见 DESIGN.md 8.4。
+	excludeUID := ""
+	if sw.coreUID >= 0 {
+		excludeUID = fmt.Sprintf("    exclude-uid:\n      - %d\n", sw.coreUID)
 	}
 	controller := fmt.Sprintf("127.0.0.1:%d", APIPort)
 	if sw.panelLAN {
@@ -992,7 +1004,7 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
     device: %s
     iproute2-table-index: %d
     iproute2-rule-index: %d
-%s`, sw.tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex, tunDNS)},
+%s%s`, sw.tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex, excludeUID, tunDNS), Owns: []string{"tun.exclude-uid"}},
 		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel reset-secret", Data: panel},
 		{Name: ManagedProxy, Command: "tunlr proxy lan on/off", Data: proxy, Owns: []string{"allow-lan", "lan-allowed-ips"}},
 		DefaultsManaged(),

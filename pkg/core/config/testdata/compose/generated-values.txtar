@@ -69,8 +69,8 @@ profile:
   store-fake-ip: true
 
 # 透明代理（TUN），用 tunlr tun on/off 开关。enable、auto-route、auto-redirect、strict-route、
-# auto-detect-interface（内核的出站绑定默认路由所在的网卡，防止回环）、device 和 iproute2 的索引
-# 由 tunlr 决定，mixin 改不了。不要用 route-exclude-address 排除整个私有地址段：直连网段本来就
+# auto-detect-interface 与 exclude-uid（内核自己的流量不进 TUN，防止回环）、device 和 iproute2 的
+# 索引由 tunlr 决定，mixin 改不了。不要用 route-exclude-address 排除整个私有地址段：直连网段本来就
 # 不进 TUN，排除后局域网中的 DNS 服务器会绕过劫持。
 tun:
   enable: false

@@ -75,18 +75,32 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	return v.Version, nil
 }
 
-// TunEnabled 报告内核实际是否开启了 TUN（GET /configs 的 tun.enable）。面板可以在运行时切换它，
-// 所以与配置文件不一定一致。
-func (c *Client) TunEnabled(ctx context.Context) (bool, error) {
+// TunConfig 是运行中的内核的 tun 设置（GET /configs 的 tun 段）中工具关心的部分。
+type TunConfig struct {
+	Enable bool `json:"enable"`
+	// AutoDetectInterface 与 ExcludeUID 是防止内核自己的连接回到 TUN 的两道设置（见 DESIGN.md 8.4）。
+	AutoDetectInterface bool  `json:"auto-detect-interface"`
+	ExcludeUID          []int `json:"exclude-uid"`
+}
+
+// Tun 返回运行中的内核的 tun 设置。面板可以在运行时切换 enable，所以与配置文件不一定一致。
+func (c *Client) Tun(ctx context.Context) (*TunConfig, error) {
 	var v struct {
-		Tun struct {
-			Enable bool `json:"enable"`
-		} `json:"tun"`
+		Tun TunConfig `json:"tun"`
 	}
 	if err := c.do(ctx, apiTimeout, http.MethodGet, "/configs", nil, &v); err != nil {
+		return nil, err
+	}
+	return &v.Tun, nil
+}
+
+// TunEnabled 报告内核实际是否开启了 TUN（GET /configs 的 tun.enable），见 Tun。
+func (c *Client) TunEnabled(ctx context.Context) (bool, error) {
+	t, err := c.Tun(ctx)
+	if err != nil {
 		return false, err
 	}
-	return v.Tun.Enable, nil
+	return t.Enable, nil
 }
 
 // ReloadConfig 让内核重新加载 path（绝对路径，须位于内核工作目录内）的配置。

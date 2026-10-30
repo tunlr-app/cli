@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"text/template"
@@ -209,6 +210,71 @@ func (r *Rules) RuleConflicts(ctx context.Context) []string {
 		}
 	}
 	return problems
+}
+
+// EgressProbe 是查出站路由时用的公网地址：只用于 ip route get，不发包。
+const EgressProbe = "1.1.1.1"
+
+// Egress 返回 uid（为负时不指定用户）的连接到公网地址 EgressProbe 走的网卡，以及它是否是点对点的
+// 网卡（WireGuard、Tailscale、OpenVPN 等 VPN）。按策略路由查，全隧道 VPN 放在其他路由表或用
+// 0.0.0.0/1、128.0.0.0/1 盖过默认路由的情况都算在内。
+func (r *Rules) Egress(ctx context.Context, uid int) (dev string, pointToPoint bool, err error) {
+	args := []string{"-4", "route", "get", EgressProbe}
+	if uid >= 0 {
+		args = append(args, "uid", strconv.Itoa(uid))
+	}
+	// 输出形如 “1.1.1.1 via 192.168.1.1 dev ens3 src 192.168.1.20 uid 999”。
+	out, err := r.run(ctx, nil, "ip", args...)
+	if err != nil {
+		return "", false, err
+	}
+	if dev = fieldAfter(string(out), "dev"); dev == "" {
+		return "", false, fmt.Errorf("ip route get %s: no interface in %q", EgressProbe, strings.TrimSpace(string(out)))
+	}
+	// 输出形如 “5: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 …”。
+	out, err = r.run(ctx, nil, "ip", "-o", "link", "show", "dev", dev)
+	if err != nil {
+		return dev, false, err
+	}
+	_, flags, _ := strings.Cut(string(out), "<")
+	flags, _, _ = strings.Cut(flags, ">")
+	return dev, slices.Contains(strings.Split(flags, ","), "POINTOPOINT"), nil
+}
+
+// fieldAfter 返回 s 中第一个等于 key 的字段之后的那个字段，没有时为空。
+func fieldAfter(s, key string) string {
+	f := strings.Fields(s)
+	for i := 0; i+1 < len(f); i++ {
+		if f[i] == key {
+			return f[i+1]
+		}
+	}
+	return ""
+}
+
+// UIDRuleMissing 返回内核建立了 auto-route 的 ip rule（RuleIndex 到 RuleIndex+10）、却没有让 uid 绕过
+// TUN 的地址族（"-4"、"-6"）。配置的 tun.exclude-uid 含有 uid 时，sing-tun 在每个地址族加一条
+// “uidrange <uid>-<uid> goto …”。
+func (r *Rules) UIDRuleMissing(ctx context.Context, uid int) ([]string, error) {
+	want := fmt.Sprintf("uidrange %d-%d ", uid, uid)
+	var missing []string
+	for _, family := range r.families() {
+		rules, err := r.listRules(ctx, family)
+		if err != nil {
+			return nil, err
+		}
+		kernel, found := false, false
+		for _, rule := range rules {
+			if rule.priority >= RuleIndex && rule.priority <= RuleIndex+10 {
+				kernel = true
+				found = found || strings.Contains(rule.text+" ", want)
+			}
+		}
+		if kernel && !found {
+			missing = append(missing, family)
+		}
+	}
+	return missing, nil
 }
 
 // ActiveFirewalls 返回正在运行的 UFW、firewalld。它们的入站策略可能挡住内核重定向的流量（未实测）。

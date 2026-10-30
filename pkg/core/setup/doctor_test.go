@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tunlr-app/cli/pkg/core/doctor"
+	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/netfilter"
 	"github.com/tunlr-app/cli/pkg/core/paths"
 	"github.com/tunlr-app/cli/pkg/core/service"
@@ -214,6 +215,35 @@ func TestDoctorInstalled(t *testing.T) {
 }
 
 // TestDoctorLANAccess 验证代理端口或面板对其他设备开放时对 inet tunlr_access 的检查。
+func TestLoopGuards(t *testing.T) {
+	ok := &mihomo.TunConfig{Enable: true, AutoDetectInterface: true, ExcludeUID: []int{999}}
+	noAuto := &mihomo.TunConfig{Enable: true, ExcludeUID: []int{999}}
+	noUID := &mihomo.TunConfig{Enable: true, AutoDetectInterface: true}
+	for _, tt := range []struct {
+		name              string
+		tun               *mihomo.TunConfig
+		uid               int
+		missing           []string
+		rulesErr          error
+		status, msg, hint string
+	}{
+		{"both", ok, 999, nil, nil, doctor.OK, "uid 999 (tunlr) bypasses TUN", ""},
+		{"no auto-detect", noAuto, 999, nil, nil, doctor.Warn, "auto-detect-interface is off", "tunlr config apply"},
+		{"no exclude-uid", noUID, 999, nil, nil, doctor.Warn, "exclude-uid is not set", "tunlr config apply"},
+		{"user recreated", ok, 1001, nil, nil, doctor.Warn, "exclude-uid is [999], not the uid of tunlr (1001)", "tunlr config apply"},
+		{"rule missing", ok, 999, []string{"-6"}, nil, doctor.Warn, "bypass TUN is missing (IPv6)", "tunlr core restart"},
+		{"rules unreadable", ok, 999, nil, errors.New("boom"), doctor.Warn, "cannot list the ip rules: boom", "tunlr config apply"},
+		{"no user", ok, -1, nil, nil, doctor.Warn, "the kernel user tunlr does not exist", "tunlr init"},
+		{"neither", &mihomo.TunConfig{Enable: true}, 999, nil, nil, doctor.Fail, "may loop back into TUN: auto-detect-interface is off; exclude-uid is not set", "tunlr config apply"},
+		{"neither, wrong uid", noAuto, 1001, nil, nil, doctor.Fail, "may loop back into TUN", "tunlr config apply"},
+	} {
+		status, msg, hint := loopGuards(tt.tun, tt.uid, tt.missing, tt.rulesErr)
+		if status != tt.status || !strings.Contains(msg, tt.msg) || hint != tt.hint {
+			t.Errorf("%s: %s %q %q", tt.name, status, msg, hint)
+		}
+	}
+}
+
 func TestDoctorLANAccess(t *testing.T) {
 	ctx := context.Background()
 	i, h := newDoctorInstaller(t)

@@ -185,14 +185,25 @@ func TestParseOSRelease(t *testing.T) {
 	}
 }
 
-// fakeRules 返回假的 nft 与 ip 输出。
+// fakeRules 返回假的 nft 与 ip 输出；内核出站经 ens3。
 func fakeRules(ipRules string) *netfilter.Rules {
+	return fakeEgress(ipRules, "ens3", "BROADCAST,MULTICAST,UP,LOWER_UP")
+}
+
+// fakeEgress 同 fakeRules，内核出站经 dev，它的标志为 flags。
+func fakeEgress(ipRules, dev, flags string) *netfilter.Rules {
 	return &netfilter.Rules{
 		IPv6: func() bool { return false },
 		Run: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
 			switch line := name + " " + strings.Join(args, " "); {
 			case strings.HasPrefix(line, "ip -4 rule"), strings.HasPrefix(line, "ip rule"):
 				return []byte(ipRules), nil
+			case strings.HasPrefix(line, "ip -4 route get "+netfilter.EgressProbe+" uid 999") && dev == "":
+				return nil, errors.New("RTNETLINK answers: Network is unreachable")
+			case strings.HasPrefix(line, "ip -4 route get "+netfilter.EgressProbe+" uid 999"):
+				return []byte(netfilter.EgressProbe + " dev " + dev + " src 10.0.0.2 uid 999\n    cache\n"), nil
+			case line == "ip -o link show dev "+dev:
+				return []byte("5: " + dev + ": <" + flags + "> mtu 1420\n"), nil
 			case strings.HasPrefix(line, "systemctl is-active"):
 				return nil, errors.New("inactive")
 			}
@@ -203,7 +214,7 @@ func fakeRules(ipRules string) *netfilter.Rules {
 
 func TestTun(t *testing.T) {
 	f := healthy()
-	checks := f.host("amd64").Tun(context.Background(), fakeRules(""))
+	checks := f.host("amd64").Tun(context.Background(), fakeRules(""), 999)
 	for _, c := range checks {
 		if c.Status != OK {
 			t.Errorf("%s = %s: %s", c.ID, c.Status, c.Message)
@@ -212,7 +223,7 @@ func TestTun(t *testing.T) {
 
 	delete(f.files, "/dev/net/tun")
 	f.missing = []string{"nft"}
-	got := statuses(f.host("amd64").Tun(context.Background(), fakeRules("")))
+	got := statuses(f.host("amd64").Tun(context.Background(), fakeRules(""), 999))
 	if got["tun.device"] != Fail || got["tun.nft"] != Fail || got["tun.ip"] != OK || got["tun.ip-rules"] != Skip {
 		t.Errorf("statuses = %v", got)
 	}
@@ -220,16 +231,40 @@ func TestTun(t *testing.T) {
 	// 他人的 ip rule 占用了需要的优先级。
 	f = healthy()
 	conflict := fakeRules(fmt.Sprintf("0:\tfrom all lookup local\n%d:\tfrom all lookup 200\n", netfilter.RulePriority))
-	if got := statuses(f.host("amd64").Tun(context.Background(), conflict)); got["tun.ip-rules"] != Fail {
+	if got := statuses(f.host("amd64").Tun(context.Background(), conflict, 999)); got["tun.ip-rules"] != Fail {
 		t.Errorf("conflict: %v", got)
 	}
 
 	// 非 root：需要 root 的项跳过。
 	f = healthy()
 	f.euid = 1000
-	got = statuses(f.host("amd64").Tun(context.Background(), fakeRules("")))
-	if got["tun.ip-rules"] != Skip || got["tun.iptables-legacy"] != Skip {
+	got = statuses(f.host("amd64").Tun(context.Background(), fakeRules(""), 999))
+	if got["tun.ip-rules"] != Skip || got["tun.egress"] != Skip || got["tun.iptables-legacy"] != Skip {
 		t.Errorf("non-root: %v", got)
+	}
+}
+
+// TestTunEgress 验证内核出站经 VPN（点对点的网卡）时警告，经 TUN（看不出背后的网卡）时跳过。
+func TestTunEgress(t *testing.T) {
+	f := healthy()
+	egress := func(rules *netfilter.Rules) Check {
+		for _, c := range f.host("amd64").Tun(context.Background(), rules, 999) {
+			if c.ID == "tun.egress" {
+				return c
+			}
+		}
+		t.Fatal("no egress check")
+		return Check{}
+	}
+	if c := egress(fakeEgress("", "wg0", "POINTOPOINT,NOARP,UP,LOWER_UP")); c.Status != Warn || !strings.Contains(c.Message, "wg0, a VPN") || c.Hint == "" {
+		t.Errorf("wg0: %+v", c)
+	}
+	if c := egress(fakeEgress("", netfilter.Device, "POINTOPOINT,UP")); c.Status != Skip {
+		t.Errorf("tunlr0: %+v", c)
+	}
+	// 查不到路由（没有联网的机器）：跳过。
+	if c := egress(fakeEgress("", "", "")); c.Status != Skip {
+		t.Errorf("no route: %+v", c)
 	}
 }
 
@@ -238,7 +273,7 @@ func TestTunLegacyIptables(t *testing.T) {
 	f.cmds["iptables-legacy-save"] = "*filter\n:INPUT ACCEPT [0:0]\n-A INPUT -p tcp --dport 22 -j ACCEPT\n-A INPUT -j DROP\nCOMMIT\n"
 	f.cmds["ip6tables-legacy-save"] = "*filter\nCOMMIT\n"
 	var legacy Check
-	for _, c := range f.host("amd64").Tun(context.Background(), fakeRules("")) {
+	for _, c := range f.host("amd64").Tun(context.Background(), fakeRules(""), 999) {
 		if c.ID == "tun.iptables-legacy" {
 			legacy = c
 		}

@@ -198,3 +198,55 @@ func TestPreflightForeignRules(t *testing.T) {
 		t.Errorf("warnings = %q", warnings)
 	}
 }
+
+func TestEgress(t *testing.T) {
+	var calls []string
+	links := map[string]string{
+		"ens3": "2: ens3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP",
+		"wg0":  "5: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN",
+	}
+	route := "1.1.1.1 via 192.168.1.1 dev ens3 src 192.168.1.20 uid 999 \n    cache \n"
+	r := &Rules{Run: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if args[1] == "route" {
+			return []byte(route), nil
+		}
+		return []byte(links[args[len(args)-1]] + "\n"), nil
+	}}
+	ctx := context.Background()
+	if dev, p2p, err := r.Egress(ctx, 999); err != nil || dev != "ens3" || p2p {
+		t.Errorf("ens3: %q %v %v", dev, p2p, err)
+	}
+	if calls[0] != "ip -4 route get 1.1.1.1 uid 999" {
+		t.Errorf("calls = %q", calls)
+	}
+	route = "1.1.1.1 dev wg0 table 51820 src 10.8.0.2 uid 0 \n    cache \n"
+	if dev, p2p, err := r.Egress(ctx, -1); err != nil || dev != "wg0" || !p2p {
+		t.Errorf("wg0: %q %v %v", dev, p2p, err)
+	}
+	if calls[2] != "ip -4 route get 1.1.1.1" {
+		t.Errorf("calls = %q", calls)
+	}
+	route = "local 1.1.1.1\n"
+	if _, _, err := r.Egress(ctx, -1); err == nil {
+		t.Error("no dev accepted")
+	}
+}
+
+func TestUIDRuleMissing(t *testing.T) {
+	f, r := newFake()
+	ctx := context.Background()
+	// 内核没有建立 auto-route 的规则（TUN 关着）：不算缺。
+	if missing, err := r.UIDRuleMissing(ctx, 999); err != nil || len(missing) != 0 {
+		t.Fatalf("no kernel rules: %v %v", missing, err)
+	}
+	f.rules["-4"] = append(f.rules["-4"], "9000:\tfrom all uidrange 999-999 goto 9010", "9003:\tnot from all iif lo lookup 2022", "9010:\tfrom all nop")
+	f.rules["-6"] = append(f.rules["-6"], "9001:\tnot from all iif lo lookup 2022", "9010:\tfrom all nop")
+	if missing, err := r.UIDRuleMissing(ctx, 999); err != nil || !slices.Equal(missing, []string{"-6"}) {
+		t.Errorf("missing = %v %v", missing, err)
+	}
+	// UID 99 不能匹配到 999-999。
+	if missing, _ := r.UIDRuleMissing(ctx, 99); !slices.Equal(missing, []string{"-4", "-6"}) {
+		t.Errorf("other uid: %v", missing)
+	}
+}

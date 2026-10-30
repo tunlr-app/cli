@@ -40,6 +40,9 @@ func newFakeKernel(t *testing.T) *fakeKernel {
 	mux.HandleFunc("GET /version", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"meta":true,"version":"v1.19.33"}`))
 	})
+	mux.HandleFunc("GET /configs", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"mode":"rule","tun":{"enable":true,"device":"tunlr0","auto-detect-interface":true,"exclude-uid":[999]}}`))
+	})
 	mux.HandleFunc("PUT /configs", func(w http.ResponseWriter, r *http.Request) {
 		k.queries = append(k.queries, r.URL.RawQuery)
 		var req struct{ Path string }
@@ -74,6 +77,9 @@ func TestClient(t *testing.T) {
 	v, err := c.Version(ctx)
 	if err != nil || v != "v1.19.33" {
 		t.Fatalf("version = %q, %v", v, err)
+	}
+	if tun, err := c.Tun(ctx); err != nil || !tun.Enable || !tun.AutoDetectInterface || len(tun.ExcludeUID) != 1 || tun.ExcludeUID[0] != 999 {
+		t.Fatalf("tun = %+v, %v", tun, err)
 	}
 
 	cfg := filepath.Join(t.TempDir(), "config.yaml")

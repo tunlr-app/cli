@@ -21,6 +21,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/download"
 	"github.com/tunlr-app/cli/pkg/core/mihomo"
 	"github.com/tunlr-app/cli/pkg/core/paths"
+	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/state"
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 	"github.com/tunlr-app/cli/templates"
@@ -694,6 +695,25 @@ func TestPlanResetSecret(t *testing.T) {
 
 }
 
+// TestManagedTunExcludeUID 验证知道内核用户时 tunlr:tun 按它的 UID 排除内核自己的流量，不知道时不写。
+func TestManagedTunExcludeUID(t *testing.T) {
+	tun := func(uid int) string {
+		for _, m := range managed("", switches{tun: true, coreUID: uid}, &settings.Settings{}) {
+			if m.Name == ManagedTun {
+				return string(m.Data)
+			}
+		}
+		t.Fatal("no tunlr:tun")
+		return ""
+	}
+	if got := tun(999); !strings.Contains(got, "    iproute2-rule-index: 9000\n    exclude-uid:\n      - 999\n  dns:\n") {
+		t.Errorf("known user:\n%s", got)
+	}
+	if got := tun(-1); strings.Contains(got, "exclude-uid") {
+		t.Errorf("unknown user:\n%s", got)
+	}
+}
+
 // TestManagedConflicts 验证 mixin 动了受管 mixin 独占的键时拒绝合成，提示改用的命令；独占的键在回滚时
 // 也按当前状态写入。
 func TestManagedConflicts(t *testing.T) {
@@ -706,6 +726,8 @@ func TestManagedConflicts(t *testing.T) {
 		{"mihomo:\n  x: 1\n  external-controller: 0.0.0.0:9091\n", "mixin 10-a.yaml:3: external-controller is managed by tunlr:panel"},
 		{"mihomo:\n  tun:\n    stack: system\n    enable: true\n", "mixin 10-a.yaml:4: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off)"},
 		{"mihomo:\n  tun:\n    auto-detect-interface: false\n", "mixin 10-a.yaml:3: tun.auto-detect-interface is managed by tunlr:tun"},
+		// 测试用的布局不知道内核用户，exclude-uid 不写，仍然独占。
+		{"mihomo:\n  tun:\n    exclude-uid: [1000]\n", "mixin 10-a.yaml:3: tun.exclude-uid is managed by tunlr:tun"},
 		{"mihomo:\n  external-controller-unix: x.sock\n", "mixin 10-a.yaml:2: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
 	} {
 		writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), tt.mixin)
