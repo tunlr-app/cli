@@ -11,6 +11,24 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/paths"
 )
 
+func TestTailWithoutConnections(t *testing.T) {
+	log := "a\n" +
+		"time=1 level=info msg=\"[TCP] 10.0.0.2:1 --> x:443 match DIRECT\"\n" +
+		"b\n" +
+		"time=2 level=info msg=\"[UDP] 10.0.0.2:2 --> y:53 match DIRECT\"\n" +
+		"\n" +
+		"c\n"
+	if got := tailWithoutConnections(log, 2); got != "  b\n  c" {
+		t.Errorf("tail = %q", got)
+	}
+	if got := tailWithoutConnections(log, 10); got != "  a\n  b\n  c" {
+		t.Errorf("all = %q", got)
+	}
+	if got := tailWithoutConnections("", 5); got != "" {
+		t.Errorf("empty = %q", got)
+	}
+}
+
 func TestRenderUnits(t *testing.T) {
 	units, err := RenderUnits(paths.Layout{})
 	if err != nil {

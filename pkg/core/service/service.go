@@ -252,6 +252,31 @@ func (s *Systemd) Logs(ctx context.Context, lines int, follow bool, stdout, stde
 	return err
 }
 
+// RecentLog 返回内核服务最近 n 行与连接无关的日志（去掉 [TCP]、[UDP] 的连接记录，它们几分钟就能
+// 把其他内容冲掉），每行缩进两格，用于解释加载配置卡住之类的故障。读不到时返回空字符串。
+func RecentLog(ctx context.Context, n int) string {
+	out, err := exec.CommandContext(ctx, "journalctl", "--unit", CoreUnit, "--no-pager", "--output", "cat", "--lines", "2000").Output()
+	if err != nil {
+		return ""
+	}
+	return tailWithoutConnections(string(out), n)
+}
+
+// tailWithoutConnections 取 log 中最后 n 行不是连接记录的行，每行缩进两格。
+func tailWithoutConnections(log string, n int) string {
+	var kept []string
+	for line := range strings.SplitSeq(strings.TrimRight(log, "\n"), "\n") {
+		if line == "" || strings.Contains(line, "[TCP]") || strings.Contains(line, "[UDP]") {
+			continue
+		}
+		kept = append(kept, "  "+line)
+	}
+	if len(kept) > n {
+		kept = kept[len(kept)-n:]
+	}
+	return strings.Join(kept, "\n")
+}
+
 // RenderUnits 按布局生成全部 unit 的内容。
 func RenderUnits(l paths.Layout) (map[string][]byte, error) {
 	data := struct {

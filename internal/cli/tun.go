@@ -106,7 +106,10 @@ func (a *app) newTunOnCommand() *cobra.Command {
 		Long: "Publish the configuration with TUN enabled (shown as a diff first), then check that\n" +
 			"DNS, HTTP and the SSH session you are running in still work. If a check fails, TUN is\n" +
 			"turned off again (exit code 4). If tunlr is cut off before the checks finish, a\n" +
-			"systemd timer turns TUN off after 3 minutes, and so does a reboot.",
+			"systemd timer turns TUN off after 3 minutes, and so does a reboot.\n\n" +
+			"The TUN stack (mixed by default; system or gvisor) and other tun keys tunlr does not\n" +
+			"manage are set in a mixin, e.g. tunlr config edit 20-tun with:\n" +
+			"  mihomo:\n    tun:\n      stack: system",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := a.requireConfirmation("tun on"); err != nil {

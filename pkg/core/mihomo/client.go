@@ -22,6 +22,9 @@ import (
 // （内核退出后 socket 文件会留下）。
 var ErrNotRunning = errors.New("mihomo is not running")
 
+// ErrNoResponse 表示内核在时限内没有响应某个请求（如重载配置卡住）。
+var ErrNoResponse = errors.New("no response from mihomo")
+
 const (
 	// apiTimeout 是普通 API 请求的时限。
 	apiTimeout = 10 * time.Second
@@ -173,11 +176,10 @@ func (c *Client) do(ctx context.Context, timeout time.Duration, method, path str
 			return ErrNotRunning
 		}
 		if ctx.Err() != nil {
-			return fmt.Errorf("mihomo API %s %s: no response within %s", method, path, timeout)
+			return fmt.Errorf("%w: mihomo API %s %s: no response within %s", ErrNoResponse, method, path, timeout)
 		}
 		// 去掉 url.Error 附带的请求地址，它只是占位的 http://mihomo。
-		var ue *url.Error
-		if errors.As(err, &ue) {
+		if ue, ok := errors.AsType[*url.Error](err); ok {
 			err = ue.Err
 		}
 		return fmt.Errorf("mihomo API %s %s: %w", method, path, err)

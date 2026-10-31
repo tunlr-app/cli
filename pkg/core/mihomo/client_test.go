@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeKernel 在 Unix socket 上模拟内核 API：/version 返回版本；PUT /configs 读取 path 指向的文件，
@@ -59,6 +60,10 @@ func newFakeKernel(t *testing.T) *fakeKernel {
 			return
 		case strings.Contains(string(data), "CRASH"):
 			go k.srv.Close()
+		case strings.Contains(string(data), "HANG"):
+			// 加载卡住：直到客户端放弃才返回。
+			<-r.Context().Done()
+			return
 		}
 		k.loaded = append(k.loaded, string(data))
 		w.WriteHeader(http.StatusNoContent)
@@ -123,6 +128,22 @@ func TestClientNotRunning(t *testing.T) {
 	}
 	if _, err := NewClient(k.socket).Version(context.Background()); !errors.Is(err, ErrNotRunning) {
 		t.Errorf("stale socket: err = %v", err)
+	}
+}
+
+// TestReloaderHang 验证内核加载卡住、时限内没有响应时，错误带上内核最近的日志。
+func TestReloaderHang(t *testing.T) {
+	k := newFakeKernel(t)
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(cfg, []byte("HANG: true\n"), 0o600)
+	r := &Reloader{Client: NewClient(k.socket), ConfigPath: cfg,
+		RecentLog: func(context.Context) string { return "  level=info msg=\"Start initial configuration in progress\"" }}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := r.Reload(ctx)
+	if !errors.Is(err, ErrNoResponse) || !strings.Contains(err.Error(), "no response within") ||
+		!strings.Contains(err.Error(), "mihomo's recent log (journalctl -u tunlr-core.service):\n  level=info") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

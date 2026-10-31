@@ -423,7 +423,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 必须带 `force=true`，否则端口等监听设置的变化不会生效；带上后端口变化即时生效。
   - 内核解析失败时返回 400 和错误信息，并继续运行原来的配置。
   - 内核应用配置的函数不返回错误，监听端口失败等问题不会反映在响应中，所以 204 只表示内核接受了这份配置。
-  - 内核在重载时同步初始化 proxy-providers 和 rule-providers，新的 http provider 会现场抓取：地址不可达时实测重载耗时 3.4 秒。重载时限因此设为 2 分钟，超时按失败处理。
+  - 内核在重载时同步初始化 proxy-providers 和 rule-providers，新的 http provider 会现场抓取：地址不可达时实测重载耗时 3.4 秒。重载时限因此设为 2 分钟，超时按失败处理。超时时（`mihomo.ErrNoResponse`）错误里附上内核最近 20 行与连接无关的日志（`service.RecentLog`，去掉 `[TCP]`、`[UDP]` 行）：2026-10-31 一台 NanoPi R5S 上第一次开 TUN 时重载卡住、恢复也超时，事后连接日志几分钟就把那段冲掉了，原因没能查到；第二次正常。
   - 内核退出后 socket 文件仍会留下，连接时被拒绝。socket 不存在和连接被拒绝都视为内核没有运行：配置照常发布，由内核启动时加载。
   - 重载失败（返回错误，或重载后不再响应）时，恢复原配置并让内核重新加载它，退出码 4。重载后内核不再响应时，即使随后连接被拒绝，也不能当作“没有运行”，同样回滚，让内核下次启动时用回原配置。
   - 热重载只调用 `executor.ApplyConfig`，不重建 API 服务；geo 定时器也只在启动时注册（读源码 `hub/hub.go`、`main.go`，并实测改 `secret`、`external-controller` 后重载不生效）。以下键变化时，apply 改为重启内核，plan 中说明“本次会重启内核”：`external-controller`、`external-controller-tls`、`external-controller-unix`、`external-controller-pipe`、`external-controller-cors`、`external-doh-server`、`secret`、`external-ui`、`external-ui-name`、`tls`、`geo-auto-update`、`geo-update-interval`。重启后做健康检查，失败时恢复原配置并再次重启，退出码 4。没有安装服务时照常写入，并提示需要重启内核。

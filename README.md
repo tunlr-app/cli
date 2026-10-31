@@ -74,7 +74,7 @@ tunlr proxy lan on                              # 局域网设备把本机当 HT
 tunlr panel lan on                              # 局域网设备直接打开面板
 ```
 
-订阅之外的自定义写在 `/etc/tunlr/mixin.d/*.yaml`（`tunlr config edit`），分 `mihomo:`（原样合并进配置）和 `tunlr:`（对节点、策略组、规则做前插、追加、修改、删除）两个命名空间；订阅更新后会按模板、订阅、mixin 重新合成并发布。
+订阅之外的自定义写在 `/etc/tunlr/mixin.d/*.yaml`（`tunlr config edit`），分 `mihomo:`（原样合并进配置）和 `tunlr:`（对节点、策略组、规则做前插、追加、修改、删除）两个命名空间；订阅更新后会按模板、订阅、mixin 重新合成并发布。TUN 的堆栈（默认 `mixed`，可改 `system` 或 `gvisor`）等 tunlr 不管理的 `tun` 键也在这里改，例如 `tunlr config edit 20-tun` 写入 `mihomo: {tun: {stack: system}}`。
 
 ## 命令总览
 
