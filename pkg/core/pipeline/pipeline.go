@@ -978,7 +978,7 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 		LANAllowedIPs []string `yaml:"lan-allowed-ips"`
 	}{sw.proxyLAN, config.LANAllowedIPs}})
 
-	// 镜像的域名不加直连规则（2026-10-31 决定，见 DESIGN.md 第 7 节）：它和其他流量一样按规则分流。
+	// 镜像的域名不加直连规则（见 DESIGN.md 第 6 节）：它和其他流量一样按规则分流。
 	mirror := set.GitHubMirror
 	var mirrorSection section
 	if mirror != "" {
