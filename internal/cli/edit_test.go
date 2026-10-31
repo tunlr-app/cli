@@ -66,6 +66,30 @@ type scriptedPrompt struct {
 	// confirms 是是非题的回答；confirmed 记录问过的问题和说明。
 	confirms  []bool
 	confirmed []string
+	// texts 是多行文字的回答，cancelText 表示用户取消；textShown 记录预先填好的内容和说明（以 | 分隔）。
+	texts     []string
+	textShown []string
+}
+
+// cancelText 是 scriptedPrompt.texts 中表示用户取消的回答。
+const cancelText = "<cancel>"
+
+func (p *scriptedPrompt) Text(_ context.Context, _, description, value string, validate func(string) error) (string, error) {
+	p.textShown = append(p.textShown, value+"|"+description)
+	if len(p.texts) == 0 {
+		p.t.Fatal("unexpected text request")
+	}
+	s := p.texts[0]
+	p.texts = p.texts[1:]
+	if s == cancelText {
+		return "", huh.ErrUserAborted
+	}
+	if validate != nil {
+		if err := validate(s); err != nil {
+			p.t.Fatalf("text %q does not validate: %v", s, err)
+		}
+	}
+	return s, nil
 }
 
 func (p *scriptedPrompt) Confirm(_ context.Context, title, description string) (bool, error) {

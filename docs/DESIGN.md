@@ -205,8 +205,18 @@ sh 的优势（轻量、随处可跑、可随手改）服务于路由器和老�
     - `mihomo:` 的键直接查 mihomo 文档，是兜底；不全用 `tunlr:` 建模，否则要永远追上游。`tunlr:` 的操作只针对节点、策略组、规则：只有订阅带来的这三个列表需要在机场内容上增删改。
   - **mixin 的兜底值：`tunlr.defaults`**：写法同 `mihomo:`，但在订阅之前合并，只在订阅没写时生效（如自己的 geo 地址、订阅不带 DNS 时的 DNS）；写了独占键不报错。放在 mixin 而非工具设置：它改的是配置，工具设置只放工具行为。用通用的 `defaults` 而非专用 `geo`：会被订阅整段替换的只有 DNS 和 geo，白名单加键不用加语法。
     - **tunlr 的兜底值是受管 mixin `tunlr:defaults`**（`templates/defaults.yaml`），不在模板中：模板里看不出值是兜底还是系统设置，作为受管 mixin 能逐键报告来源。随 tunlr 升级更新。
-  - **`mihomo:` 的合并语义**：RFC 7386 JSON Merge Patch，映射逐层合并，标量和列表整体替换，`null` 删除。列表只整体替换：要增删的只有订阅的三个列表，归 `tunlr:`。整体替换 `proxies`、`proxy-groups`、`rules`、`sub-rules` 时警告（订阅更新后机场内容全丢）。
-  - **`tunlr:` 的操作**：`proxy-filter`，以及对 `proxies`、`proxy-groups`、`rules`、`sub-rules.<名称>` 的 `prepend`、`append`、`patch`、`delete`；其他键报错。
+    - **兜底的 DNS**（参考 ShellCrash 的分流模式）：fake-ip；`geosite:cn` 的域名经直连（`#DIRECT`，不依赖订阅的规则）问中国的 DoH，其余问境外的 DoH 并开 `respect-rules`。境外 DoH 从中国直连多被阻断，tunlr 又不知道订阅的策略组名，写不出 `#组名`，`respect-rules` 是唯一不依赖组名的经代理写法；它要求 `proxy-server-nameserver`，节点的域名经直连解析。代价：节点都不可用时境外域名解析失败，那时连接本来也不通。
+      - DoH 都写 IP（证书含 IP），不依赖 bootstrap 解析。不写 `direct-nameserver`：它对所有直连生效、不看 `nameserver-policy`。
+      - `ipv6: false`：fake-ip 只给 A 记录假地址，AAAA 返回真实地址时，有 IPv6 出口的设备会绕过代理。
+      - 嗅探默认开启（HTTP、TLS、QUIC）：网关模式下设备自己用 DoH 或写死 DNS 时，只有它能认出域名。
+    - **来源提示**：dns、sniffer 由订阅整段替换，plan 和 `tunlr config` 用一行说明各来自订阅还是兜底值、被哪些 mixin 改过（`--json` 的 `dns_sources`），否则看不出生效的是哪一份。
+    - **用谁的 DNS 按订阅选**：订阅写了 dns 时，`mihomo:` 只能在它上面改，退不回兜底值，所以 mixin 有 `tunlr.ignore-from-subscription`，列出不从订阅采用的键（`dns`、`sniffer`、`hosts`：整段采用、又没有别的办法退回的映射）。各文件的列表取并集，后面的不能取消前面的。机场的 DNS 好坏因机场而异，`tunlr sub set <订阅> --dns tunlr|subscription` 像 geo 一样写进订阅自己的 mixin（`20-dns.yaml`），dns 和 sniffer 一起换：兜底的嗅探是配合兜底的 DNS 调的。别的 mixin 也列了时 `--dns subscription` 拒绝，免得改了不生效。
+    - **DNS 模式是全局开关**（`tunlr tun dns`，存在 `state.json`）：fake-ip 与 redir-host 的取舍看设备和应用，与订阅无关。只在设了时由 tunlr:tun 写 `dns.enhanced-mode` 并独占它；没设时不独占，已有的 mixin 照常生效，升级不会让它们报错。nameserver 等内容不做开关：各人的选择太多，用 mixin。
+    - **fake-ip-filter 只编辑自己的条目**（`tunlr tun dns fake-ip-filter`）：要加的通常是一两个内网域名，整份替换要复制十几行，复制出去的也跟不上订阅或兜底值的更新。所以 `tunlr.fake-ip-filter` 在生效的那份列表上 `append`、`delete`（顺序不影响匹配，没有 prepend、patch），追加时已有的不重复。命令只管 `append`，写在共用的 `90-fake-ip-filter.yaml`（排在多数共用文件之后，不被它们整份替换的列表盖掉）；文件中手写的 `delete` 保留。之后的 mixin 仍整份替换了列表时，预览指出是哪个文件。
+    - **编辑用内联文本框**：一行一条，比逐条增删的问答直接。按键与 huh 默认相反：Enter 换行、Tab 完成，按习惯想换行时不会把只写了一行的列表提交出去；帮助行写明按键，Ctrl+E 可以转到编辑器。
+    - **菜单里 DNS 是一项**：Traffic 组已满 7 项，模式与 fake-ip-filter 是用户眼里的同一件事，合成一项“DNS”（`tunlr tun dns`），在终端里先显示现状再选改什么；没有终端时 `tun dns` 只显示现状。不放 Config 组：那是按实现（写 mixin）而不是按用户找的地方归类。
+  - **`mihomo:` 的合并语义**：RFC 7386 JSON Merge Patch，映射逐层合并，标量和列表整体替换，`null` 删除。列表只整体替换：要增删的是订阅的三个列表和 fake-ip-filter，归 `tunlr:`。整体替换 `proxies`、`proxy-groups`、`rules`、`sub-rules` 时警告（订阅更新后机场内容全丢）。
+  - **`tunlr:` 的操作**：`defaults`、`ignore-from-subscription`、`proxy-filter`、`fake-ip-filter`（`append`、`delete`），以及对 `proxies`、`proxy-groups`、`rules`、`sub-rules.<名称>` 的 `prepend`、`append`、`patch`、`delete`；其他键报错。
     - 规则 `append` 插在末尾 `MATCH` 之前，否则永不命中。
     - `patch` 按 `name` 递归修改；列表字段用显式的 `prepend-<字段>` 等，不靠值类型猜。找不到只警告：机场改名很常见。
     - 删节点或组时同时从所有组的 `proxies` 移除。名称可写 `/正则/`。
@@ -527,6 +537,8 @@ tunlr update run [sub|geo]
 Network
 tunlr tun
 tunlr tun on | off
+tunlr tun dns [fake-ip | redir-host | default]
+tunlr tun dns fake-ip-filter [--add <名称>]... [--remove <名称>]... [--reset]
 tunlr tun gateway on | off
 tunlr proxy
 tunlr proxy lan on | off

@@ -301,7 +301,9 @@ type mixer struct {
 	fallback map[string]bool
 	defaults bool
 	// filled 记录订阅的映射中缺少、由兜底值补上的路径（见 fillFiles）。
-	filled    map[string]bool
+	filled map[string]bool
+	// ignored 是 mixin 要求不从订阅采用的顶层键，值为最先列出它的文件（见 takeIgnored）。
+	ignored   map[string]string
 	warnings  []Warning
 	overrides []Override
 }
@@ -403,13 +405,23 @@ func (m *mixer) applyFile(root, src *yaml.Node) error {
 		return nil
 	}
 	var ops []pending
-	// sub-rules 不存在时先用一个独立的映射，插入了规则才放进配置，删除和修改不留下空的 sub-rules。
-	var detached *yaml.Node
+	// sub-rules（dns）不存在时先用一个独立的映射，插入了规则（条目）才放进配置，删除和修改不留下空的映射。
+	var detached, detachedDNS *yaml.Node
 	for i := 0; i+1 < len(t.Content); i += 2 {
 		k, v := t.Content[i], t.Content[i+1]
 		switch {
 		case slices.Contains(tunlrLists, k.Value):
 			ops = append(ops, opsOf(root, k.Value, "", namespace+"."+k.Value, v)...)
+		case k.Value == fakeIPFilterKey:
+			dns := lookup(root, []string{"dns"})
+			if dns == nil {
+				detachedDNS = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+				dns = detachedDNS
+			}
+			if dns.Kind != yaml.MappingNode {
+				return m.errorf(k.Line, "%s.%s: dns is not a mapping", namespace, fakeIPFilterKey)
+			}
+			ops = append(ops, opsOf(dns, fakeIPFilterKey, "dns", namespace+"."+fakeIPFilterKey, v)...)
 		case k.Value == "sub-rules" && v.Kind == yaml.MappingNode:
 			sr := lookup(root, []string{"sub-rules"})
 			if sr == nil {
@@ -430,6 +442,9 @@ func (m *mixer) applyFile(root, src *yaml.Node) error {
 	}
 	if detached != nil && len(detached.Content) > 0 {
 		setValue(root, "sub-rules", detached)
+	}
+	if detachedDNS != nil && len(detachedDNS.Content) > 0 {
+		setValue(root, "dns", detachedDNS)
 	}
 	return nil
 }
@@ -567,9 +582,17 @@ func (m *mixer) insert(o pending) error {
 	if target.Kind != yaml.SequenceNode {
 		return m.errorf(o.line, "%s: %s is not a list", o.label, joinPath(o.path, o.key))
 	}
-	add := make([]*yaml.Node, len(o.value.Content))
-	for i, it := range o.value.Content {
-		add[i] = clone(it)
+	add := make([]*yaml.Node, 0, len(o.value.Content))
+	for _, it := range o.value.Content {
+		// fake-ip-filter 已有的条目不再追加：它所加入的列表随订阅变化，可能本来就有。
+		same := func(n *yaml.Node) bool { return n.Value == it.Value }
+		if o.isFakeIPFilter() && (slices.ContainsFunc(target.Content, same) || slices.ContainsFunc(add, same)) {
+			continue
+		}
+		add = append(add, clone(it))
+	}
+	if o.isFakeIPFilter() && len(add) > 0 {
+		m.touch(fakeIPFilterPath)
 	}
 	at := 0
 	if !o.prepend {
@@ -675,6 +698,9 @@ func (m *mixer) delete(o pending) error {
 		if !hit[i] {
 			m.warnf(items.Content[i].Line, "%s: nothing matches %s", o.label, mt)
 		}
+	}
+	if o.isFakeIPFilter() && len(removed) > 0 {
+		m.touch(fakeIPFilterPath)
 	}
 	if o.path == "" && (o.key == "proxies" || o.key == "proxy-groups") && len(removed) > 0 {
 		names := make(map[string]bool, len(removed))

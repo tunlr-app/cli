@@ -724,7 +724,7 @@ func TestManagedConflicts(t *testing.T) {
 	for _, tt := range []struct{ mixin, want string }{
 		{"mihomo:\n  secret: mine\n", "mixin 10-a.yaml:2: secret is managed by tunlr:panel (change it with: tunlr panel lan on/off, tunlr panel reset-secret)"},
 		{"mihomo:\n  x: 1\n  external-controller: 0.0.0.0:9091\n", "mixin 10-a.yaml:3: external-controller is managed by tunlr:panel"},
-		{"mihomo:\n  tun:\n    stack: system\n    enable: true\n", "mixin 10-a.yaml:4: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off)"},
+		{"mihomo:\n  tun:\n    stack: system\n    enable: true\n", "mixin 10-a.yaml:4: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off, tunlr tun dns)"},
 		{"mihomo:\n  tun:\n    auto-detect-interface: false\n", "mixin 10-a.yaml:3: tun.auto-detect-interface is managed by tunlr:tun"},
 		// 测试用的布局不知道内核用户，exclude-uid 不写，仍然独占。
 		{"mihomo:\n  tun:\n    exclude-uid: [1000]\n", "mixin 10-a.yaml:3: tun.exclude-uid is managed by tunlr:tun"},
@@ -739,7 +739,8 @@ func TestManagedConflicts(t *testing.T) {
 			t.Errorf("%q: CheckMixins = %v", tt.mixin, err)
 		}
 	}
-	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "mihomo:\n  tun:\n    stack: system\n")
+	// DNS 模式没有设开关时 dns.enhanced-mode 不独占。
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), "mihomo:\n  tun:\n    stack: system\n  dns:\n    enhanced-mode: redir-host\n")
 	if err := p.CheckMixins(ctx); err != nil {
 		t.Errorf("allowed key: %v", err)
 	}

@@ -34,6 +34,8 @@ type prompter interface {
 	Input(ctx context.Context, title, description, value string, validate func(string) error) (string, error)
 	// Confirm 问一个是非题，description 是问题下的说明，可以为空。
 	Confirm(ctx context.Context, title, description string) (bool, error)
+	// Text 让用户编辑多行文字（一行一条的列表），value 是预先填好的内容，validate 不通过时要求改正。
+	Text(ctx context.Context, title, description, value string, validate func(string) error) (string, error)
 }
 
 // inputField 是提问时的一项输入（见 sourceFields、filterFields）。
@@ -103,6 +105,29 @@ func (p huhPrompter) Confirm(ctx context.Context, title, description string) (bo
 	ok := false
 	err := p.run(ctx, huh.NewConfirm().Title(title).Description(description).Value(&ok))
 	return ok, err
+}
+
+// Text 的按键与 huh 的默认不同：内容是一行一条的列表，Enter 换行（默认是提交，按习惯想换行时会把只写了一行的
+// 列表提交出去），Tab 完成；Ctrl+E 用编辑器打开。帮助行按这里写的说明显示。
+func (p huhPrompter) Text(ctx context.Context, title, description, value string, validate func(string) error) (string, error) {
+	v := value
+	lines := min(max(strings.Count(v, "\n")+3, 5), 15)
+	t := huh.NewText().Title(title).Description(description).Value(&v).Lines(lines).EditorExtension("txt")
+	if validate != nil {
+		t = t.Validate(validate)
+	}
+	if editor := editorCommand(); len(editor) > 0 {
+		t = t.Editor(editor...)
+	} else {
+		t = t.ExternalEditor(false)
+	}
+	km := promptKeys()
+	km.Text.NewLine = key.NewBinding(key.WithKeys("enter", "ctrl+j"), key.WithHelp("enter", "new line"))
+	km.Text.Next = key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "done"))
+	km.Text.Submit = key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "done"))
+	km.Text.Editor = key.NewBinding(key.WithKeys("ctrl+e"), key.WithHelp("ctrl+e", "open in editor"))
+	err := p.runKeys(ctx, km, t)
+	return v, err
 }
 
 // run 运行只有一组字段的表单。用 ThemeBase16：跟随终端的 16 色，与其余输出一致。
@@ -431,16 +456,7 @@ func (a *app) saveMixin(m config.Mixin, original []byte, existed bool, keep *boo
 // （如 "code -w"）。不经 Debian 的 editor 替代项：它常指向 nano，有 vim 时不该用它。
 // 不随命令的 context 结束编辑器：终端里的 Ctrl-C 同时发给编辑器，由它自己处理。
 func (a *app) runEditor(path string) error {
-	editor := cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR"))
-	if editor == "" {
-		for _, e := range []string{"vim", "nano", "vi"} {
-			if _, err := exec.LookPath(e); err == nil {
-				editor = e
-				break
-			}
-		}
-	}
-	fields := strings.Fields(editor)
+	fields := editorCommand()
 	if len(fields) == 0 {
 		return errors.New("no editor found; set the EDITOR environment variable")
 	}
@@ -450,4 +466,18 @@ func (a *app) runEditor(path string) error {
 		return fmt.Errorf("editor %s: %w; nothing saved", fields[0], err)
 	}
 	return nil
+}
+
+// editorCommand 返回 runEditor 所用的编辑器命令及参数，找不到时为空。
+func editorCommand() []string {
+	editor := cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR"))
+	if editor == "" {
+		for _, e := range []string{"vim", "nano", "vi"} {
+			if _, err := exec.LookPath(e); err == nil {
+				editor = e
+				break
+			}
+		}
+	}
+	return strings.Fields(editor)
 }

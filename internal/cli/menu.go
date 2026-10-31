@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -543,7 +544,7 @@ func (a *app) subsItems(d menuData) []menuItem {
 	}
 	if len(d.subs) > 0 {
 		items = append(items,
-			op("Change a sub", "Its URL or file, User-Agent, fetch period, proxy filter or geo data", "sub", "set"),
+			op("Change a sub", "Its URL or file, User-Agent, fetch period, proxy filter, geo data or DNS", "sub", "set"),
 			op("Fetch subs now", "Fetch every sub again; the config is published if the active one changed", "sub", "update"))
 	}
 	if len(d.subs) > 1 {
@@ -583,8 +584,16 @@ func (a *app) trafficItems(s *setup.Status) []menuItem {
 	if s.ProxyLAN {
 		items = append(items, op("Change LAN interfaces", lanInterfacesNote, "proxy", "lan", "on"))
 	}
+	// DNS 模式只在 TUN 开着时有意义，只给出与现在生效的相反的那个；回到按配置用 tunlr tun dns default。
+	if tun {
+		mode := "The mode"
+		if m := cmp.Or(s.Tun.DNSMode, s.Tun.PublishedDNSMode); m != "" {
+			mode += " (now " + m + ")"
+		}
+		items = append(items, op("DNS", mode+" and the names that get real addresses (fake-ip-filter)", "tun", "dns"))
+	}
 	return append(items,
-		op("TUN details", "TUN, gateway mode and the checks behind them", "tun"),
+		op("TUN details", "TUN, gateway mode, the DNS mode and the checks behind them", "tun"),
 		op("Proxy port details", "The address other devices enter as their proxy", "proxy"))
 }
 

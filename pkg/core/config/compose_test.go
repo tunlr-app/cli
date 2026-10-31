@@ -242,7 +242,7 @@ func TestComposeErrors(t *testing.T) {
 		{
 			name: "namespace unknown key",
 			l:    mixinLayers("a: 1\n", "tunlr:\n  proxy-filters: {}\n"),
-			want: "mixin 10-test.yaml:2: tunlr.proxy-filters: unknown key (known: defaults, proxy-filter, proxies, proxy-groups, rules, sub-rules)",
+			want: "mixin 10-test.yaml:2: tunlr.proxy-filters: unknown key (known: defaults, ignore-from-subscription, fake-ip-filter, proxy-filter, proxies, proxy-groups, rules, sub-rules)",
 		},
 		{
 			name: "proxy filter unknown key",

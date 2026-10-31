@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
@@ -84,4 +85,37 @@ func DNSWarnings(f *Facts, hasInterface func(name string) bool) []Warning {
 		}
 	}
 	return ws
+}
+
+// DNSMode 读出 tunlr 生成的配置 cfg 中的 dns.enhanced-mode（fake-ip、redir-host），没有写或读不出时为空。
+// 同 GeoSettings，只解析顶层 dns 这一段，不解析整份配置：主菜单每 10 秒刷新一次状态。
+func DNSMode(cfg []byte) string {
+	return dnsSection(cfg).Mode
+}
+
+// dnsFields 是 DNSMode、FakeIPFilter 读出的 dns 中的键。
+type dnsFields struct {
+	Mode         string   `yaml:"enhanced-mode"`
+	FakeIPFilter []string `yaml:"fake-ip-filter"`
+}
+
+// dnsSection 读出 cfg 中顶层 dns 这一段，读不出时为零值。
+func dnsSection(cfg []byte) dnsFields {
+	var part bytes.Buffer
+	keep := false
+	for line := range bytes.Lines(cfg) {
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\n' && line[0] != '#' {
+			keep = bytes.HasPrefix(line, []byte("dns:"))
+		}
+		if keep {
+			part.Write(line)
+		}
+	}
+	var v struct {
+		DNS dnsFields `yaml:"dns"`
+	}
+	if yaml.Unmarshal(part.Bytes(), &v) != nil {
+		return dnsFields{}
+	}
+	return v.DNS
 }

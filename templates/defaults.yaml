@@ -7,17 +7,60 @@ tunlr:
       geosite: https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat
       mmdb: https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb
       asn: https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb
+    # 中国的域名经直连问阿里、腾讯，其他的按规则（通常经代理）问 Cloudflare、Google；
+    # 节点的域名经直连解析。不返回 IPv6 地址，免得设备经 IPv6 绕过代理。
     dns:
       enable: true
-      ipv6: true
+      ipv6: false
       enhanced-mode: fake-ip
       fake-ip-range: 198.18.0.1/16
+      # 这些域名返回真实地址：局域网、时间同步、联网检测、STUN、QQ 快捷登录、游戏主机。
       fake-ip-filter:
-        - "*.lan"
-        - "*.local"
+        - "+.lan"
+        - "+.local"
+        - "+.home.arpa"
+        - "time.*.com"
+        - "time.*.gov"
+        - "time.*.apple.com"
+        - "time-ios.apple.com"
+        - "ntp.*.com"
+        - "+.pool.ntp.org"
+        - "+.msftconnecttest.com"
+        - "+.msftncsi.com"
+        - "stun.*.*"
+        - "stun.*.*.*"
+        - "localhost.ptlogin2.qq.com"
+        - "localhost.sec.qq.com"
+        - "+.srv.nintendo.net"
+        - "+.stun.playstation.net"
+        - "xbox.*.microsoft.com"
+        - "+.xboxlive.com"
+      respect-rules: true
       default-nameserver:
         - 223.5.5.5
         - 119.29.29.29
       nameserver:
-        - https://dns.alidns.com/dns-query
-        - https://doh.pub/dns-query
+        - https://1.1.1.1/dns-query
+        - https://8.8.8.8/dns-query
+      nameserver-policy:
+        "geosite:cn":
+          - https://223.5.5.5/dns-query#DIRECT
+          - https://1.12.12.12/dns-query#DIRECT
+      proxy-server-nameserver:
+        - https://223.5.5.5/dns-query
+        - https://1.12.12.12/dns-query
+    # 从连接中认出域名：局域网设备自己用 DoH 或写死 DNS 时，按域名的规则照样生效。
+    sniffer:
+      enable: true
+      parse-pure-ip: true
+      override-destination: true
+      sniff:
+        HTTP:
+          ports: [80, 8080-8880]
+        TLS:
+          ports: [443, 8443]
+        QUIC:
+          ports: [443, 8443]
+      skip-domain:
+        - "Mijia Cloud"
+        - "+.push.apple.com"

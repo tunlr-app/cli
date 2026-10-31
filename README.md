@@ -96,7 +96,7 @@ Configuration
   update                      定时更新的日程（订阅、geo 数据）；update run [sub|geo] 立即执行
 
 Network
-  tun                         透明代理与网关模式；tun on|off、tun gateway on|off
+  tun                         透明代理、DNS 模式与网关模式；tun on|off、tun dns（含 fake-ip-filter）、tun gateway on|off
   proxy                       代理端口的地址；proxy lan on|off、proxy env
   filter                      流量过滤：source 网段直连、quic 拒绝 QUIC、ports 只代理常用端口
   devices                     使用本机的局域网设备；name、route、forget
@@ -144,6 +144,49 @@ curl -fsSL https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/uninstall.sh | sudo sh
 ## GitHub 镜像
 
 中国的服务器直连 GitHub 下载常常失败。tunlr 的下载（内核、tunlr 自身）都可以经前缀式镜像传输：`tunlr init --mirror https://axisnow.gh-proxy.org/`，或 `tunlr settings edit` 修改 `github-mirror`。无论经哪个镜像，sha256 都只取自 GitHub 的 release API，不一致即丢弃；API 本身不经镜像。配置中 `external-ui-url`、`geox-url` 的 GitHub 地址也会改为经镜像，由内核自己下载。tunlr 兜底的 geo 数据地址本来就不走 GitHub：用的是 meta-rules-dat 的 release 分支经 jsDelivr 的 fastly 节点（`https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/…`），各节点缓存 12 小时，可能比上游晚一天。镜像的域名不加直连规则，和其他流量一样按订阅规则分流；想让它直连，在 mixin 里加 `tunlr.rules.prepend: [DOMAIN,axisnow.gh-proxy.org,DIRECT]`。只支持“镜像前缀 + 完整 GitHub 地址”这一种写法，jsDelivr 这类按仓库路径改写的 CDN 不能用作 `github-mirror`，但可以按文件给 geo 数据指定来源：`tunlr sub set <名称> --geo-url geosite=https://cdn.jsdelivr.net/...`。
+
+## DNS 怎么走
+
+订阅写了 `dns` 就整段用订阅的（只有监听地址固定为 `127.0.0.1:1053`）；没写时用 tunlr 的兜底值：
+
+- fake-ip 模式，不返回 IPv6 地址，免得设备经 IPv6 绕过代理。
+- `geosite:cn` 的域名经直连问阿里、腾讯的 DoH。其他域名问 Cloudflare、Google 的 DoH，按订阅的规则连接（`respect-rules`），通常经代理：查询不经过中国的解析器，`GEOIP,CN` 这类规则也不会因被污染的地址判错。节点的域名经直连用阿里、腾讯解析。节点都不可用时境外的域名解析不出来，但这时连接本来也不通。
+- 局域网、时间同步、联网检测、STUN、QQ 快捷登录、游戏主机等域名返回真实地址（`fake-ip-filter`）。
+
+嗅探（`sniffer`）也一样：订阅没写就用兜底值，嗅探 HTTP、TLS、QUIC。局域网设备自己用 DoH 或写死了 DNS 时，按域名的规则照样生效。
+
+两个开关和一份列表（`tunlr tun dns` 显示现状；在终端里接着选改哪项，主菜单 Traffic 中的 DNS 就是它）：
+
+- `tunlr sub set <订阅> --dns tunlr`：这个订阅启用时总用 tunlr 的 DNS 和嗅探，订阅写了也不用；`--dns subscription` 恢复默认。它写的是订阅自己的 mixin `mixin.d/<订阅>/20-dns.yaml`：
+
+  ```yaml
+  tunlr:
+    ignore-from-subscription: [dns, sniffer]
+  ```
+
+  `ignore-from-subscription` 也可以写在共用的 mixin 里，对所有订阅生效；能列的键有 `dns`、`sniffer`、`hosts`。
+- `tunlr tun dns fake-ip|redir-host`：DNS 模式（`dns.enhanced-mode`），不管 DNS 来自订阅还是兜底值都按它；`tunlr tun dns default` 回到按配置。设了之后 mixin 不能再写 `dns.enhanced-mode`。fake-ip 回答假地址（`198.18.0.0/16`），经代理的域名不必真的解析；有些应用、设备不接受假地址，可以换 redir-host，回答真实地址，按域名的规则靠映射和嗅探照样生效。DNS 模式只影响 mihomo 自己回答的查询：开了 TUN 时本机的，和把这台服务器当网关、DNS 的局域网设备的。
+- `tunlr tun dns fake-ip-filter`：fake-ip 模式下哪些域名返回真实地址。在终端里打开文本框，只编辑你自己加的条目，一行一条（`+.lan`、`*.example.com`、`nas.example.com`）：Enter 换行，Tab 完成，Ctrl+E 用编辑器打开，Esc 取消；随后显示 diff，确认后发布。没有终端时用 `--add`、`--remove`、`--reset`。条目存在 `mixin.d/90-fake-ip-filter.yaml`，加在生效的那份列表（订阅的或兜底的）上，那份列表以后变了照样生效：
+
+  ```yaml
+  tunlr:
+    fake-ip-filter:
+      append: [nas.example.com]
+  ```
+
+  要去掉那份列表里的条目，在 mixin 中写 `delete`（可以用 `/正则/`）。
+
+`tunlr config plan` 和 `tunlr config` 有一行 `DNS settings:`，说明 dns、sniffer 来自订阅还是兜底值、被哪些 mixin 改过；`tunlr config` 还列出兜底值的完整内容。要改就写 mixin（`tunlr config edit 10-dns`），映射逐层合并，只写要改的键：
+
+```yaml
+mihomo:
+  dns:
+    nameserver: [https://9.9.9.9/dns-query]   # 境外域名问谁
+  sniffer:
+    enable: false                              # 不嗅探
+```
+
+列表在 `mihomo:` 下整体替换；`fake-ip-filter` 用上面的 `tunlr.fake-ip-filter` 加减条目，不必整份复制。写在 `mihomo:` 下改的是生效的那一份（订阅的或兜底的）；只想改兜底值、订阅写了仍用订阅的，写在 `tunlr: {defaults: ...}` 下。
 
 ## 磁盘布局
 

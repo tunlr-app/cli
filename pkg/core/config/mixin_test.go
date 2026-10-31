@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -39,6 +40,7 @@ rules:
   - MATCH,节点选择
 `)
 	base := Layers{Template: templates.Config, Subscription: sub, Managed: []Managed{
+		builtinDefaults,
 		{Name: "tunlr:tun", Data: []byte("mihomo:\n  tun:\n    enable: true\n    auto-route: true\n")},
 		{Name: "tunlr:panel", Data: []byte("mihomo:\n  external-controller: 127.0.0.1:9090\n  secret: s\n")},
 	}}
@@ -77,11 +79,14 @@ rules:
 	if strings.Contains(cfg, "剩余流量") || strings.Contains(cfg, "倍率") {
 		t.Errorf("info node or filtered proxy not removed:\n%s", cfg)
 	}
+	if f := FakeIPFilter(res.Config); !slices.Contains(f, "+.corp.example.com") || slices.Contains(f, "stun.*.*") || !slices.Contains(f, "+.lan") {
+		t.Errorf("fake-ip-filter: %v", f)
+	}
 }
 
-// TestBuiltinDefaults 确认内置的兜底值 tunlr:defaults 有效，给出全部 geo 数据设置和 DNS，模板中没有这些键。
+// TestBuiltinDefaults 确认内置的兜底值 tunlr:defaults 有效，给出全部 geo 数据设置、DNS 和嗅探，模板中没有这些键。
 func TestBuiltinDefaults(t *testing.T) {
-	for _, k := range []string{"\ngeox-url:", "\ngeo-auto-update:", "\ngeo-update-interval:", "\ndns:"} {
+	for _, k := range []string{"\ngeox-url:", "\ngeo-auto-update:", "\ngeo-update-interval:", "\ndns:", "\nsniffer:"} {
 		if strings.Contains(string(templates.Config), k) {
 			t.Errorf("template still has %s", strings.TrimSpace(k))
 		}
@@ -95,10 +100,21 @@ func TestBuiltinDefaults(t *testing.T) {
 			t.Errorf("%+v", s)
 		}
 	}
-	for _, want := range []string{"\ndns:\n  enable: true\n", "\n  enhanced-mode: fake-ip\n", "\n    - https://dns.alidns.com/dns-query\n"} {
+	for _, s := range res.DNSSources {
+		if s.From != builtinDefaults.Name || !s.Fallback || !s.Set || len(s.ChangedBy) > 0 {
+			t.Errorf("%+v", s)
+		}
+	}
+	// 中国的域名经直连问中国的 DoH，其他的按规则；节点的域名经直连解析（respect-rules 要求写它）。
+	for _, want := range []string{"\ndns:\n  enable: true\n  ipv6: false\n", "\n  enhanced-mode: fake-ip\n", "\n  respect-rules: true\n",
+		"\n    geosite:cn:\n      - https://223.5.5.5/dns-query#DIRECT\n", "\n  proxy-server-nameserver:\n    - https://223.5.5.5/dns-query\n",
+		"\nsniffer:\n  enable: true\n"} {
 		if !strings.Contains(string(res.Config), want) {
 			t.Errorf("config lacks %q:\n%s", want, res.Config)
 		}
+	}
+	if !res.Facts.Geo.GeoSite {
+		t.Error("geosite:cn in the DNS does not need GeoSite")
 	}
 }
 

@@ -153,7 +153,7 @@ var (
 		Subscription: "home",
 		Revision:     &config.Revision{Number: 7},
 		Service:      &service.Status{ActiveState: "active", SubState: "running"},
-		Tun:          &setup.TunStatus{Switch: "on"},
+		Tun:          &setup.TunStatus{Switch: "on", PublishedDNSMode: "fake-ip"},
 		Updates: []setup.Schedule{
 			{Task: setup.TaskSubscription, Name: "home", Period: "1d"},
 			{Task: setup.TaskSubscription, Name: "spare", Period: "1d"},
@@ -338,7 +338,7 @@ func TestMenuItems(t *testing.T) {
 		"":            "tunlr: Show status|Subscriptions|Config|Traffic|Filters|LAN devices|mihomo|Panel|Maintenance|Quit",
 		groupSubs:     "tunlr › Subscriptions: Add a sub|Switch sub|Change a sub|Fetch subs now|Remove a sub|List subs|← Back",
 		groupConfig:   "tunlr › Config: Edit a mixin|Publish config|Roll back config|Update geo data now|Config details|← Back",
-		groupTraffic:  "tunlr › Traffic: Turn TUN off|Turn gateway on|Open proxy port to LAN|TUN details|Proxy port details|← Back",
+		groupTraffic:  "tunlr › Traffic: Turn TUN off|Turn gateway on|Open proxy port to LAN|DNS|TUN details|Proxy port details|← Back",
 		groupFilters:  "tunlr › Filters: Block QUIC|Proxy some ports only|Send a network direct|Filter details|← Back",
 		groupDevices:  "tunlr › LAN devices: List devices|List all LAN devices|Name a device|Route a device|Forget a device|← Back",
 		groupCore:     "tunlr › mihomo: Restart mihomo|Stop mihomo|Recent logs|Upgrade mihomo|mihomo details|← Back",

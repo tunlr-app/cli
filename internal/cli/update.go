@@ -359,23 +359,29 @@ func (a *app) setGeoUpdate(cmd *cobra.Command, sub, period string, urls []string
 			fmt.Fprintf(a.stdout, "Wrote %s for %q to %s.\n", strings.Join(w.Keys, ", "), sub, w.File)
 		}
 	}
-	if !w.Active {
-		return a.render(w, func() error {
+	return a.publishSubChange(cmd, sub, w.Active, w)
+}
+
+// publishSubChange 在订阅 sub 的 mixin 改好之后发布配置（sub set --geo-*、--dns）：sub 是启用的订阅（active）时
+// 预览、确认后发布，否则说明在它启用时生效。view 是 --json 输出中的写入结果。
+func (a *app) publishSubChange(cmd *cobra.Command, sub string, active bool, view any) error {
+	if !active {
+		return a.render(view, func() error {
 			_, err := fmt.Fprintf(a.stdout, "%q is not the active subscription; the change applies when it is (tunlr sub use %s).\n", sub, sub)
 			return err
 		})
 	}
-	plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().Plan(ctx) })
+	plan, err := a.plan(func() (*pipeline.Plan, error) { return a.pipeline().Plan(cmd.Context()) })
 	switch {
 	case err != nil:
 		return fmt.Errorf("the change is saved, but the configuration could not be composed: %w", err)
 	case plan.Current == nil:
-		return a.render(w, func() error {
+		return a.render(view, func() error {
 			_, err := fmt.Fprintln(a.stdout, "No configuration has been published yet; the change takes effect with tunlr config apply.")
 			return err
 		})
 	case !plan.Changed():
-		return a.render(w, func() error {
+		return a.render(view, func() error {
 			_, err := fmt.Fprintln(a.stdout, "The configuration stays the same.")
 			return err
 		})

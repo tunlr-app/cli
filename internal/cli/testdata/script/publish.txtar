@@ -97,23 +97,36 @@ stdout '^Defaults from tunlr: tunlr:defaults, tunlr:dns \(mixins can override th
 ! stdout 'Geo data settings not from'
 ! stdout 'geox-url'
 ! stdout 'Rewritten by'
+# 订阅没有写 dns 和 sniffer：plan 和 tunlr config 都指出它们来自兜底值
+stdout '^DNS settings: dns, sniffer from the fallbacks \(see: tunlr config\)$'
+exec tunlr config plan --json
+stdout '"dns_sources": \['
+stdout '"key": "sniffer",\s*$'
 exec tunlr config
+stdout '^DNS settings: dns, sniffer from the fallbacks$'
 stdout '^No mixin files in '
-stdout '^  tunlr:tun \(tunlr tun on/off\): tun.enable, tun.auto-route, '
+stdout '^  tunlr:tun \(tunlr tun on/off, tunlr tun dns\): tun.enable, tun.auto-route, '
 stdout '^  tunlr:panel \(tunlr panel lan on/off, tunlr panel reset-secret\): external-controller, secret$'
 stdout '^Defaults from tunlr:dns \(a mixin can override these\):$'
 stdout '^      listen: 127.0.0.1:1053$'
-stdout '^Fallbacks from tunlr:defaults \(used where the subscription does not set them; per subscription: tunlr sub set <sub> --geo-update, --geo-url; a mixin can override these\):$'
+stdout '^Fallbacks from tunlr:defaults \(used where the subscription does not set them; per subscription: tunlr sub set <sub> --geo-update, --geo-url, --dns; a mixin can override these\):$'
 stdout '^      geo-update-interval: 168$'
 ! stdout 'tunlr:mirror'
 exec tunlr config --json
 stdout '"name": "tunlr:core"'
 ! stdout '"content": "secret'
+stdout '"from": "tunlr:defaults",\s*$'
+
+# mixin 改了 dns、删除了 sniffer：plan 指出改过它们的文件
+cp dns-mixin.yaml root/etc/tunlr/mixin.d/10-dns.yaml
+exec tunlr config plan
+stdout '^DNS settings: dns from the fallbacks, changed by 10-dns.yaml; sniffer removed by 10-dns.yaml \(see: tunlr config\)$'
+rm root/etc/tunlr/mixin.d/10-dns.yaml
 
 # mixin 动了 tunlr 管理的键：拒绝，指出行和改用的命令，退出码 3
 cp managed-mixin.yaml root/etc/tunlr/mixin.d/20-mine.yaml
 exitcode 3 tunlr config plan
-stderr '^tunlr: mixin 20-mine.yaml:4: tun.enable is managed by tunlr:tun \(change it with: tunlr tun on/off\); remove it from the mixin$'
+stderr '^tunlr: mixin 20-mine.yaml:4: tun.enable is managed by tunlr:tun \(change it with: tunlr tun on/off, tunlr tun dns\); remove it from the mixin$'
 exitcode 3 tunlr config apply --yes
 rm root/etc/tunlr/mixin.d/20-mine.yaml
 
@@ -134,7 +147,7 @@ stdout '"path": "geox-url.mmdb",\s*$'
 exec tunlr config
 stdout '^Defaults from tunlr:mirror \(tunlr settings edit; a mixin can override these\):$'
 stdout '^    external-ui-url: https://axisnow.gh-proxy.org/https://github.com/Zephyruso/zashboard/releases/latest/download/dist-cdn-fonts.zip$'
-! stdout 'DIRECT'
+! stdout ',DIRECT'
 stdout '^  # then, after the mixins, https://github.com/ addresses in geox-url go through the mirror$'
 rm root/etc/tunlr/settings.yaml
 rm root/etc/tunlr/mixin.d/30-geo.yaml
@@ -236,6 +249,11 @@ github-mirror: https://axisnow.gh-proxy.org/
 mihomo:
   geox-url:
     mmdb: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
+-- dns-mixin.yaml --
+mihomo:
+  dns:
+    nameserver: [https://9.9.9.9/dns-query]
+  sniffer: null
 -- level-mixin.yaml --
 mihomo:
   log-level: warning

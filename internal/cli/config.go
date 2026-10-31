@@ -72,7 +72,7 @@ func writeDefaults(w io.Writer, vs []managedView) {
 		kind, how := "Defaults", "a mixin can override these"
 		switch {
 		case v.Name == pipeline.ManagedDefaults:
-			kind, how = "Fallbacks", "used where the subscription does not set them; per subscription: tunlr sub set <sub> --geo-update, --geo-url; "+how
+			kind, how = "Fallbacks", "used where the subscription does not set them; per subscription: tunlr sub set <sub> --geo-update, --geo-url, --dns; "+how
 		case strings.Contains(v.Content, "\n  rules:"):
 			how += ", remove rules with tunlr.rules.delete"
 		}
@@ -120,6 +120,8 @@ type configView struct {
 	Dir     string         `json:"dir"`
 	Files   []string       `json:"files"`
 	Managed []managedView  `json:"managed"`
+	// DNSSources 同 config plan 中的，按现在的订阅和 mixin 合成；合成出错时省略（见 drift）。
+	DNSSources []config.SectionSource `json:"dns_sources,omitempty"`
 }
 
 func (a *app) newConfigCommand() *cobra.Command {
@@ -133,8 +135,9 @@ func (a *app) newConfigCommand() *cobra.Command {
 			"and the mixins tunlr generates for its own settings (TUN, the panel, the LAN proxy).\n" +
 			"Your mixins may not set, change or delete the keys tunlr manages; plan, apply and edit\n" +
 			"refuse such a mixin and name the command that changes the key instead. tunlr:defaults\n" +
-			"(the DNS and geo data settings used where the subscription does not set them), tunlr:dns,\n" +
-			"tunlr:mirror and tunlr:filter only give defaults you can override.",
+			"(the DNS, sniffer and geo data settings used where the subscription does not set them),\n" +
+			"tunlr:dns, tunlr:mirror and tunlr:filter only give defaults you can override; the last\n" +
+			"line tells whether dns and sniffer come from the subscription or the fallbacks.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.showConfig(cmd.Context()) },
 	}
@@ -173,6 +176,11 @@ func (a *app) showConfig(ctx context.Context) error {
 	for _, m := range mixins {
 		v.Files = append(v.Files, m.Name)
 	}
+	if plan, err := a.pipeline().Compose(ctx, ""); err == nil {
+		v.DNSSources = plan.DNSSources
+	} else if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	return a.render(v, func() error {
 		if cs.Revision == nil && cs.Drift == nil {
 			fmt.Fprintf(a.stdout, "Configuration: %s (tunlr config apply publishes it)\n", a.style.warn("not published"))
@@ -186,6 +194,9 @@ func (a *app) showConfig(ctx context.Context) error {
 		writeMixinFiles(a.stdout, a.style, v.Dir, v.Files, active)
 		fmt.Fprintln(a.stdout)
 		writeManaged(a.stdout, v.Managed)
+		if len(v.DNSSources) > 0 {
+			fmt.Fprintf(a.stdout, "DNS settings: %s\n", describeDNSSources(v.DNSSources))
+		}
 		return nil
 	})
 }

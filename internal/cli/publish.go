@@ -23,19 +23,23 @@ import (
 
 // planView 是 pipeline.Plan 在 --json 输出中的形式。
 type planView struct {
-	Kind         string            `json:"kind"`
-	Changed      bool              `json:"changed"`
-	FirstPublish bool              `json:"first_publish"`
-	Subscription string            `json:"subscription,omitempty"`
-	Dropped      []string          `json:"dropped,omitempty"`
-	Mixins       []string          `json:"mixins,omitempty"`
-	Overrides    []config.Override `json:"overrides,omitempty"`
+	Kind         string   `json:"kind"`
+	Changed      bool     `json:"changed"`
+	FirstPublish bool     `json:"first_publish"`
+	Subscription string   `json:"subscription,omitempty"`
+	Dropped      []string `json:"dropped,omitempty"`
+	// Ignored 是订阅中写了、mixin 要求不采用的顶层键（tunlr.ignore-from-subscription）。
+	Ignored   []config.IgnoredKey `json:"ignored,omitempty"`
+	Mixins    []string            `json:"mixins,omitempty"`
+	Overrides []config.Override   `json:"overrides,omitempty"`
 	// Rewrites 是受管 mixin 在合成的最后改写的值，如经镜像的 geox-url。
 	Rewrites []config.Rewrite `json:"rewrites,omitempty"`
 	// ProxyFilter 是节点筛选（tunlr.proxy-filter）的结果，没有设置时省略。
 	ProxyFilter *config.ProxyFilterResult `json:"proxy_filter,omitempty"`
 	// GeoSources 是 geo 数据的自动更新和来源的各键来自哪里（tunlr:defaults、subscription、mixin 文件，或哪里都没写时为 template）。
 	GeoSources []config.KeySource `json:"geo_sources,omitempty"`
+	// DNSSources 是 dns、sniffer 来自哪里（subscription、tunlr:defaults 等兜底值）、又被哪些 mixin 文件改过。
+	DNSSources []config.SectionSource `json:"dns_sources,omitempty"`
 	// Managed 是 tunlr 的交互功能生成的受管 mixin。
 	Managed    []managedView    `json:"managed,omitempty"`
 	Warnings   []config.Warning `json:"warnings,omitempty"`
@@ -87,9 +91,9 @@ func (a *app) pipeline() *pipeline.Pipeline {
 func newPlanView(p *pipeline.Plan, full bool) planView {
 	v := planView{
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
-		Subscription: p.Subscription, Dropped: p.Dropped, Mixins: p.Mixins,
+		Subscription: p.Subscription, Dropped: p.Dropped, Ignored: p.Ignored, Mixins: p.Mixins,
 		Overrides: p.Overrides, Rewrites: p.Rewrites, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, GeoReplaced: p.GeoReplaced, Proxies: p.Proxies, Diff: hideSecretInDiff(p.Diff),
-		DiffSections: p.DiffSections, ProxyFilter: p.ProxyFilter, GeoSources: p.GeoSources,
+		DiffSections: p.DiffSections, ProxyFilter: p.ProxyFilter, GeoSources: p.GeoSources, DNSSources: p.DNSSources,
 	}
 	if p.Managed != nil {
 		v.Managed = newManagedViews(p.Managed)
@@ -140,6 +144,74 @@ func describeGeoOverrides(sources []config.KeySource) string {
 	return strings.Join(parts, ", ")
 }
 
+// describeDNSSources 说明 DNS 和嗅探的设置来自哪里，说法相同的键合在一起，如
+// "dns from the subscription, changed by 10-dns.yaml; sniffer from the fallbacks"。
+func describeDNSSources(sources []config.SectionSource) string {
+	var descs []string
+	var keys [][]string
+	for _, s := range sources {
+		files := strings.Join(s.ChangedBy, ", ")
+		var d string
+		switch {
+		case !s.Set && s.From != "" && files != "":
+			d = "removed by " + files
+		case !s.Set:
+			d = "not set"
+		case s.From == "" && files != "":
+			d = "from " + files
+		case s.From == "":
+			d = "from the mixins"
+		default:
+			d = "from " + describeLayer(s.From, s.Fallback)
+			if files != "" {
+				d += ", changed by " + files
+			}
+		}
+		if i := slices.Index(descs, d); i >= 0 {
+			keys[i] = append(keys[i], s.Key)
+			continue
+		}
+		descs, keys = append(descs, d), append(keys, []string{s.Key})
+	}
+	parts := make([]string, len(descs))
+	for i, d := range descs {
+		parts[i] = strings.Join(keys[i], ", ") + " " + d
+	}
+	return strings.Join(parts, "; ")
+}
+
+// describeIgnored 按文件列出不从订阅采用的键，如 "dns, sniffer (home/20-dns.yaml)"。
+func describeIgnored(ks []config.IgnoredKey) string {
+	var files []string
+	keys := map[string][]string{}
+	for _, k := range ks {
+		if _, ok := keys[k.File]; !ok {
+			files = append(files, k.File)
+		}
+		keys[k.File] = append(keys[k.File], k.Key)
+	}
+	parts := make([]string, len(files))
+	for i, f := range files {
+		parts[i] = strings.Join(keys[f], ", ") + " (" + f + ")"
+	}
+	return strings.Join(parts, "; ")
+}
+
+// describeLayer 说明配置的一层：订阅、模板、tunlr:defaults 的兜底值，或某个 mixin 文件的 tunlr.defaults。
+func describeLayer(from string, fallback bool) string {
+	switch {
+	case from == config.FromSubscription:
+		return "the subscription"
+	case from == config.FromTemplate:
+		return "the template"
+	case fallback && from == pipeline.ManagedDefaults:
+		return "the fallbacks"
+	case fallback:
+		return "the fallbacks in " + from
+	}
+	return from
+}
+
 // writeRewrites 按受管 mixin 分组列出它在合成的最后改写的值，如 "Rewritten by tunlr:mirror: geox-url.geoip, geox-url.mmdb"。
 func writeRewrites(w io.Writer, rs []config.Rewrite) {
 	var by []string
@@ -174,6 +246,9 @@ func (a *app) writePlan(w io.Writer, v planView) {
 	if len(v.Dropped) > 0 {
 		fmt.Fprintf(w, "Ignored from the subscription: %s\n", strings.Join(v.Dropped, ", "))
 	}
+	if len(v.Ignored) > 0 {
+		fmt.Fprintf(w, "Not taken from the subscription (tunlr.ignore-from-subscription): %s\n", describeIgnored(v.Ignored))
+	}
 	if len(v.Mixins) > 0 {
 		fmt.Fprintf(w, "Mixins (in order): %s\n", strings.Join(v.Mixins, ", "))
 	}
@@ -197,6 +272,9 @@ func (a *app) writePlan(w io.Writer, v planView) {
 		if len(defaults) > 0 {
 			fmt.Fprintf(w, "Defaults from tunlr: %s (mixins can override them; see: tunlr config)\n", strings.Join(defaults, ", "))
 		}
+	}
+	if len(v.DNSSources) > 0 {
+		fmt.Fprintf(w, "DNS settings: %s (see: tunlr config)\n", describeDNSSources(v.DNSSources))
 	}
 	if s := describeGeoOverrides(v.GeoSources); s != "" {
 		fmt.Fprintf(w, "Geo data settings not from the fallbacks: %s (see: tunlr update)\n", s)

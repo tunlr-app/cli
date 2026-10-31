@@ -1,6 +1,6 @@
 # 本文件由 tunlr 生成，直接修改会在下次 apply 时被覆盖。
 # 自定义设置请写在 mixin 中（tunlr config edit）。
-# 订阅没有写时使用的 geo 数据设置和 DNS 是 tunlr 内置的兜底值（tunlr:defaults，tunlr config 列出）。
+# 订阅没有写时使用的 geo 数据设置、DNS 和嗅探（sniffer）是 tunlr 内置的兜底值（tunlr:defaults，tunlr config 列出）。
 
 # 代理端口默认只给本机用；tunlr proxy lan on 让局域网设备使用。
 mixed-port: 7890

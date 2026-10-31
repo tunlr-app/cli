@@ -38,7 +38,7 @@ func matchRegexp(re *regexp2.Regexp, s string) bool {
 }
 
 // tunlrKeys 是 tunlr: 下认识的键。
-var tunlrKeys = []string{"defaults", "proxy-filter", "proxies", "proxy-groups", "rules", "sub-rules"}
+var tunlrKeys = []string{"defaults", "ignore-from-subscription", "fake-ip-filter", "proxy-filter", "proxies", "proxy-groups", "rules", "sub-rules"}
 
 // takeFilter 检查 mixin src 的结构（checkMixin），并把其中的 tunlr.proxy-filter 合并到 ns
 // （各文件依次合并的结果，节点筛选在任何 mixin 之前按它执行）。
@@ -74,6 +74,16 @@ func (m *mixer) checkNamespace(v *yaml.Node) error {
 		case k.Value == "defaults":
 			if !isNull(pf) && pf.Kind != yaml.MappingNode {
 				return m.errorf(pf.Line, "%s.defaults must be a mapping", namespace)
+			}
+			continue
+		case k.Value == ignoreKey:
+			if _, err := m.ignoredKeys(pf); err != nil {
+				return err
+			}
+			continue
+		case k.Value == fakeIPFilterKey:
+			if err := m.checkFakeIPFilter(pf); err != nil {
+				return err
 			}
 			continue
 		case k.Value == "sub-rules":

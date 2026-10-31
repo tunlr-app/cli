@@ -1,0 +1,143 @@
+# 订阅写了 dns：默认采用它，sniffer 用兜底值
+cp airport-dns.yaml provider/airport.yaml
+exec tunlr sub add main $PROVIDER/airport.yaml
+exec tunlr sub add spare $PROVIDER/airport.yaml
+install-mihomo
+exec tunlr config apply --yes
+grep '^    - https://192.0.2.53/dns-query$' root/var/lib/tunlr/core/config.yaml
+exec tunlr config
+stdout '^DNS settings: dns from the subscription; sniffer from the fallbacks$'
+
+# sub set --dns tunlr 写进订阅的 dns mixin（mixin.d/<订阅>/20-dns.yaml），启用的订阅随即发布
+exec tunlr sub set main --dns tunlr --yes
+stdout '^Wrote .*20-dns\.yaml: "main" uses tunlr''s DNS and sniffer \(see tunlr config\)\.$'
+stdout '^Not taken from the subscription \(tunlr.ignore-from-subscription\): dns \(main/20-dns.yaml\)$'
+stdout '^DNS settings: dns, sniffer from the fallbacks \(see: tunlr config\)$'
+grep '^    - dns$' root/etc/tunlr/mixin.d/main/20-dns.yaml
+grep '^    - sniffer$' root/etc/tunlr/mixin.d/main/20-dns.yaml
+! grep '192.0.2.53' root/var/lib/tunlr/core/config.yaml
+grep '^    geosite:cn:$' root/var/lib/tunlr/core/config.yaml
+
+# 没有启用的订阅：只写文件，它启用时生效
+exec tunlr sub set spare --dns tunlr --yes
+stdout '^"spare" is not the active subscription; the change applies when it is \(tunlr sub use spare\)\.$'
+exists root/etc/tunlr/mixin.d/spare/20-dns.yaml
+exec tunlr sub set spare --dns subscription --yes
+! exists root/etc/tunlr/mixin.d/spare/20-dns.yaml
+
+# 共用的 mixin 也不采用订阅的 dns 时，--dns subscription 改了不生效：拒绝
+cp ignore-dns.yaml root/etc/tunlr/mixin.d/10-ignore.yaml
+exitcode 2 tunlr sub set main --dns subscription --yes
+stderr 'the mixin 10-ignore.yaml does not take dns from the subscription either; remove it there \(tunlr config edit 10-ignore\)'
+rm root/etc/tunlr/mixin.d/10-ignore.yaml
+
+# --dns subscription 恢复采用订阅的，删空的文件删除
+exec tunlr sub set main --dns subscription --yes
+stdout '^Removed .*20-dns\.yaml: "main" uses the DNS and sniffer it sets, or else tunlr''s\.$'
+! exists root/etc/tunlr/mixin.d/main/20-dns.yaml
+grep '192.0.2.53' root/var/lib/tunlr/core/config.yaml
+
+# 用法错误
+exitcode 2 tunlr sub set main --dns other --yes
+stderr '--dns takes tunlr \(tunlr''s DNS and sniffer\) or subscription'
+exitcode 2 tunlr sub set main --dns tunlr
+stderr 'sub set --dns needs confirmation; pass --yes'
+exitcode 2 tunlr sub set main --dns tunlr --dry-run
+stderr 'does not support --dry-run'
+exitcode 1 tunlr sub set nope --dns tunlr --yes
+stderr 'subscription not found: nope'
+cp bad-ignore.yaml root/etc/tunlr/mixin.d/10-bad.yaml
+exitcode 3 tunlr config plan
+stderr 'tunlr.ignore-from-subscription: proxies cannot be ignored; only dns, sniffer, hosts can'
+rm root/etc/tunlr/mixin.d/10-bad.yaml
+
+# DNS 模式：没有设开关时按配置（订阅写的 redir-host）
+exec tunlr tun
+stdout '^DNS mode: +redir-host, from the configuration \(tunlr tun dns fake-ip\|redir-host sets it\)$'
+exec tunlr tun dns --json
+stdout '"mode": ""'
+stdout '"published": "redir-host"'
+
+# tun dns fake-ip 写进 tunlr:tun，确认后发布；mixin 不能再写 dns.enhanced-mode
+exitcode 2 tunlr tun dns fake-ip
+stderr 'tun dns fake-ip needs confirmation; pass --yes'
+exec tunlr tun dns fake-ip --yes
+stdout '^-  enhanced-mode: redir-host$'
+stdout '^\+  enhanced-mode: fake-ip$'
+stdout 'mihomo answers DNS queries in fake-ip mode now\.'
+exec tunlr tun dns
+stdout '^DNS mode: +fake-ip \(set by tunlr tun dns; default lets the configuration decide\)$'
+exec tunlr tun dns fake-ip --yes
+stdout 'Already so; nothing to change\.'
+cp mode.yaml root/etc/tunlr/mixin.d/20-mode.yaml
+exitcode 3 tunlr config plan
+stderr 'dns.enhanced-mode is managed by tunlr:tun \(change it with: tunlr tun on/off, tunlr tun dns\)'
+
+# default 回到按配置：mixin 写的生效
+exec tunlr tun dns default --yes
+stdout 'The configuration decides the DNS mode again\.'
+exec tunlr tun dns
+stdout '^DNS mode: +redir-host, from the configuration '
+rm root/etc/tunlr/mixin.d/20-mode.yaml
+exitcode 2 tunlr tun dns normal
+stderr 'unknown command "normal"|accepts 0 arg'
+
+# fake-ip-filter：没有终端时要给出参数；加的条目写进 90-fake-ip-filter.yaml，加在生效的列表上（订阅的 dns 没有，新建）
+exec tunlr tun dns
+stdout '^fake-ip-filter: +the configuration''s list \(tunlr tun dns fake-ip-filter adds names\)$'
+exitcode 2 tunlr tun dns fake-ip-filter
+stderr 'tun dns fake-ip-filter needs --add, --remove or --reset without a terminal'
+exitcode 2 tunlr tun dns fake-ip-filter --add nas.example.com
+stderr 'tun dns fake-ip-filter needs confirmation; pass --yes'
+exec tunlr tun dns fake-ip-filter --add nas.example.com --add '+.corp.example.com' --yes
+stdout '^\+  fake-ip-filter:$'
+stdout '^\+    - nas.example.com$'
+stdout 'Note: the DNS mode is redir-host; fake-ip-filter only matters in fake-ip mode\.'
+stdout 'Your names in fake-ip-filter: nas.example.com, \+.corp.example.com\.'
+grep '^      - nas.example.com$' root/etc/tunlr/mixin.d/90-fake-ip-filter.yaml
+grep '^    - nas.example.com$' root/var/lib/tunlr/core/config.yaml
+exec tunlr tun dns
+stdout '^fake-ip-filter: +yours added: nas.example.com, \+.corp.example.com$'
+exec tunlr tun dns --json
+stdout '"fake_ip_filter": \['
+exec tunlr tun dns fake-ip-filter --add nas.example.com --yes
+stdout 'Already so; nothing to change\.'
+exec tunlr tun dns fake-ip-filter --remove nas.example.com --dry-run
+stdout '^-    - nas.example.com$'
+stdout 'Dry run: nothing changed\.'
+grep 'nas.example.com' root/etc/tunlr/mixin.d/90-fake-ip-filter.yaml
+
+# 用法错误；--reset 去掉所有条目，删空的文件删除
+exitcode 2 tunlr tun dns fake-ip-filter --remove other.example.com --yes
+stderr '"other.example.com" is not one of your names'
+exitcode 2 tunlr tun dns fake-ip-filter --add 'a.example b.example' --yes
+stderr 'one name or pattern per line'
+exitcode 2 tunlr tun dns fake-ip-filter --reset --add x.example --yes
+stderr '--reset removes all your names; it does not go with --add or --remove'
+exec tunlr tun dns fake-ip-filter --reset --yes
+stdout 'You have no names of your own in fake-ip-filter now\.'
+! exists root/etc/tunlr/mixin.d/90-fake-ip-filter.yaml
+! grep 'fake-ip-filter' root/var/lib/tunlr/core/config.yaml
+
+-- airport-dns.yaml --
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: g, type: select, proxies: [a]}
+rules:
+  - MATCH,g
+dns:
+  enable: true
+  enhanced-mode: redir-host
+  nameserver:
+    - https://192.0.2.53/dns-query
+-- ignore-dns.yaml --
+tunlr:
+  ignore-from-subscription: [dns]
+-- bad-ignore.yaml --
+tunlr:
+  ignore-from-subscription: [proxies]
+-- mode.yaml --
+mihomo:
+  dns:
+    enhanced-mode: redir-host

@@ -14,6 +14,16 @@ import (
 // 删空的上级随之删除；其余内容和注释保留。data 中没有内容时新建，以 head 为开头的注释（head 为空时不加）。
 // 结果中什么都没有时返回 nil，调用方可以删除文件。
 func SetMixinKeys(data []byte, head string, values map[string]any) ([]byte, error) {
+	return setMixinValues(data, head, mihomoKey, values)
+}
+
+// SetTunlrKeys 同 SetMixinKeys，设置的是 tunlr: 中的键（如 ignore-from-subscription）。
+func SetTunlrKeys(data []byte, head string, values map[string]any) ([]byte, error) {
+	return setMixinValues(data, head, namespace, values)
+}
+
+// setMixinValues 在 mixin 内容 data 的命名空间 ns（mihomo 或 tunlr）中设置点分路径的键，见 SetMixinKeys。
+func setMixinValues(data []byte, head, ns string, values map[string]any) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
@@ -33,7 +43,7 @@ func SetMixinKeys(data []byte, head string, values map[string]any) ([]byte, erro
 				return nil, err
 			}
 		}
-		if err := setKey(root, append([]string{mihomoKey}, strings.Split(k, ".")...), v); err != nil {
+		if err := setKey(root, append([]string{ns}, strings.Split(k, ".")...), v); err != nil {
 			return nil, fmt.Errorf("%s: %w", k, err)
 		}
 	}
