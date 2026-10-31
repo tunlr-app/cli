@@ -52,7 +52,7 @@ func WithProgress(ctx context.Context, fn ProgressFunc) context.Context {
 type Client struct {
 	// HTTP 为空时使用 http.DefaultClient（遵循 HTTPS_PROXY 等环境变量）。
 	HTTP *http.Client
-	// Mirror 是 GitHub 下载镜像的前缀，例如 "https://gh-proxy.com/"；
+	// Mirror 是 GitHub 下载镜像的前缀，例如 "https://axisnow.gh-proxy.org/"；
 	// 下载地址为 Mirror 后接完整的 github.com 地址。为空时直连。只用于下载字节，不用于 API。
 	Mirror string
 	// APIBase 为空时使用 https://api.github.com，测试时替换。

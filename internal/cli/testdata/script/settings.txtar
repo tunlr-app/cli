@@ -13,10 +13,10 @@ stdout '"default": true'
 mkdir root/etc/tunlr
 cp settings.yaml root/etc/tunlr/settings.yaml
 exec tunlr settings
-stdout '^github-mirror +https://gh-proxy\.com/$'
+stdout '^github-mirror +https://axisnow\.gh-proxy\.org/$'
 stdout '^user-agent +clash\.meta$'
 exec tunlr settings --json
-stdout '"value": "https://gh-proxy.com/"'
+stdout '"value": "https://axisnow.gh-proxy.org/"'
 
 # 文件有错：报告出来
 cp bad.yaml root/etc/tunlr/settings.yaml
@@ -28,7 +28,7 @@ exitcode 2 tunlr settings edit
 stderr 'settings edit needs a terminal; edit .*settings\.yaml directly, then run tunlr config apply'
 
 -- settings.yaml --
-github-mirror: https://gh-proxy.com/
+github-mirror: https://axisnow.gh-proxy.org/
 user-agent: clash.meta
 -- bad.yaml --
-github_mirror: https://gh-proxy.com/
+github_mirror: https://axisnow.gh-proxy.org/

@@ -5,7 +5,7 @@
 
 # GitHub 下载镜像的前缀：tunlr 下载内核时经过它，仍按官方 sha256 校验。不设置时直连 GitHub。
 # 配置中 https://github.com/ 开头的 geo 数据和面板的下载地址随之改为经镜像（内核自己下载，不校验），发布后生效。
-# github-mirror: https://gh-proxy.com/
+# github-mirror: https://axisnow.gh-proxy.org/
 
 # 抓取订阅时默认的 User-Agent，机场按它决定返回的格式。单个订阅可以在添加时另设：
 # tunlr sub add <名称> <地址> --user-agent <值>。默认为 "clash.meta mihomo tunlr/<版本>"。下次抓取时生效。

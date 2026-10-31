@@ -12,10 +12,10 @@ import (
 func TestSet(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "etc", "tunlr", "settings.yaml")
 
-	if err := Set(path, "github-mirror", "https://gh-proxy.com/"); err != nil {
+	if err := Set(path, "github-mirror", "https://axisnow.gh-proxy.org/"); err != nil {
 		t.Fatal(err)
 	}
-	if got := read(t, path); got != "github-mirror: https://gh-proxy.com/\n" {
+	if got := read(t, path); got != "github-mirror: https://axisnow.gh-proxy.org/\n" {
 		t.Fatalf("new file = %q", got)
 	}
 

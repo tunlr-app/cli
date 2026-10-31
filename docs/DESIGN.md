@@ -242,7 +242,7 @@ sh 的优势（轻量、随处可跑、可随手改）服务于路由器和老�
 - **内核自己的下载**：tunlr 只下载内核（官方 sha256 校验）和订阅（无从校验）。面板、geo、providers、面板触发的内核升级都由内核发起，走内部 tunnel 按规则分流，失败才直连；策略组选中坏节点时面板和 geo 下载全部失败。
   - **镜像不加直连规则**：不插入 `DOMAIN,<镜像域名>,DIRECT`：这是配置而不是工具行为，归 mixin；节点失效时在面板上切节点即可。
   - **信任边界**：镜像能篡改转发的内容；工具的下载有官方 sha256 兜底，内核的没有。
-    - 面板交给内核（`external-ui` 为空时按 `external-ui-url` 下载）：之后面板上的更新都不经 tunlr，tunlr 只校验第一次安装是不存在的保证。
+    - 面板交给内核（`external-ui` 为空时按 `external-ui-url` 下载）：之后面板上的更新都不经 tunlr，tunlr 只校验第一次安装是不存在的保证。默认用 zashboard 的 `dist-cdn-fonts.zip`（字体由浏览器从 CDN 加载，约 2.9 MB；内置字体的 `dist.zip` 约 9.6 MB，经镜像下载慢得多）。
     - geo 数据不校验：内核每次更新都不校验，事后核对只能在用过之后发现；订阅自定义的来源也无从校验。
     - 选用可信的镜像是用户的事。
 - **充分利用内核已有能力**，模板默认开启：`external-ui`/`external-ui-url`、providers 的 `interval`、`profile.store-selected`/`store-fake-ip`、`ntp` 等。
@@ -297,7 +297,7 @@ sh 的优势（轻量、随处可跑、可随手改）服务于路由器和老�
 - **geo 数据更新**：
   - 事实：geo 数据只能由内核自己的更新器重新加载，外部替换文件须重启内核；内核下载后不校验。
   - 设计：tunlr 只下载管理内核和订阅（面板同样交给内核，见第 6 节“信任边界”）；geo 数据由内核按配置下载和更新，tunlr 不下载、不校验，`init` 也不预下载（`mihomo -t` 时内核自己下载），不事后核对——内核每次更新都不校验，发现时篡改文件已被使用，订阅自定义的来源也无从校验。
-  - 订阅可指定自己的来源（规则依赖它），所以订阅写了的为准；tunlr 只在 `tunlr:defaults` 中兜底（每周、官方 meta-rules-dat，见第 6 节“tunlr 的兜底值”），`geox-url` 按文件替换。设置了镜像时，`geox-url` 中 github.com 的地址最后改为经镜像。
+  - 订阅可指定自己的来源（规则依赖它），所以订阅写了的为准；tunlr 只在 `tunlr:defaults` 中兜底（每周、meta-rules-dat 的 release 分支经 jsDelivr 的 fastly 节点，中国可直接下载，不依赖 GitHub 镜像；各 jsDelivr 节点缓存 12 小时，可能晚一天，对每周的更新无影响。见第 6 节“tunlr 的兜底值”），`geox-url` 按文件替换。设置了镜像时，`geox-url` 中 github.com 的地址最后改为经镜像。
   - **按订阅调整**：`sub set <订阅> --geo-update/--geo-url` 写入该订阅的受管 geo mixin（见第 6 节“受管 mixin”），只在它启用时生效；排在它之后的用户 mixin 写了同一键时拒绝修改并指出该改的文件，免得改了不生效。菜单中 geo 是订阅的一项属性，不单列。只按订阅调整，因为 geo 数据服务于订阅的规则，订阅自带来源时改兜底无效；覆盖订阅的 mixin 结果确定，不必判断每个键来自哪一层。
   - 来源可见：`tunlr update` 和 `config plan` 列出每个键的值来自兜底、订阅还是 mixin。
 - **状态以实际为准**：版本、TUN 状态等一律经 API 查询内核；工具的记录只作“已知可用的历史”。
@@ -658,8 +658,8 @@ v1 只做 CLI，但以下几点从第一版起就做好，避免以后返工：
 
 - **版本号**只有一处：git tag `vX.Y.Z`，goreleaser 经 `-ldflags -X` 注入；本地 `go build` 的版本是 `dev`。
 - **发布**：推送 tag 触发 `release.yml`，测试后由 goreleaser 发布 linux amd64、arm64 的压缩包和 `checksums.txt`，说明从 commit 生成。资产的 sha256 以 release API 的 `digest` 为准，`tunlr upgrade`、`core upgrade`、`install.sh` 只认它（第 7 节）。
-- **安装入口**：`install.sh`（POSIX sh）经 jsDelivr 分发（中国可达），备用 raw.githubusercontent.com。API 直连查 release，资产经 `TUNLR_MIRROR`（默认 gh-proxy，设为空即直连）下载，核对 sha256、确认能运行后原子替换，再运行 `tunlr init` 并转交其余参数。
-  - 默认经 gh-proxy：中国的服务器直连 GitHub 下载常常失败，字节经哪里都按官方 sha256 校验，对其他地区只是多一跳。jsDelivr 不能分发 release 资产，所以脚本走 jsDelivr、资产走镜像。
+- **安装入口**：`install.sh`（POSIX sh）经 jsDelivr 分发（中国可达），备用 raw.githubusercontent.com。API 直连查 release，资产经 `TUNLR_MIRROR`（默认 `axisnow.gh-proxy.org`，设为空即直连）下载，核对 sha256、确认能运行后原子替换，再运行 `tunlr init` 并转交其余参数。
+  - 默认经镜像（选的是在 tunlr-dev 上实测最快的）：中国的服务器直连 GitHub 下载常常失败，字节经哪里都按官方 sha256 校验，对其他地区只是多一跳。jsDelivr 不能分发 release 资产，所以脚本走 jsDelivr、资产走镜像。
   - 有终端时由 `init` 自己问镜像（除非设了 `TUNLR_MIRROR`），没有控制终端时（要试着打开 `/dev/tty` 才知道）传 `--mirror` 和 `--yes`，绝不阻塞。
   - `uninstall.sh` 在 `tunlr` 不在时先装一份再执行 `uninstall --purge`。
 - 可审计：`tunlr config plan --full` 输出将写入系统的全部内容。

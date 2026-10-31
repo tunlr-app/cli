@@ -820,16 +820,16 @@ func TestProxyLAN(t *testing.T) {
 
 func TestMirrorDefaults(t *testing.T) {
 	p, _, _ := newPipeline(t)
-	writeFile(t, p.Layout.SettingsFile(), "github-mirror: https://gh-proxy.com\n")
+	writeFile(t, p.Layout.SettingsFile(), "github-mirror: https://axisnow.gh-proxy.org\n")
 	plan := mustPlan(t, p)
-	if fmt.Sprint(plan.Rewrites) != "[{geox-url.geoip tunlr:mirror} {geox-url.geosite tunlr:mirror} {geox-url.mmdb tunlr:mirror} {geox-url.asn tunlr:mirror}]" {
+	// 兜底的 geox-url 经 jsDelivr，不是 GitHub 的地址，镜像不改写它。
+	if len(plan.Rewrites) != 0 {
 		t.Errorf("rewrites = %v", plan.Rewrites)
 	}
 	cfg := string(plan.Config)
 	for _, want := range []string{
-		"external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip\n",
-		"  mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb\n",
-		"  geosite: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat\n",
+		"external-ui-url: https://axisnow.gh-proxy.org/https://github.com/Zephyruso/zashboard/releases/latest/download/dist-cdn-fonts.zip\n",
+		"  mmdb: https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb\n",
 	} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("config lacks %q", want)
@@ -847,14 +847,15 @@ func TestMirrorDefaults(t *testing.T) {
 	}
 }
 
-// TestTemplateURLs 确认模板中面板的地址、tunlr:defaults 中 geo 数据的地址与内核的默认地址一致。
+// TestTemplateURLs 确认模板中面板的地址与内核的默认地址一致，tunlr:defaults 中 geo 数据的地址是内核默认的
+// 同一组文件（meta-rules-dat release 分支上与发布资产同名）。
 func TestTemplateURLs(t *testing.T) {
 	if !bytes.Contains(templates.Config, []byte("\nexternal-ui-url: "+mihomo.ZashboardURL+"\n")) {
 		t.Errorf("template external-ui-url differs from %s", mihomo.ZashboardURL)
 	}
-	for _, f := range []mihomo.GeoFile{mihomo.GeoIPDat, mihomo.GeoSite, mihomo.GeoMMDB, mihomo.GeoASN} {
-		if !bytes.Contains(templates.Defaults, []byte(": "+f.URL()+"\n")) {
-			t.Errorf("defaults geox-url lacks %s", f.URL())
+	for _, f := range mihomo.AllGeoFiles {
+		if want := ": https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/" + f.Asset + "\n"; !bytes.Contains(templates.Defaults, []byte(want)) {
+			t.Errorf("defaults geox-url lacks %q", want)
 		}
 	}
 	// 模板中写的 lan-allowed-ips 只为固定它在配置中的位置，值必须与 tunlr:proxy 写入的相同。
@@ -868,12 +869,12 @@ func TestTemplateURLs(t *testing.T) {
 func TestMirrorNoRules(t *testing.T) {
 	p, _, _ := newPipeline(t)
 	useSubscription(t, p.Layout, "main", subscriptionV1)
-	writeFile(t, p.Layout.SettingsFile(), "github-mirror: https://gh-proxy.com/\n")
+	writeFile(t, p.Layout.SettingsFile(), "github-mirror: https://axisnow.gh-proxy.org/\n")
 	plan := mustPlan(t, p)
-	if m := plan.Managed[len(plan.Managed)-1]; m.Name != ManagedMirror || strings.Contains(string(m.Data), "rules") || !strings.Contains(string(m.Data), "external-ui-url: https://gh-proxy.com/") {
+	if m := plan.Managed[len(plan.Managed)-1]; m.Name != ManagedMirror || strings.Contains(string(m.Data), "rules") || !strings.Contains(string(m.Data), "external-ui-url: https://axisnow.gh-proxy.org/") {
 		t.Errorf("mirror = %s", m.Data)
 	}
-	if cfg := string(plan.Config); strings.Contains(cfg, "gh-proxy.com,DIRECT") || !strings.Contains(cfg, "\nrules:\n  - MATCH,a\n") {
+	if cfg := string(plan.Config); strings.Contains(cfg, "axisnow.gh-proxy.org,DIRECT") || !strings.Contains(cfg, "\nrules:\n  - MATCH,a\n") {
 		t.Errorf("config:\n%s", cfg)
 	}
 }
@@ -968,7 +969,7 @@ func TestDefaultsManaged(t *testing.T) {
 	useSubscription(t, p.Layout, "main", subscriptionV1+"geox-url:\n  geosite: https://geo.example/site.dat\n")
 	plan := mustPlan(t, p)
 	cfg := string(plan.Config)
-	for _, want := range []string{"\n  geosite: https://geo.example/site.dat\n", "\n  mmdb: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb\n",
+	for _, want := range []string{"\n  geosite: https://geo.example/site.dat\n", "\n  mmdb: https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb\n",
 		"\ngeo-update-interval: 168\n", "\n  enhanced-mode: fake-ip\n"} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("config lacks %q:\n%s", want, cfg)

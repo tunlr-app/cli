@@ -29,7 +29,7 @@ const Version = 1
 // Settings 是工具设置。
 type Settings struct {
 	Version int `yaml:"version"`
-	// GitHubMirror 是 GitHub 下载镜像的前缀，例如 "https://gh-proxy.com/"，用于下载内核（按官方 sha256 校验）；
+	// GitHubMirror 是 GitHub 下载镜像的前缀，例如 "https://axisnow.gh-proxy.org/"，用于下载内核（按官方 sha256 校验）；
 	// 配置中 external-ui-url、geox-url 的 GitHub 地址也改为经它下载（内核自己下载）。为空时直连。
 	GitHubMirror string `yaml:"github-mirror,omitempty"`
 	// UserAgent 是抓取订阅时默认使用的 User-Agent，单个订阅设置了自己的 User-Agent 时以订阅为准。
@@ -41,7 +41,7 @@ type Settings struct {
 const PeriodOff = "off"
 
 // SuggestedMirror 是 init 提问时预填的 GitHub 镜像（还没有设置时），与 install.sh 的默认值相同。
-const SuggestedMirror = "https://gh-proxy.com/"
+const SuggestedMirror = "https://axisnow.gh-proxy.org/"
 
 // maxPeriod 是更新周期的上限，防止写错单位（如把小时写成天）后几乎永不更新而不自知。
 const maxPeriod = 365 * 24 * time.Hour

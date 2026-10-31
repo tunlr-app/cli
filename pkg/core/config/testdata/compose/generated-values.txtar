@@ -7,9 +7,9 @@ mihomo:
   secret: generated-secret
 -- default/tunlr:mirror --
 mihomo:
-  external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip
+  external-ui-url: https://axisnow.gh-proxy.org/https://github.com/Zephyruso/zashboard/releases/latest/download/dist-cdn-fonts.zip
   geox-url:
-    mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
+    mmdb: https://axisnow.gh-proxy.org/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
 -- subscription.yaml --
 secret: from-airport
 proxies:
@@ -83,10 +83,10 @@ geo-auto-update: true
 geo-update-interval: 168
 
 geox-url:
-  geoip: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat
+  geoip: https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat
   geosite: https://example.net/geosite.dat
-  mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
-  asn: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb
+  mmdb: https://axisnow.gh-proxy.org/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
+  asn: https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb
 
 dns:
   enable: true

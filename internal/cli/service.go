@@ -207,7 +207,7 @@ func (a *app) newInitCommand() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&mirror, "mirror", "", `GitHub download mirror prefix, e.g. "https://gh-proxy.com/" ("" for direct)`)
+	f.StringVar(&mirror, "mirror", "", `GitHub download mirror prefix, e.g. "https://axisnow.gh-proxy.org/" ("" for direct)`)
 	f.StringVar(&sub, "sub", "", "add a subscription, as <name>=<url>")
 	f.StringArrayVar(&include, "include", nil, "with --sub: keep only proxies whose names match this regular expression (repeatable)")
 	f.StringArrayVar(&exclude, "exclude", nil, "with --sub: drop proxies whose names match this regular expression (repeatable)")

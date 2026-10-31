@@ -117,23 +117,27 @@ stderr '^tunlr: mixin 20-mine.yaml:4: tun.enable is managed by tunlr:tun \(chang
 exitcode 3 tunlr config apply --yes
 rm root/etc/tunlr/mixin.d/20-mine.yaml
 
-# 配置了 GitHub 镜像：面板和 geo 数据经镜像下载，镜像的域名不加直连规则（和其他流量一样按规则分流）；
-# geox-url 中 github.com 的地址在合成的最后改为经镜像，plan 列出改写的键，tunlr config 给出默认值和改写
+# 配置了 GitHub 镜像：面板经镜像下载，镜像的域名不加直连规则（和其他流量一样按规则分流）；兜底的 geox-url
+# 经 jsDelivr，不改写；mixin 或订阅写的 github.com 地址在合成的最后改为经镜像，plan 列出改写的键，
+# tunlr config 给出默认值和改写
 cp mirror-settings.yaml root/etc/tunlr/settings.yaml
+cp github-geo.yaml root/etc/tunlr/mixin.d/30-geo.yaml
 exec tunlr config plan
 stdout '^Defaults from tunlr: tunlr:defaults, tunlr:dns, tunlr:mirror \(mixins can override them; see: tunlr config\)$'
-stdout '^Rewritten by tunlr:mirror: geox-url.geoip, geox-url.geosite, geox-url.mmdb, geox-url.asn$'
-stdout '^\+  mmdb: https://gh-proxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb$'
-! stdout 'gh-proxy.com,DIRECT'
+stdout '^Rewritten by tunlr:mirror: geox-url.mmdb$'
+stdout '^\+  mmdb: https://axisnow.gh-proxy.org/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb$'
+stdout '^   geosite: https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat$'
+! stdout 'axisnow.gh-proxy.org,DIRECT'
 exec tunlr config plan --json
 stdout '"name": "tunlr:mirror"'
 stdout '"path": "geox-url.mmdb",\s*$'
 exec tunlr config
 stdout '^Defaults from tunlr:mirror \(tunlr settings edit; a mixin can override these\):$'
-stdout '^    external-ui-url: https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip$'
+stdout '^    external-ui-url: https://axisnow.gh-proxy.org/https://github.com/Zephyruso/zashboard/releases/latest/download/dist-cdn-fonts.zip$'
 ! stdout 'DIRECT'
 stdout '^  # then, after the mixins, https://github.com/ addresses in geox-url go through the mirror$'
 rm root/etc/tunlr/settings.yaml
+rm root/etc/tunlr/mixin.d/30-geo.yaml
 
 # edit 需要终端
 exitcode 2 tunlr config edit 20-home
@@ -227,7 +231,11 @@ mihomo:
     stack: system
     enable: true
 -- mirror-settings.yaml --
-github-mirror: https://gh-proxy.com/
+github-mirror: https://axisnow.gh-proxy.org/
+-- github-geo.yaml --
+mihomo:
+  geox-url:
+    mmdb: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
 -- level-mixin.yaml --
 mihomo:
   log-level: warning

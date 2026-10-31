@@ -29,8 +29,8 @@ func TestLoad(t *testing.T) {
 	if err != nil || s.Version != Version {
 		t.Fatalf("empty file: %+v, %v", s, err)
 	}
-	s, err = Load(write("github-mirror: https://gh-proxy.com/\n"))
-	if err != nil || s.Version != Version || s.GitHubMirror != "https://gh-proxy.com/" {
+	s, err = Load(write("github-mirror: https://axisnow.gh-proxy.org/\n"))
+	if err != nil || s.Version != Version || s.GitHubMirror != "https://axisnow.gh-proxy.org/" {
 		t.Fatalf("without version: %+v, %v", s, err)
 	}
 	s, err = Load(write("user-agent: clash-verge/v2.0.0\n"))
@@ -40,8 +40,8 @@ func TestLoad(t *testing.T) {
 
 	tests := []struct{ content, want string }{
 		{"version: 2\n", "version 2 is newer than this tunlr supports (1)"},
-		{"github_mirror: https://gh-proxy.com/\n", "field github_mirror not found"},
-		{"github-mirror: gh-proxy.com\n", "github-mirror must be an http or https URL"},
+		{"github_mirror: https://axisnow.gh-proxy.org/\n", "field github_mirror not found"},
+		{"github-mirror: axisnow.gh-proxy.org\n", "github-mirror must be an http or https URL"},
 		{"github-mirror: [\n", "yaml:"},
 		{"user-agent: \"a\\r\\nX-Injected: 1\"\n", "user-agent: invalid argument: User-Agent must not contain control characters"},
 	}

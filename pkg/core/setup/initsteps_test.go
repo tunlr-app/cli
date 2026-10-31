@@ -13,7 +13,7 @@ import (
 func TestInitSteps(t *testing.T) {
 	l := paths.Layout{Root: t.TempDir()}
 	i := &Installer{Layout: l, Version: "test", Systemd: &service.Systemd{Layout: l}}
-	mirror := "https://gh-proxy.com/"
+	mirror := "https://axisnow.gh-proxy.org/"
 	steps, err := i.InitSteps(context.Background(), InitOptions{Mirror: &mirror, SubName: "home", SubURL: "https://example.net/s"})
 	if err != nil {
 		t.Fatal(err)
@@ -21,7 +21,7 @@ func TestInitSteps(t *testing.T) {
 	got := strings.Join(steps, "\n")
 	for _, want := range []string{
 		"Copy tunlr to " + l.ToolBinary(),
-		"Download from GitHub through https://gh-proxy.com/",
+		"Download from GitHub through https://axisnow.gh-proxy.org/",
 		"Install mihomo (latest release)",
 		"Install and enable tunlr-core.service, tunlr-update.timer (subscriptions daily unless set otherwise), tunlr-aftercare.path (checks mihomo after the panel upgrades it) " +
 			"and tunlr-firewall.service (reloads tunlr's nftables rules after nftables.service)",

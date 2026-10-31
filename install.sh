@@ -6,7 +6,7 @@
 #
 # Environment:
 #   TUNLR_VERSION   release to install, e.g. v0.2.0 (default: the latest release)
-#   TUNLR_MIRROR    GitHub download mirror prefix (default: https://gh-proxy.com/; set it empty to download
+#   TUNLR_MIRROR    GitHub download mirror prefix (default: https://axisnow.gh-proxy.org/; set it empty to download
 #                   from github.com directly). It only carries the bytes: the sha256 always comes from
 #                   api.github.com and the download is rejected when it does not match. With a
 #                   terminal tunlr init asks which mirror to keep (this one is the default); without one,
@@ -21,7 +21,7 @@ set -eu
 REPO=tunlr-app/cli
 BIN=/usr/local/bin/tunlr
 API="https://api.github.com/repos/$REPO/releases"
-MIRROR=${TUNLR_MIRROR-https://gh-proxy.com/}
+MIRROR=${TUNLR_MIRROR-https://axisnow.gh-proxy.org/}
 
 say() { printf '%s\n' "$*"; }
 fail() { say "install.sh: $*" >&2; exit 1; }
@@ -39,7 +39,7 @@ aarch64 | arm64) ARCH=arm64 ;;
 esac
 case "$MIRROR" in
 '' | */) ;;
-*) fail "TUNLR_MIRROR must end with a slash, e.g. https://gh-proxy.com/" ;;
+*) fail "TUNLR_MIRROR must end with a slash, e.g. https://axisnow.gh-proxy.org/" ;;
 esac
 
 # Which release.

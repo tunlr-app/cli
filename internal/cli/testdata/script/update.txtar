@@ -62,7 +62,7 @@ grep '^    geosite: https://cdn.example/geosite.dat$' root/etc/tunlr/mixin.d/mai
 exec tunlr update
 stdout '^geo\s+every 2 days \(2d\)\s+never\s+-$'
 stdout '^  geox-url.geosite\s+https://cdn.example/geosite.dat\s+mixin main/20-geo.yaml$'
-stdout '^  geox-url.mmdb\s+https://github.com/\S+\s+fallback \(tunlr:defaults\)$'
+stdout '^  geox-url.mmdb\s+https://fastly.jsdelivr.net/\S+\s+fallback \(tunlr:defaults\)$'
 exec tunlr config plan
 stdout '^Geo data settings not from the fallbacks: geo-auto-update \(main/20-geo.yaml\), geo-update-interval \(main/20-geo.yaml\), geox-url.geosite \(main/20-geo.yaml\) \(see: tunlr update\)$'
 exec tunlr status

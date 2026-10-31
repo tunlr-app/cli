@@ -12,7 +12,7 @@ rules:
 tunlr:
   rules:
     prepend:
-      - DOMAIN,gh-proxy.com,DIRECT
+      - DOMAIN,axisnow.gh-proxy.org,DIRECT
       - DOMAIN,mirror.example.net,DIRECT
 -- mixin.d/10-test.yaml --
 tunlr:
@@ -29,5 +29,5 @@ proxies:
 
 rules:
   - DOMAIN-SUFFIX,corp.example.com,DIRECT
-  - DOMAIN,gh-proxy.com,DIRECT
+  - DOMAIN,axisnow.gh-proxy.org,DIRECT
   - MATCH,a
