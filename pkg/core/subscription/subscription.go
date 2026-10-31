@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -37,8 +36,6 @@ var (
 
 // lockWait 是等待其他 tunlr 操作释放锁的最长时间。
 const lockWait = 30 * time.Second
-
-var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // Manager 执行订阅相关的操作。会改动状态的方法都先获取文件锁。
 type Manager struct {
@@ -148,7 +145,10 @@ func (m *Manager) Add(ctx context.Context, name, source string, opts AddOptions)
 	if err != nil {
 		return nil, err
 	}
-	if l.Find(name) != nil {
+	if d := l.findFold(name); d != nil {
+		if d.Name != name {
+			return nil, fmt.Errorf("%w: %s (names differing only in case count as the same)", ErrExists, d.Name)
+		}
 		return nil, fmt.Errorf("%w: %s", ErrExists, name)
 	}
 	sub := Subscription{Def: Def{Name: name, URL: src.URL, Path: src.Path, UserAgent: opts.UserAgent, Update: opts.Update},
@@ -218,7 +218,7 @@ func (m *Manager) Set(ctx context.Context, name, period string) error {
 	}
 	d := l.Find(name)
 	if d == nil {
-		return fmt.Errorf("%w: %s", ErrNotFound, name)
+		return l.NotFound(name)
 	}
 	if err := checkSource(Source{URL: d.URL, Path: d.Path}, "", period); err != nil {
 		return err
@@ -282,7 +282,7 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 		return err
 	}
 	if l.Find(name) == nil {
-		return fmt.Errorf("%w: %s", ErrNotFound, name)
+		return l.NotFound(name)
 	}
 	if l.Active == name {
 		return fmt.Errorf("%w: %s; switch to another subscription first (tunlr sub use)", ErrActive, name)
@@ -351,7 +351,7 @@ func (m *Manager) Update(ctx context.Context, names []string, opts UpdateOptions
 	for _, name := range names {
 		d := l.Find(name)
 		if d == nil {
-			return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
+			return nil, l.NotFound(name)
 		}
 		cur := Source{URL: d.URL, Path: d.Path}
 		if src != nil {
@@ -420,7 +420,7 @@ func (m *Manager) Use(ctx context.Context, name string) (*Fetched, error) {
 	}
 	d := l.Find(name)
 	if d == nil {
-		return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
+		return nil, l.NotFound(name)
 	}
 	res := &Fetched{Name: name, Activated: l.Active != name}
 	data, err := os.ReadFile(m.Layout.SubscriptionFile(name))
@@ -523,10 +523,10 @@ func (m *Manager) now() time.Time {
 	return time.Now()
 }
 
-// ValidateName 检查订阅名称：1～64 个字母、数字、'.'、'_'、'-'，以字母或数字开头。
+// ValidateName 检查订阅名称。名称也是 mixin.d 中的目录名，规则见 config.ValidMixinDir。
 func ValidateName(name string) error {
-	if !namePattern.MatchString(name) {
-		return fmt.Errorf("%w: subscription name %q must be 1-64 characters of letters, digits, '.', '_' or '-', starting with a letter or digit",
+	if !config.ValidMixinDir(name) {
+		return fmt.Errorf("%w: subscription name %q must be 1-64 characters of letters, digits, '.', '_' or '-', starting with a letter or digit and not ending in .yaml",
 			core.ErrInvalidArgument, name)
 	}
 	return nil

@@ -124,6 +124,12 @@ func TestAddListRemove(t *testing.T) {
 	if _, err := m.Add(ctx, "first", p.URL+"/ok", AddOptions{}); !errors.Is(err, ErrExists) {
 		t.Errorf("duplicate add: err = %v", err)
 	}
+	if _, err := m.Add(ctx, "First", p.URL+"/ok", AddOptions{}); !errors.Is(err, ErrExists) || !strings.Contains(err.Error(), "first (names differing only in case") {
+		t.Errorf("add differing in case: err = %v", err)
+	}
+	if _, err := m.Use(ctx, "FIRST"); !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "did you mean first?") {
+		t.Errorf("use differing in case: err = %v", err)
+	}
 	if err := m.Remove(ctx, "first"); !errors.Is(err, ErrActive) {
 		t.Errorf("remove active: err = %v", err)
 	}

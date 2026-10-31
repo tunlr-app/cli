@@ -83,7 +83,7 @@ func (i *Installer) SetGeo(ctx context.Context, sub string, ch GeoChange) (*GeoW
 		return nil, err
 	}
 	if list.Find(sub) == nil {
-		return nil, fmt.Errorf("%w: %s", subscription.ErrNotFound, sub)
+		return nil, list.NotFound(sub)
 	}
 	sources, err := i.GeoSources(ctx, sub)
 	if err != nil {

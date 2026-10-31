@@ -208,6 +208,7 @@ sh 的优势（轻量、随处可跑、可随手修改）主要服务于路由�
   - 工具写入时在原文件上只改动变化的值（基于 `yaml.Node`，订阅项按 `name` 对应），保留用户的注释和顺序；新建时带一段说明。权限 0600：地址带有机场的访问令牌。
   - 读取时严格校验：未知的键、名称不合法或重复、`url` 与 `path` 不是恰好一个、地址不是 http(s)、路径不是绝对路径、User-Agent 用于文件、周期写错、标准输入设了周期、`active` 不在列表中，都报错（错误中不含地址）。`doctor` 把读不出的列表判为 fail。
   - 手写进来的订阅没有抓取记录，视为立即到期，下一次定时更新就抓取；`active` 指向还没有内容的订阅时，发布提示先 `sub update`。手动删掉的订阅，下次工具写入时去掉它的抓取记录（内容文件和订阅 mixin 留着，`sub remove` 才删）。
+  - 订阅名称添加后不能修改：它是 `mixin.d/<名称>/`、内容文件和 `config edit <名称>/…` 的一部分。规则同 mixin 目录名（字母、数字、`.`、`_`、`-`，以字母或数字开头，不以 `.yaml` 结尾以免与共用的 mixin 文件同名）。名称不区分大小写地唯一（`home` 与 `Home` 不能并存），查找仍区分大小写，写错大小写时提示正确的写法。
   - 只含节点的订阅（走 proxy-providers、由模板提供策略组和规则）留作将来的第二种来源，与完整配置共用同一条流水线。
 - **订阅的来源**（2026-10-29）：地址、本地文件或标准输入，由 `sub add <名称> <来源>` 的第二个参数决定，不另设参数：含 `://` 的是地址（只认 http、https），`-` 是标准输入，其余都是路径（转为绝对路径，必须是普通文件）。
   - 本地文件记住路径（订阅列表中的 `path`，与 `url` 二选一），`sub update` 时重新读取；内容照样复制到 `subscriptions/`，源文件删掉后配置照常可用，`sub update` 记一次失败，与抓取失败相同。自动更新默认关闭（文件只会被用户自己改，改完 `sub update`），可以用 `sub set --update` 打开。
@@ -930,7 +931,7 @@ tunlr backup restore [文件|-]     还原备份：diff 确认后发布，先自
 
 服务与安装相关命令的行为：
 
-- `init`：可重复执行，再次执行即修复。依次：检查环境（root、systemd、架构）→ 把自身复制到 `/usr/local/bin/tunlr` → 创建用户 `tunlr` → 建目录并设置属主与权限 → 没有内核时安装最新版（`--version`，或 `--kernel-file` 从下载好的资产离线安装，见第 7 节）→ 写入 unit 和 timer、`daemon-reload`、启用 `tunlr-core.service`、`tunlr-update.timer`、`tunlr-aftercare.path` 与 `tunlr-firewall.service`（`tunlr-check.timer` 按开关启停，见 8.4）→ 给了订阅就添加 → 有启用的订阅时发布配置并启动内核、做健康检查。交互模式下询问 GitHub 镜像（输入框预填当前设置，还没有时预填 `settings.SuggestedMirror` 即 `https://gh-proxy.com/`；清空即直连，2026-10-31 定：之前是留空保持原值，`install.sh` 又总是传 `--mirror`，用户在不知情的情况下就用上了镜像，也没有顺手的办法改成直连）、订阅地址及其节点筛选（都可以留空）；非交互模式由 `--mirror`、`--sub <名称>=<地址>`、`--include`、`--exclude` 给出，没给就跳过。
+- `init`：可重复执行，再次执行即修复。依次：检查环境（root、systemd、架构）→ 把自身复制到 `/usr/local/bin/tunlr` → 创建用户 `tunlr` → 建目录并设置属主与权限 → 没有内核时安装最新版（`--version`，或 `--kernel-file` 从下载好的资产离线安装，见第 7 节）→ 写入 unit 和 timer、`daemon-reload`、启用 `tunlr-core.service`、`tunlr-update.timer`、`tunlr-aftercare.path` 与 `tunlr-firewall.service`（`tunlr-check.timer` 按开关启停，见 8.4）→ 给了订阅就添加 → 有启用的订阅时发布配置并启动内核、做健康检查。交互模式下询问 GitHub 镜像（输入框预填当前设置，还没有时预填 `settings.SuggestedMirror` 即 `https://gh-proxy.com/`；清空即直连，2026-10-31 定：之前是留空保持原值，`install.sh` 又总是传 `--mirror`，用户在不知情的情况下就用上了镜像，也没有顺手的办法改成直连）、订阅地址、名称（预填 `default`，名称之后不能改，所以要问）及其节点筛选（地址和筛选可以留空）；非交互模式由 `--mirror`、`--sub <名称>=<地址>`、`--include`、`--exclude` 给出，没给就跳过。
   - 之后询问这台服务器的用途（见下文“家庭网络中的用法”）：只给本机用（默认，如 VPS）、只给局域网设备当代理、给局域网设备当网关和代理（两种用法同时可用，选项文字写明，免得看起来是三选一）。后两项再问是否也让局域网设备打开面板（默认是）；选网关且有多块候选网卡（已启用、有 IPv4 地址、接着真实网络，见 8.10，默认路由所在的排最前）时选择网卡；所选网卡有公网地址时再确认一次，回答否回到用途的问题。
   - 已经开启过透明代理、网关或代理端口局域网访问时不问（再次 init 是修复，不改用途）；没有订阅时也不问（内核不会启动）。
   - 非交互模式由 `--lan-proxy`、`--gateway <网卡|auto>`（同时开启 `--lan-proxy`）、`--lan-panel` 给出，`--lan-interface` 指定代理端口和面板放行的网卡（同 `proxy lan on --interface`，没给时取默认值，见第 10 节“对其他设备开放的端口”）；写错的网卡名在检查环境之后、动手之前就拒绝，不会装好内核后才在最后一步失败。它们与 `--json` 同用时报用法错误：后续步骤各有输出，合不成一份 JSON，分别执行 `proxy lan on`、`tun gateway on`、`panel lan on` 即可。

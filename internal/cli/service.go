@@ -18,6 +18,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/service"
 	"github.com/tunlr-app/cli/pkg/core/settings"
 	"github.com/tunlr-app/cli/pkg/core/setup"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
 func (a *app) installer() *setup.Installer {
@@ -402,7 +403,13 @@ func (a *app) askInit(cmd *cobra.Command, opts *setup.InitOptions) error {
 		if err != nil || url == "" {
 			return err
 		}
-		opts.SubName, opts.SubURL = "default", url
+		name, err := a.prompt.Input(ctx, "Name of the subscription",
+			"e.g. home or work; letters, digits, '.', '_' and '-'. It names the subscription's mixin folder\n"+
+				"(tunlr config edit <name>/...) and cannot be changed later.", "default", subscription.ValidateName)
+		if err != nil {
+			return err
+		}
+		opts.SubName, opts.SubURL = name, url
 		if !cmd.Flags().Changed("include") && !cmd.Flags().Changed("exclude") {
 			if opts.SubFilter, opts.SubExclude, err = a.askFilter(cmd, opts.SubName); err != nil {
 				return err

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 
@@ -66,7 +67,8 @@ func (d *Def) UpdatePeriod() string {
 	return d.Update
 }
 
-// Find 返回名为 name 的订阅，不存在时返回 nil。
+// Find 返回名为 name 的订阅，不存在时返回 nil。名称区分大小写：它也是目录名和 mixin 名称的一部分，
+// 查找时不折叠大小写，调用方就不必把用户输入换成保存的写法。
 func (l *List) Find(name string) *Def {
 	for i := range l.Subscriptions {
 		if l.Subscriptions[i].Name == name {
@@ -74,6 +76,25 @@ func (l *List) Find(name string) *Def {
 		}
 	}
 	return nil
+}
+
+// findFold 返回名称与 name 只差大小写（或完全相同）的订阅，不存在时返回 nil。名称不区分大小写地唯一，
+// 所以至多一个。
+func (l *List) findFold(name string) *Def {
+	for i := range l.Subscriptions {
+		if strings.EqualFold(l.Subscriptions[i].Name, name) {
+			return &l.Subscriptions[i]
+		}
+	}
+	return nil
+}
+
+// NotFound 返回找不到订阅 name 的错误（ErrNotFound）；有只差大小写的订阅时提示它的写法。
+func (l *List) NotFound(name string) error {
+	if d := l.findFold(name); d != nil {
+		return fmt.Errorf("%w: %s (did you mean %s? names are case-sensitive)", ErrNotFound, name, d.Name)
+	}
+	return fmt.Errorf("%w: %s", ErrNotFound, name)
 }
 
 // LoadList 读取订阅列表。文件不存在时返回空列表。
@@ -117,6 +138,7 @@ func (l *List) validate() error {
 		return fmt.Errorf("%w: invalid version %d", core.ErrInvalidArgument, l.Version)
 	}
 	seen := map[string]bool{}
+	folded := map[string]string{}
 	for i := range l.Subscriptions {
 		d := &l.Subscriptions[i]
 		if err := ValidateName(d.Name); err != nil {
@@ -125,7 +147,12 @@ func (l *List) validate() error {
 		if seen[d.Name] {
 			return fmt.Errorf("%w: subscription %q is listed twice", core.ErrInvalidArgument, d.Name)
 		}
+		// 只差大小写的名称容易混淆，也视为重复。
+		if other, ok := folded[strings.ToLower(d.Name)]; ok {
+			return fmt.Errorf("%w: subscriptions %q and %q differ only in case", core.ErrInvalidArgument, other, d.Name)
+		}
 		seen[d.Name] = true
+		folded[strings.ToLower(d.Name)] = d.Name
 		if err := d.validate(); err != nil {
 			return fmt.Errorf("subscription %q: %w", d.Name, err)
 		}

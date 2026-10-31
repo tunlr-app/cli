@@ -94,7 +94,7 @@ var mixinName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 func MixinFileName(name string) (string, error) {
 	sub, file := splitMixinName(name)
 	stem := strings.TrimSuffix(file, mixinExt)
-	if !mixinName.MatchString(stem) || (strings.Contains(name, "/") && !mixinName.MatchString(sub)) {
+	if !mixinName.MatchString(stem) || (strings.Contains(name, "/") && !ValidMixinDir(sub)) {
 		return "", fmt.Errorf("%w: invalid mixin name %q: use letters, digits, '.', '_' and '-' (e.g. 20-rules, or home/10-filter for subscription home)",
 			core.ErrInvalidArgument, name)
 	}
@@ -104,8 +104,12 @@ func MixinFileName(name string) (string, error) {
 	return stem + mixinExt, nil
 }
 
-// ValidMixinDir 报告 name 能否作为订阅 mixin 的目录名（与订阅名的规则相同）。
-func ValidMixinDir(name string) bool { return mixinName.MatchString(name) }
+// ValidMixinDir 报告 name 能否作为订阅 mixin 的目录名，订阅名也用这条规则：字母、数字、'.'、'_'、'-'，
+// 以字母或数字开头（不会是 "."、".."，也不会被当作命令行参数）；不能以 .yaml 结尾，否则目录与
+// mixin.d 中同名的共用 mixin 文件冲突。
+func ValidMixinDir(name string) bool {
+	return mixinName.MatchString(name) && !strings.HasSuffix(strings.ToLower(name), mixinExt)
+}
 
 // MixinPath 返回名为 name（MixinFileName 的结果）的 mixin 在 dir（mixin.d）中的路径。
 func MixinPath(dir, name string) string {

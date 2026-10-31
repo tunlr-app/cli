@@ -33,7 +33,7 @@ jsDelivr 不可用时改用 GitHub 的原始文件：
 curl -fsSL https://raw.githubusercontent.com/tunlr-app/cli/main/install.sh | sudo sh
 ```
 
-脚本做的事：检查 root、systemd 和架构 → 向 `api.github.com` 查询最新发布 → 经镜像下载 `tunlr_<版本>_linux_<架构>.tar.gz` → 核对 GitHub 为该文件记录的 sha256 → 确认下载的二进制能运行 → 原子替换到 `/usr/local/bin/tunlr` → 运行 `tunlr init`。`init` 会询问 GitHub 镜像（预填 `https://gh-proxy.com/`，清空即直连）、订阅地址及节点筛选、这台服务器的用途（只给本机用、给局域网设备当代理、当网关），都可以留空或之后再设。
+脚本做的事：检查 root、systemd 和架构 → 向 `api.github.com` 查询最新发布 → 经镜像下载 `tunlr_<版本>_linux_<架构>.tar.gz` → 核对 GitHub 为该文件记录的 sha256 → 确认下载的二进制能运行 → 原子替换到 `/usr/local/bin/tunlr` → 运行 `tunlr init`。`init` 会询问 GitHub 镜像（预填 `https://gh-proxy.com/`，清空即直连）、订阅地址、名称（预填 `default`，之后不能改）及节点筛选、这台服务器的用途（只给本机用、给局域网设备当代理、当网关），都可以留空或之后再设。
 
 环境变量和参数：
 
