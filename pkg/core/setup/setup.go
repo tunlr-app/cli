@@ -53,6 +53,8 @@ type Installer struct {
 	Rules *netfilter.Rules
 	// CheckNetwork 是开启透明代理后的检测，为空时使用默认的检测（测试时替换）。
 	CheckNetwork func(ctx context.Context, opts TunOptions) []TunCheck
+	// CheckResolve 经系统的解析器解析一个域名（ipv6 bypass 之后），为空时使用 checkDNS（测试时替换）。
+	CheckResolve func(ctx context.Context) TunCheck
 	// Host 是 doctor 检查的本机，为空时使用真实的系统（测试时替换）。
 	Host *doctor.Host
 	// Interfaces 查找网卡，为空时使用 netfilter.LookupInterface（测试时替换）。

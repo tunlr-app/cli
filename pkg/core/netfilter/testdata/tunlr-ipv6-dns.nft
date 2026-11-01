@@ -1,0 +1,25 @@
+# 由 tunlr 生成：从外部进入本机的连接，回包走主路由表，不进 TUN（DESIGN.md 8.4）。
+# 先建后删再建，整个文件在一个事务中替换旧表。
+table inet tunlr
+delete table inet tunlr
+table inet tunlr {
+	chain prerouting {
+		type filter hook prerouting priority mangle - 1; policy accept;
+		# 目标为本机、不是从 TUN 进来的连接。在 DNAT 之前判断，所以端口转发给容器、虚拟机的连接也算。不限于新连接：
+		# 加载本表前已经建立的连接（如开启 TUN 的 SSH 会话）在对方发来下一个包时也会标记。
+		iifname != { "lo", "tunlr0" } fib daddr type local ct direction original ct mark set ct mark | 0x10000000
+		# DNAT 后转发出去的连接的回包。
+		ct direction reply ct mark & 0x10000000 == 0x10000000 meta mark set meta mark | 0x10000000
+	}
+	chain output {
+		type route hook output priority mangle - 1; policy accept;
+		# 本机进程发出的回包；标记变化后内核按 ip rule 重新选路。
+		ct direction reply ct mark & 0x10000000 == 0x10000000 meta mark set meta mark | 0x10000000
+	}
+	# IPv6 不经 mihomo（tunlr ipv6 bypass）而 TUN 开着：拒绝本机经 IPv6 的 DNS 查询，解析改问 IPv4 的服务器，
+	# 由 TUN 劫持给 mihomo（DESIGN.md 8.3）。mihomo 此时自己不用 IPv6，不必排除它。
+	chain ipv6_dns {
+		type filter hook output priority filter; policy accept;
+		meta nfproto ipv6 oifname != "lo" meta l4proto { tcp, udp } th dport 53 reject
+	}
+}

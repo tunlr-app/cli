@@ -610,6 +610,10 @@ func (a *app) printStatus(s *setup.Status) {
 	if s.SubDNS != "" {
 		fmt.Fprintf(w, "DNS:           %s's own where it sets one (tunlr.sub-dns in %s; details: tunlr dns)\n", s.Subscription, s.SubDNS)
 	}
+	if s.IPv6Bypass {
+		fmt.Fprintf(w, "IPv6:          %s (connections to IPv6 addresses go out directly, not through mihomo; details: tunlr ipv6)\n",
+			a.style.warn(setup.IPv6Bypass))
+	}
 	// 没有发布过配置时（没有漂移）不显示：还没有可查的。
 	if s.Drift != nil {
 		a.printDNSLeaks(s.DNSLeaks)

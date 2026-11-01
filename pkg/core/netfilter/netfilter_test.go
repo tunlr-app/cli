@@ -14,25 +14,27 @@ import (
 
 var update = flag.Bool("update", false, "rewrite testdata/tunlr.nft")
 
-// TestRender 把生成的脚本与 testdata/tunlr.nft 逐字比对；用 -update 重新生成。
-// 脚本本身由 nft 在 network namespace 中的集成测试验证。
+// TestRender 把生成的脚本与 testdata/tunlr.nft、tunlr-ipv6-dns.nft（拒绝经 IPv6 的 DNS 查询）逐字比对；
+// 用 -update 重新生成。脚本本身由 nft 在 network namespace 中的集成测试验证。
 func TestRender(t *testing.T) {
-	got, err := Render()
-	if err != nil {
-		t.Fatal(err)
-	}
-	golden := filepath.Join("testdata", "tunlr.nft")
-	if *update {
-		if err := os.WriteFile(golden, got, 0o644); err != nil {
+	for name, o := range map[string]TableOptions{"tunlr.nft": {}, "tunlr-ipv6-dns.nft": {RejectIPv6DNS: true}} {
+		got, err := Render(o)
+		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	want, err := os.ReadFile(golden)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(want) {
-		t.Fatalf("script mismatch (run with -update to accept)\n--- got ---\n%s", got)
+		golden := filepath.Join("testdata", name)
+		if *update {
+			if err := os.WriteFile(golden, got, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want, err := os.ReadFile(golden)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("%s: script mismatch (run with -update to accept)\n--- got ---\n%s", name, got)
+		}
 	}
 }
 
@@ -127,7 +129,7 @@ func TestUpIsIdempotent(t *testing.T) {
 	f, r := newFake()
 	ctx := context.Background()
 	for range 2 {
-		if err := r.Up(ctx); err != nil {
+		if err := r.Up(ctx, TableOptions{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -144,7 +146,7 @@ func TestUpIsIdempotent(t *testing.T) {
 func TestDown(t *testing.T) {
 	f, r := newFake()
 	ctx := context.Background()
-	if err := r.Up(ctx); err != nil {
+	if err := r.Up(ctx, TableOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	// 内核正常退出：只清理工具自己的表和规则。

@@ -729,6 +729,7 @@ func TestManagedConflicts(t *testing.T) {
 		// 测试用的布局不知道内核用户，exclude-uid 不写，仍然独占。
 		{"mihomo:\n  tun:\n    exclude-uid: [1000]\n", "mixin 10-a.yaml:3: tun.exclude-uid is managed by tunlr:tun"},
 		{"mihomo:\n  external-controller-unix: x.sock\n", "mixin 10-a.yaml:2: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
+		{"mihomo:\n  ipv6: false\n", "mixin 10-a.yaml:2: ipv6 is managed by tunlr:ipv6 (change it with: tunlr ipv6 off/on/bypass)"},
 	} {
 		writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), tt.mixin)
 		var me *config.MixinError
@@ -758,8 +759,20 @@ func TestManagedConflicts(t *testing.T) {
 	}
 
 	ms, err := p.Managed()
-	if err != nil || len(ms) != 7 || ms[4].Name != ManagedDefaults || ms[5].Name != ManagedDNS || ms[6].Name != ManagedMirror || !ms[6].Default || ms[1].Keys()[0] != "tun.enable" {
+	if err != nil || len(ms) != 8 || ms[4].Name != ManagedIPv6 || ms[5].Name != ManagedDefaults || ms[6].Name != ManagedDNS ||
+		ms[7].Name != ManagedMirror || !ms[7].Default || ms[1].Keys()[0] != "tun.enable" {
 		t.Errorf("Managed = %+v, %v", ms, err)
+	}
+
+	// IPv6 开关为 bypass 时顶层 ipv6 为 false。
+	for _, bypass := range []bool{false, true} {
+		plan, err := p.PlanIPv6(ctx, nil, bypass)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := fmt.Sprintf("\nipv6: %t\n", !bypass); !strings.Contains(string(plan.Config), want) {
+			t.Errorf("bypass %t: config lacks %q", bypass, want)
+		}
 	}
 }
 

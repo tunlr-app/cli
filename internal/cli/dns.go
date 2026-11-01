@@ -93,8 +93,11 @@ func (a *app) writeSubDNS(cmd *cobra.Command, sub, from string) (*setup.DNSWrite
 	return w, nil
 }
 
-// printMixinChanges 列出命令改了（done）或将要改的 mixin 文件和其中的键，文件名相对于 mixin.d。
+// printMixinChanges 列出命令改了（done）或将要改的 mixin 文件和其中的键，文件名相对于 mixin.d；没有时什么都不输出。
 func (a *app) printMixinChanges(changes []*setup.MixinChange, done bool) {
+	if len(changes) == 0 {
+		return
+	}
 	title := "Mixin files to change (in mixin.d):"
 	if done {
 		title = "Changed mixin files (in mixin.d):"
@@ -133,7 +136,7 @@ func (a *app) newDNSCommand() *cobra.Command {
 			"  mode            how it answers the queries TUN catches: fake-ip or redir-host\n" +
 			"  fake-ip-filter  your names that get real addresses in fake-ip mode\n" +
 			"Whose DNS a subscription uses, tunlr's (the default) or its own, is set with\n" +
-			"tunlr sub set <sub> --dns.\n\n" +
+			"tunlr sub set <sub> --dns; whether it answers IPv6 addresses, with tunlr ipv6.\n\n" +
 			"These commands edit the mixin file that now sets the key, or else mixin.d/" + setup.DNSMixinFile + ", and\n" +
 			"publish the configuration after you confirm; editing the files yourself works the same.\n\n" +
 			"Without a subcommand, show the DNS settings and where they come from; in a terminal, then\n" +
@@ -168,10 +171,10 @@ func (a *app) newDNSModeCommand() *cobra.Command {
 		ValidArgs: dnsModes,
 		Long: "The DNS mode only matters for the queries mihomo answers itself: those TUN catches on this\n" +
 			"server and those of LAN devices that use it as their gateway and DNS.\n" +
-			"  fake-ip     mihomo answers with addresses from 198.18.0.0/16 and maps them back to the names;\n" +
-			"              proxied names need no real lookup. Some apps and devices dislike fake addresses,\n" +
-			"              and devices keep them cached for a while after mihomo stops. The names in\n" +
-			"              fake-ip-filter get real addresses (tunlr dns fake-ip-filter adds yours).\n" +
+			"  fake-ip     mihomo answers with fake addresses from dns.fake-ip-range (tunlr dns shows it) and\n" +
+			"              maps them back to the names; proxied names need no real lookup. Some apps and devices\n" +
+			"              dislike fake addresses, and devices keep them cached for a while after mihomo stops.\n" +
+			"              The names in fake-ip-filter get real addresses (tunlr dns fake-ip-filter adds yours).\n" +
 			"  redir-host  mihomo answers with real addresses (foreign names looked up through the proxies);\n" +
 			"              rules by name keep working through the mapping and sniffing.\n" +
 			"  default     the configuration decides again: tunlr's fallbacks (fake-ip), or the\n" +
@@ -264,6 +267,21 @@ func (a *app) printDNS(s *setup.DNSStatus) {
 		mode, src = setup.DNSRedirHost, "not set; mihomo's default"
 	}
 	fmt.Fprintf(w, "DNS mode:          %s %s\n", mode, a.style.dim("("+src+")"))
+	a.printIPv6(w, &s.IPv6)
+	if mode == setup.DNSFakeIP {
+		ranges := s.FakeIPRange
+		if ranges == "" {
+			ranges = "198.18.0.1/16 " + a.style.dim("(mihomo's default)")
+		}
+		if s.IPv6.Mode == setup.IPv6On {
+			r6 := s.FakeIPRange6
+			if r6 == "" {
+				r6 = a.style.warn("no IPv6 range (dns.fake-ip-range6)")
+			}
+			ranges += ", " + r6
+		}
+		fmt.Fprintf(w, "Fake addresses:    %s\n", ranges)
+	}
 	for _, l := range []struct {
 		label string
 		list  setup.DNSServerList
@@ -284,7 +302,10 @@ func (a *app) printDNS(s *setup.DNSStatus) {
 	case !s.Enabled:
 		fmt.Fprintln(w, a.style.warn("mihomo's DNS is off (dns.enable is false), so these settings are not used."))
 	case !s.Tun:
-		fmt.Fprintln(w, a.style.dim("TUN is off, so the mode and fake-ip-filter are not used now; the servers are."))
+		fmt.Fprintln(w, a.style.dim("TUN is off, so the mode, IPv6 and fake-ip-filter are not used by this server's programs now; the servers are."))
+	}
+	if s.GatewayIPv6 != "" {
+		fmt.Fprintf(w, "%s %s (tunlr ipv6 off).\n", a.style.warn("Warning:"), s.GatewayIPv6)
 	}
 }
 
@@ -311,19 +332,23 @@ func (a *app) chooseDNSChange(cmd *cobra.Command, s *setup.DNSStatus) error {
 	}
 	options, initial := dnsModeOptions(&s.Mode)
 	options = append(options,
+		"IPv6: off, on or bypass (now "+s.IPv6.Mode+")",
 		"Servers: who answers Chinese domains and other domains",
 		"fake-ip-filter: names that get real addresses in fake-ip mode"+yours)
-	k, err := a.prompt.Choose(cmd.Context(), "Change which DNS setting?", options, initial)
+	ctx := cmd.Context()
+	k, err := a.prompt.Choose(ctx, "Change which DNS setting?", options, initial)
 	if stop, err := a.cancelled(err); stop {
 		return err
 	}
-	switch {
-	case k < len(dnsModes):
-		return a.setDNSMode(cmd.Context(), dnsModes[k])
-	case k == len(dnsModes):
+	switch k - len(dnsModes) {
+	case 0:
+		return a.chooseIPv6(ctx, &s.IPv6)
+	case 1:
 		return a.editDNSServers(cmd, nil)
+	case 2:
+		return a.editFakeIPFilter(cmd, nil)
 	}
-	return a.editFakeIPFilter(cmd, nil)
+	return a.setDNSMode(ctx, dnsModes[k])
 }
 
 // publishedView 是 dns 的子命令在 --json 输出中共有的部分。

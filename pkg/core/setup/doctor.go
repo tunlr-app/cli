@@ -478,6 +478,10 @@ func (i *Installer) checkGateway(ctx context.Context, c *doctor.Checker, st *sta
 	if err == nil && rs.Table {
 		i.checkGatewayTraffic(ctx, c, iface, rs.DockerRules)
 	}
+	// IPv6 回答关着（兜底值）时不列出这一项。
+	if w := i.publishedGatewayIPv6Warning(); w != "" {
+		c.Add("gateway-ipv6", doctor.Warn, "IPv6 answers", w, "tunlr ipv6 off")
+	}
 }
 
 // checkGatewayTraffic 按 inet tunlr_gateway 记下的最近 5 分钟的新连接，检查局域网设备的流量有没有被其他

@@ -81,7 +81,7 @@ stdout '^DNS mode: +redir-host \(from the subscription\)$'
 stdout '^Chinese domains: +none '
 stdout '^Other domains: +https://192.0.2.53/dns-query \(from the subscription\)$'
 stdout '^main uses its own DNS where it sets one \(tunlr.sub-dns in main/20-dns.yaml; tunlr sub set main --dns tunlr undoes it\)\.$'
-stdout '^TUN is off, so the mode and fake-ip-filter are not used now; the servers are\.$'
+stdout '^TUN is off, so the mode, IPv6 and fake-ip-filter are not used by this server''s programs now; the servers are\.$'
 exec tunlr dns --json
 stdout '"mode": "redir-host"'
 stdout '"sub_dns": "main/20-dns.yaml"'
@@ -170,6 +170,70 @@ stdout '^Other domains: +\S.* \(tunlr''s fallback\)$'
 exec tunlr status
 ! stdout '^DNS:'
 
+# IPv6：兜底值为 off；on 写 dns.ipv6 和 fake-ip-range6，dns 列出两个假地址段；off 删去地址段，
+# default 两个都删；bypass 只改状态，配置写顶层 ipv6: false；mixin 不能写顶层 ipv6
+exec tunlr dns
+stdout '^IPv6: +off \(tunlr''s fallback\)$'
+stdout '^Fake addresses: +198.18.0.1/16$'
+exec tunlr ipv6
+stdout '^IPv6: +off \(tunlr''s fallback\)$'
+stdout '^ +Names get IPv4 addresses only; connections to IPv6 addresses go through mihomo, by the rules\.$'
+stdout '^TUN is off, so this server''s programs do not use mihomo now'
+exec tunlr ipv6 --json
+stdout '"mode": "off"'
+stdout '"tun": false'
+exitcode 2 tunlr ipv6 yes --yes
+stderr 'ipv6 takes off, on, bypass or default, got "yes"'
+exitcode 2 tunlr ipv6 on
+stderr 'ipv6 on needs confirmation; pass --yes'
+exec tunlr ipv6 on --yes
+stdout '^-  ipv6: false$'
+stdout '^\+  ipv6: true$'
+stdout '^  90-dns.yaml  set dns.fake-ip-range6, dns.ipv6$'
+! stdout 'Warning:'
+stdout 'Names get IPv6 addresses too now; IPv6 goes through mihomo\.'
+grep '^    ipv6: true$' root/etc/tunlr/mixin.d/90-dns.yaml
+grep '^  fake-ip-range6: fdfe:dcba:9876::1/64$' root/var/lib/tunlr/core/config.yaml
+exec tunlr dns
+stdout '^IPv6: +on \(set in 90-dns.yaml\)$'
+stdout '^Fake addresses: +198.18.0.1/16, fdfe:dcba:9876::1/64$'
+exec tunlr dns --json
+stdout '"fake_ip_range6": "fdfe:dcba:9876::1/64"'
+exec tunlr ipv6 on --yes
+stdout 'Already so; nothing to change\.'
+exec tunlr ipv6 bypass --yes
+stdout '^-ipv6: true$'
+stdout '^\+ipv6: false$'
+! stdout 'Mixin files'
+stdout 'Note: TUN is off, so this server''s programs do not use mihomo anyway'
+stdout 'IPv6 bypasses mihomo now\.'
+grep '^ipv6: false$' root/var/lib/tunlr/core/config.yaml
+grep '"ipv6_bypass": true' root/var/lib/tunlr/state.json
+exec tunlr ipv6
+stdout '^IPv6: +bypass \(set by tunlr ipv6 bypass\)$'
+stdout 'connections to IPv6 addresses go out directly, not through mihomo\.$'
+exec tunlr status
+stdout '^IPv6: +bypass \(connections to IPv6 addresses go out directly, not through mihomo; details: tunlr ipv6\)$'
+exec tunlr dns
+! stdout '^Fake addresses: .*fdfe'
+exec tunlr ipv6 bypass --yes
+stdout 'Already so; nothing to change\.'
+exec tunlr ipv6 off --yes
+stdout '^\+ipv6: true$'
+stdout '^  90-dns.yaml  set dns.ipv6; unset dns.fake-ip-range6$'
+! grep 'fake-ip-range6' root/var/lib/tunlr/core/config.yaml
+! grep '"ipv6_bypass"' root/var/lib/tunlr/state.json
+exec tunlr ipv6 default --yes
+stdout '^  90-dns.yaml +unset dns.ipv6; nothing left, so the file is deleted$'
+stdout 'The configuration decides again: off; names get IPv4 addresses only, and IPv6 goes through mihomo\.'
+! exists root/etc/tunlr/mixin.d/90-dns.yaml
+exec tunlr status
+! stdout '^IPv6:'
+cp ipv6-mixin.yaml root/etc/tunlr/mixin.d/30-ipv6.yaml
+exitcode 3 tunlr config plan
+stderr 'ipv6 is managed by tunlr:ipv6 \(change it with: tunlr ipv6 off/on/bypass\)'
+rm root/etc/tunlr/mixin.d/30-ipv6.yaml
+
 # fake-ip-filter：没有终端时要给出参数；加的条目写进 90-dns.yaml，加在生效的列表上
 exec tunlr dns
 stdout '^fake-ip-filter: +the configuration''s list \(tunlr dns fake-ip-filter adds names\)$'
@@ -245,3 +309,6 @@ tunlr:
 mihomo:
   dns:
     enhanced-mode: fake-ip
+-- ipv6-mixin.yaml --
+mihomo:
+  ipv6: false

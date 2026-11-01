@@ -53,7 +53,7 @@ func (i *Installer) checkDNSLeaks(ctx context.Context, c *doctor.Checker, st *st
 		return
 	}
 	if st.TunEnabled() {
-		i.checkTunIPv6(ctx, c)
+		i.checkTunIPv6(ctx, c, st.IPv6Bypass)
 	}
 	if st.Gateway != nil {
 		iface, _ := i.lookupInterface(st.Gateway.Interface)
@@ -92,9 +92,20 @@ func (i *Installer) checkPlainDNS(ctx context.Context, c *doctor.Checker) {
 }
 
 // checkTunIPv6 检查 TUN 开着时本机访问 IPv6 公网是否经过 TUN：不经过时，经 IPv6 问的 DNS 和连接都绕过 mihomo。
-// 没有 IPv6 路由时为 OK。
-func (i *Installer) checkTunIPv6(ctx context.Context, c *doctor.Checker) {
+// 没有 IPv6 路由时为 OK。bypass（tunlr ipv6 bypass）时 IPv6 按设置不经 TUN，只检查经 IPv6 的 DNS 查询被拒绝。
+func (i *Installer) checkTunIPv6(ctx context.Context, c *doctor.Checker, bypass bool) {
 	const title = "IPv6 and TUN"
+	if bypass {
+		if !i.rules().RejectsIPv6DNS(ctx) {
+			c.Add(LeakTunIPv6, doctor.Warn, title,
+				"IPv6 bypasses mihomo as set, but the nftables rule that rejects this server's IPv6 DNS queries is missing, so they bypass mihomo too",
+				"tunlr core restart loads it again")
+			return
+		}
+		c.Add(LeakTunIPv6, doctor.OK, title,
+			"IPv6 bypasses mihomo as set (tunlr ipv6 bypass); this server's IPv6 DNS queries are rejected, so names are looked up over IPv4 through mihomo", "")
+		return
+	}
 	switch dev := i.rules().IPv6Egress(ctx); dev {
 	case "":
 		c.Add(LeakTunIPv6, doctor.OK, title, "this server has no IPv6 route to the internet", "")
@@ -103,7 +114,8 @@ func (i *Installer) checkTunIPv6(ctx context.Context, c *doctor.Checker) {
 	default:
 		c.Add(LeakTunIPv6, doctor.Warn, title,
 			"IPv6 traffic leaves through "+dev+", not "+netfilter.Device+": names asked and connections made over IPv6 bypass mihomo",
-			"turn IPv6 off on this server, or check that mihomo's TUN has an IPv6 address (tun.inet6-address)")
+			"tunlr core restart makes mihomo set up IPv6 on the TUN again (its address and routes); if the systemd units are out of date, "+
+				"run tunlr init first (older ones let mihomo leave IPv6 out when this server had no IPv6 as mihomo started)")
 	}
 }
 

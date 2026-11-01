@@ -583,14 +583,14 @@ func (a *app) trafficItems(s *setup.Status) []menuItem {
 	if s.ProxyLAN {
 		items = append(items, op("Change LAN interfaces", lanInterfacesNote, "proxy", "lan", "on"))
 	}
-	// DNS 总是列出：问谁在 TUN 关着时也用到（代理端口的连接、节点的域名），模式和 fake-ip-filter 只在 TUN 开着时。
-	dns := "The servers, and with TUN on the mode and fake-ip-filter"
+	// DNS 总是列出：问谁在 TUN 关着时也用到（代理端口的连接、节点的域名），模式、IPv6 和 fake-ip-filter 只在 TUN 开着时。
+	dns := "The servers, and with TUN on the mode, IPv6 and fake-ip-filter"
 	if tun {
 		dns = "The mode"
 		if m := s.Tun.DNSMode; m != "" {
 			dns += " (now " + m + ")"
 		}
-		dns += ", the servers and fake-ip-filter"
+		dns += ", IPv6, the servers and fake-ip-filter"
 	}
 	items = append(items, op("DNS", dns, "dns"))
 	return append(items,

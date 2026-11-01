@@ -32,14 +32,46 @@ var sshTimeout = 8 * time.Second
 // 一个走代理。检测的是开启 TUN 后网络没有断，不是代理节点可用。
 var probeURLs = []string{"https://www.baidu.com", "https://www.gstatic.com/generate_204"}
 
-// checkNetwork 是开启透明代理后的默认检测：TUN 已生效，DNS、HTTP 可用，SSH 会话仍然通畅。
+// checkNetwork 是开启透明代理后的默认检测：TUN 已生效，DNS、HTTP 可用，SSH 会话仍然通畅，本机的 IPv6 也经过 TUN。
 func (i *Installer) checkNetwork(ctx context.Context, opts TunOptions) []TunCheck {
+	dns := checkDNS(ctx)
+	if dns.Status == StepFailed && i.ipv6Bypassed() {
+		// 只配了 IPv6 的 DNS 服务器时，拒绝经 IPv6 的查询的规则让解析失败（DESIGN.md 8.3）。
+		dns.Message += "; this server's IPv6 DNS queries are rejected (tunlr ipv6 bypass), so with IPv6 DNS servers only " +
+			"it cannot look names up: tunlr ipv6 off sends them through mihomo instead"
+	}
 	return []TunCheck{
 		i.checkTunUp(ctx),
-		checkDNS(ctx),
+		dns,
 		checkHTTP(ctx),
 		checkSSH(ctx, opts, runSS),
+		i.checkIPv6(ctx),
 	}
+}
+
+// checkIPv6 检查本机有 IPv6 出口（主路由表中的默认路由）时，访问 IPv6 公网也经过 TUN。不经过时为 StepWarn，
+// 不关闭 TUN：IPv4 照常经过 mihomo，doctor 的 dns-tun-ipv6 说明怎么修复。没有 IPv6 出口、IPv6 按设置不经
+// mihomo（tunlr ipv6 bypass）时跳过。
+func (i *Installer) checkIPv6(ctx context.Context) TunCheck {
+	c := TunCheck{Name: "ipv6"}
+	r := i.rules()
+	if i.ipv6Bypassed() {
+		c.Status, c.Message = StepSkipped, "IPv6 bypasses mihomo as set (tunlr ipv6 bypass)"
+		return c
+	}
+	if r.IPv6Route(ctx) == "" {
+		c.Status, c.Message = StepSkipped, "this server has no IPv6 route to the internet"
+		return c
+	}
+	switch dev := r.IPv6Egress(ctx); dev {
+	case netfilter.Device:
+		c.Status, c.Message = StepOK, "IPv6 traffic goes through "+netfilter.Device
+	case "":
+		c.Status, c.Message = StepWarn, "IPv6 traffic finds no route, though this server has an IPv6 default route (see tunlr doctor)"
+	default:
+		c.Status, c.Message = StepWarn, "IPv6 traffic leaves through "+dev+", bypassing mihomo (see tunlr doctor)"
+	}
+	return c
 }
 
 // checkTunUp 检查内核开启了 TUN，网卡、内核的规则和工具的规则都在。

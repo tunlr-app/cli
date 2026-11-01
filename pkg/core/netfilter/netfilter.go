@@ -57,7 +57,7 @@ func Exec(ctx context.Context, stdin []byte, name string, args ...string) ([]byt
 }
 
 // Rules 加载和清理工具补充的规则：inet tunlr 表，以及让带标记的回包走主路由表的 ip rule。
-// 规则不依赖 TUN 是否开启（关闭时无害），随内核服务启动加载、停止清理。
+// 规则不依赖 TUN 是否开启（关闭时无害），随内核服务启动加载、停止清理；TableOptions 中的部分随开关重新加载。
 type Rules struct {
 	// Run 为空时使用 Exec。
 	Run Runner
@@ -65,24 +65,42 @@ type Rules struct {
 	IPv6 func() bool
 }
 
+// IPv6DNSChain 是 inet tunlr 中拒绝本机经 IPv6 的 DNS 查询的链（TableOptions.RejectIPv6DNS）。
+const IPv6DNSChain = "ipv6_dns"
+
+// TableOptions 是 inet tunlr 表中随开关变化的部分。
+type TableOptions struct {
+	// RejectIPv6DNS 拒绝本机发往 IPv6 地址 53 端口的查询（不含 lo）：IPv6 不经 mihomo（tunlr ipv6 bypass）
+	// 而 TUN 开着时，解析因此改问 IPv4 的服务器，经 TUN 由 mihomo 回答。
+	RejectIPv6DNS bool
+}
+
 // Render 生成 inet tunlr 表的 nft 脚本。
-func Render() ([]byte, error) {
+func Render(o TableOptions) ([]byte, error) {
 	t, err := template.New("tunlr.nft").Option("missingkey=error").Parse(string(templates.Nft))
 	if err != nil {
 		return nil, err
 	}
 	var b bytes.Buffer
-	err = t.Execute(&b, map[string]string{
-		"Table":  Table,
-		"Device": Device,
-		"Mark":   fmt.Sprintf("%#x", Mark),
+	err = t.Execute(&b, map[string]any{
+		"Table":         Table,
+		"Device":        Device,
+		"Mark":          fmt.Sprintf("%#x", Mark),
+		"RejectIPv6DNS": o.RejectIPv6DNS,
+		"IPv6DNSChain":  IPv6DNSChain,
 	})
 	return b.Bytes(), err
 }
 
+// RejectsIPv6DNS 报告 inet tunlr 中有拒绝本机经 IPv6 的 DNS 查询的链。
+func (r *Rules) RejectsIPv6DNS(ctx context.Context) bool {
+	_, err := r.run(ctx, nil, "nft", "list", "chain", "inet", Table, IPv6DNSChain)
+	return err == nil
+}
+
 // Up 加载（或替换）inet tunlr 表，并确保每个地址族恰好有一条工具的 ip rule。可以重复执行。
-func (r *Rules) Up(ctx context.Context) error {
-	script, err := Render()
+func (r *Rules) Up(ctx context.Context, o TableOptions) error {
+	script, err := Render(o)
 	if err != nil {
 		return err
 	}

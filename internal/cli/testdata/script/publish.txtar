@@ -92,7 +92,7 @@ rm root/etc/tunlr/mixin.d/50-rules.yaml root/etc/tunlr/mixin.d/10-level.yaml roo
 
 # plan 列出 tunlr 管理的 mixin，不显示 secret 的值；geo 设置都是兜底值时不列出来源
 exec tunlr config plan
-stdout '^Managed by tunlr: tunlr:core, tunlr:tun, tunlr:panel, tunlr:proxy \(mixins cannot change their keys; see: tunlr config\)$'
+stdout '^Managed by tunlr: tunlr:core, tunlr:tun, tunlr:panel, tunlr:proxy, tunlr:ipv6 \(mixins cannot change their keys; see: tunlr config\)$'
 stdout '^Defaults from tunlr: tunlr:defaults, tunlr:dns \(mixins can override them; see: tunlr config\)$'
 ! stdout 'Geo data settings not from'
 ! stdout 'geox-url'

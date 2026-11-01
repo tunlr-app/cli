@@ -156,7 +156,7 @@ func (i *Installer) TunOn(ctx context.Context, plan *pipeline.Plan, opts TunOpti
 	if err == nil {
 		// 通常 _prestart 已经加载过；内核服务由旧版 unit 启动时还没有。在开启 TUN 之前加载，
 		// 已经建立的连接（如这个 SSH 会话）在对方发来下一个包时就会标记，回包不进 TUN。
-		err = i.rules().Up(ctx)
+		err = i.rules().Up(ctx, tableOptions(st))
 	}
 	if err == nil {
 		progress("Publishing the configuration")
@@ -251,6 +251,12 @@ func (i *Installer) TunOff(ctx context.Context, plan *pipeline.Plan) (*TunResult
 	if applied != nil {
 		res.Revision = applied.Revision
 	}
+	// 关闭前拒绝着经 IPv6 的 DNS 查询（ipv6 bypass），现在不再拒绝。
+	if st.IPv6Bypass {
+		if err := i.refreshRules(ctx, st); err != nil {
+			return res, fmt.Errorf("TUN is off, but reloading the nftables table inet %s failed: %w", netfilter.Table, err)
+		}
+	}
 	return res, nil
 }
 
@@ -315,6 +321,11 @@ func (i *Installer) tunGuard(ctx context.Context, wait bool) error {
 		}
 		return fmt.Errorf("publishing the configuration without TUN failed, so mihomo is stopped: %w", err)
 	}
+	if st.IPv6Bypass {
+		if err := i.refreshRules(ctx, st); err != nil {
+			i.log().Error("turn the unconfirmed TUN off: reloading the nftables table inet "+netfilter.Table+" failed", "err", err)
+		}
+	}
 	i.log().Info("turned the unconfirmed TUN off")
 	return nil
 }
@@ -335,7 +346,7 @@ func (i *Installer) PreStart(ctx context.Context) error {
 			return errors.Join(append(errs, err)...)
 		}
 	}
-	errs = append(errs, i.rules().Up(ctx))
+	errs = append(errs, i.rules().Up(ctx, tableOptions(st)))
 	if actions, err := i.repairGateway(ctx, st); err != nil {
 		errs = append(errs, err)
 	} else if len(actions) > 0 {
@@ -435,6 +446,22 @@ func (i *Installer) Check(ctx context.Context) (*CheckResult, error) {
 	}
 	res.Actions = append(res.Actions, "restarted mihomo: its nftables table inet "+netfilter.KernelTable+" was gone")
 	return res, nil
+}
+
+// tableOptions 是按状态 st（可以为 nil）的 inet tunlr 中随开关变化的部分：IPv6 不经 mihomo 而 TUN 开着时
+// 拒绝本机经 IPv6 的 DNS 查询。
+func tableOptions(st *state.State) netfilter.TableOptions {
+	return netfilter.TableOptions{RejectIPv6DNS: st != nil && st.IPv6Bypass && st.TunEnabled()}
+}
+
+// refreshRules 在 inet tunlr 存在（内核在运行）时按状态 st 重新加载它，用于 TUN、IPv6 的开关变化之后；
+// 不存在时由内核下次启动的 _prestart 加载。
+func (i *Installer) refreshRules(ctx context.Context, st *state.State) error {
+	tables, err := i.rules().Tables(ctx)
+	if err != nil || !tables[netfilter.Table] {
+		return err
+	}
+	return i.rules().Up(ctx, tableOptions(st))
 }
 
 func (i *Installer) rules() *netfilter.Rules {

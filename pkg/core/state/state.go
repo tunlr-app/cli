@@ -65,6 +65,10 @@ type State struct {
 	// Filter 是全局过滤项，零值为都关闭。只由 tunlr filter 修改。
 	Filter Filter `json:"filter,omitzero"`
 
+	// IPv6Bypass 让 IPv6 不经 mihomo：配置写顶层 ipv6: false（mihomo 不接管 IPv6），TUN 开着时 inet tunlr
+	// 拒绝本机经 IPv6 的 DNS 查询（DESIGN.md 8.3）。只由 tunlr ipv6 修改。
+	IPv6Bypass bool `json:"ipv6_bypass,omitempty"`
+
 	// UpdateCheck 是最近一次查询 tunlr 和 mihomo 最新版本的结果，nil 为还没有查询过。由每小时的定时更新
 	// 每天查一次（setup.CheckUpdates）；菜单和 status 只读它，不联网。
 	UpdateCheck *UpdateCheck `json:"update_check,omitempty"`

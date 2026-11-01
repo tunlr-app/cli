@@ -58,8 +58,12 @@ type fakeHost struct {
 	// 的输出（为空时没有其他表）。
 	uses    map[string][]string
 	ruleset string
-	// ipv6Route 是 ip -6 route get 的输出，为空时没有 IPv6 路由（命令失败）。
+	// ipv6Route 是 ip -6 route get 的输出，为空时没有 IPv6 路由（命令失败）。mainIPv6 是 ip -6 route show default
+	// table main 的输出，为空时主路由表中没有 IPv6 默认路由。
 	ipv6Route string
+	mainIPv6  string
+	// tunlr 是最近一次加载 inet tunlr 的脚本。
+	tunlr string
 }
 
 func (h *fakeHost) systemd(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -103,8 +107,15 @@ func (h *fakeHost) netfilter(_ context.Context, stdin []byte, name string, args 
 				return nil, errors.New("nft: Error: No such file or directory")
 			}
 		}
+		if table == netfilter.Table {
+			h.tunlr = string(stdin)
+		}
 		if !slices.Contains(h.tables, table) {
 			h.tables = append(h.tables, table)
+		}
+	case cmd == "nft list chain inet "+netfilter.Table+" "+netfilter.IPv6DNSChain:
+		if !slices.Contains(h.tables, netfilter.Table) || !strings.Contains(h.tunlr, "chain "+netfilter.IPv6DNSChain+" {") {
+			return nil, errors.New("nft: Error: No such file or directory")
 		}
 	case strings.HasPrefix(cmd, "nft delete table inet "):
 		h.tables = slices.DeleteFunc(h.tables, func(t string) bool { return t == args[3] })
@@ -141,6 +152,8 @@ func (h *fakeHost) netfilter(_ context.Context, stdin []byte, name string, args 
 			return nil, errors.New("RTNETLINK answers: Network is unreachable")
 		}
 		return []byte(h.ipv6Route), nil
+	case cmd == "ip -6 route show default table main":
+		return []byte(h.mainIPv6), nil
 	case name == "iptables":
 		if h.docker == nil {
 			return nil, errors.New("iptables: No chain/target/match by that name.")

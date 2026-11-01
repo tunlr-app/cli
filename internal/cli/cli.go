@@ -207,7 +207,7 @@ func (a *app) newRootCommand() *cobra.Command {
 		{"overview", "Overview:", []*cobra.Command{a.newStatusCommand(), a.newDoctorCommand()}},
 		{"setup", "Setup:", []*cobra.Command{a.newInitCommand(), a.newUpgradeCommand(), a.newUninstallCommand()}},
 		{"config", "Configuration:", []*cobra.Command{a.newSubCommand(), a.newConfigCommand(), a.newUpdateCommand()}},
-		{"network", "Network:", []*cobra.Command{a.newTunCommand(), a.newProxyCommand(), a.newDNSCommand(), a.newFilterCommand(),
+		{"network", "Network:", []*cobra.Command{a.newTunCommand(), a.newProxyCommand(), a.newDNSCommand(), a.newIPv6Command(), a.newFilterCommand(),
 			a.newDevicesCommand()}},
 		{"kernel", "Kernel and panel:", []*cobra.Command{a.newCoreCommand(), a.newPanelCommand()}},
 		{"maintenance", "Maintenance:", []*cobra.Command{a.newSettingsCommand(), a.newBackupCommand()}},

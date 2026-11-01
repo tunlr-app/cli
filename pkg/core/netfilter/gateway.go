@@ -215,6 +215,23 @@ func (r *Rules) IPv6Egress(ctx context.Context) string {
 	return ""
 }
 
+// IPv6Route 返回主路由表中 IPv6 默认路由经过的网卡，没有时为空：本机自己有没有 IPv6 出口，不论 TUN 开没开
+// （mihomo 的路由在别的表中）。ip route show 的输出形如“default via fe80::1 dev ens3 proto ra metric 100 ...”，
+// 多路径的路由在后面几行的 nexthop 中写网卡；unreachable 等路由的网卡是 lo。
+func (r *Rules) IPv6Route(ctx context.Context) string {
+	out, err := r.run(ctx, nil, "ip", "-6", "route", "show", "default", "table", "main")
+	if err != nil {
+		return ""
+	}
+	f := strings.Fields(string(out))
+	for i := 0; i+1 < len(f); i++ {
+		if f[i] == "dev" && f[i+1] != "lo" {
+			return f[i+1]
+		}
+	}
+	return ""
+}
+
 // GatewayWindow 是 inet tunlr_gateway 记住局域网设备新连接的时长（见 templates/nft/gateway.nft）。
 const GatewayWindow = 5 * time.Minute
 

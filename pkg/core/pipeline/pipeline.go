@@ -283,6 +283,12 @@ func (p *Pipeline) PlanFilter(ctx context.Context, f state.Filter) (*Plan, error
 	return p.plan(ctx, planOptions{filter: &f})
 }
 
+// PlanIPv6 同 PlanWithMixins（ms 可以为空），但按 IPv6 开关为 bypass 时的样子合成，不看状态文件中的开关。
+// 调用方在发布前保存开关。
+func (p *Pipeline) PlanIPv6(ctx context.Context, ms []config.Mixin, bypass bool) (*Plan, error) {
+	return p.plan(ctx, planOptions{edited: ms, ipv6Bypass: &bypass})
+}
+
 // PlanResetSecret 同 Plan，但换用新生成的 API secret，发布时保存。
 func (p *Pipeline) PlanResetSecret(ctx context.Context) (*Plan, error) {
 	return p.plan(ctx, planOptions{resetSecret: true})
@@ -332,6 +338,8 @@ func (p *Pipeline) Managed() ([]config.Managed, error) {
 // switches 是决定受管 mixin 内容的开关。
 type switches struct {
 	tun, panelLAN, proxyLAN bool
+	// ipv6Bypass 让 IPv6 不经 mihomo（state.State.IPv6Bypass）。
+	ipv6Bypass bool
 	// direct 是走法为直连的设备的地址。
 	direct []string
 	filter state.Filter
@@ -340,8 +348,8 @@ type switches struct {
 }
 
 func (p *Pipeline) switchesOf(st *state.State) switches {
-	sw := switches{tun: st.TunEnabled(), panelLAN: st.PanelLAN != nil, proxyLAN: st.ProxyLAN != nil, direct: st.DirectIPs(), filter: st.Filter,
-		coreUID: -1}
+	sw := switches{tun: st.TunEnabled(), panelLAN: st.PanelLAN != nil, proxyLAN: st.ProxyLAN != nil, ipv6Bypass: st.IPv6Bypass,
+		direct: st.DirectIPs(), filter: st.Filter, coreUID: -1}
 	if o := p.owner(); o != nil {
 		sw.coreUID = o.UID
 	}
@@ -365,6 +373,8 @@ type planOptions struct {
 	devices []state.Device
 	// filter 不为 nil 时代替状态文件中的全局过滤项。
 	filter *state.Filter
+	// ipv6Bypass 不为 nil 时代替状态文件中的 IPv6 开关（state.State.IPv6Bypass）。
+	ipv6Bypass *bool
 	// settings 不为 nil 时代替设置文件。
 	settings *settings.Settings
 	// restored 不为 nil 时代替设置文件、mixin、订阅与状态中的对应部分（见 Restored）。
@@ -427,6 +437,9 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	}
 	if opts.filter != nil {
 		sw.filter = *opts.filter
+	}
+	if opts.ipv6Bypass != nil {
+		sw.ipv6Bypass = *opts.ipv6Bypass
 	}
 	var sub []byte
 	if opts.restored != nil {
@@ -970,6 +983,7 @@ const (
 	ManagedTun      = "tunlr:tun"
 	ManagedPanel    = "tunlr:panel"
 	ManagedProxy    = "tunlr:proxy"
+	ManagedIPv6     = "tunlr:ipv6"
 	ManagedDefaults = "tunlr:defaults"
 	ManagedDNS      = "tunlr:dns"
 	ManagedMirror   = "tunlr:mirror"
@@ -988,6 +1002,8 @@ const DNSListen = "127.0.0.1:1053"
 //	tunlr:panel  API 的监听地址（面板的局域网访问开关）和 secret
 //	tunlr:proxy  代理端口的局域网访问开关：开启时 allow-lan: true，lan-allowed-ips 限制为私有地址段
 //	             （config.LANAllowedIPs），内核拒绝其他来源；关闭时 allow-lan: false
+//	tunlr:ipv6   顶层 ipv6：平时为 true，TUN 接管 IPv6（不回答 IPv6 地址由 dns.ipv6 表达）；IPv6 开关为 bypass 时
+//	             为 false，mihomo 不接管 IPv6（DESIGN.md 8.3）
 //
 // 提供默认值、用户可以覆盖的：tunlr:defaults，兜底值（templates.Defaults：geo 数据的设置、DNS 和嗅探），写在
 // tunlr.defaults 中，订阅没有写时才用（见 config.Compose）；tunlr:dns，DNS 的监听地址（订阅中的被丢弃）；
@@ -1047,6 +1063,7 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 %s%s`, sw.tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex, excludeUID, tunDNS), Owns: []string{"tun.exclude-uid"}},
 		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel reset-secret", Data: panel},
 		{Name: ManagedProxy, Command: "tunlr proxy lan on/off", Data: proxy, Owns: []string{"allow-lan", "lan-allowed-ips"}},
+		{Name: ManagedIPv6, Command: "tunlr ipv6 off/on/bypass", Data: fmt.Appendf(nil, "mihomo:\n  ipv6: %t\n", !sw.ipv6Bypass)},
 		DefaultsManaged(),
 		{Name: ManagedDNS, Default: true, Data: fmt.Appendf(nil, "mihomo:\n  dns:\n    listen: %s\n", DNSListen)},
 		mirrorManaged,

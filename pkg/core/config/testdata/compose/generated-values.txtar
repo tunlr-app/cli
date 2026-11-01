@@ -45,7 +45,8 @@ lan-allowed-ips:
   - fc00::/7
   - fe80::/10
 
-# 内核运行参数。
+# 内核运行参数。ipv6 由 tunlr ipv6 决定（tunlr:ipv6），mixin 改不了：true 时 TUN 接管 IPv6，
+# false（tunlr ipv6 bypass）时 IPv6 不经 mihomo。
 mode: rule
 log-level: info
 ipv6: true

@@ -22,11 +22,13 @@ import (
 	"github.com/tunlr-app/cli/templates"
 )
 
-// 定时更新各步骤的结果。
+// 定时更新各步骤、tun on 各项检测的结果。
 const (
 	StepOK      = "ok"
 	StepSkipped = "skipped"
 	StepFailed  = "failed"
+	// StepWarn 只用于 tun on 的检测：有问题，但不关闭 TUN。
+	StepWarn = "warn"
 )
 
 // Step 是定时更新中一步的结果。

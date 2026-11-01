@@ -31,6 +31,27 @@ func TestIPv6Egress(t *testing.T) {
 	}
 }
 
+func TestIPv6Route(t *testing.T) {
+	for out, want := range map[string]string{
+		"default via fe80::1 dev ens3 proto ra metric 100 expires 1797sec pref medium\n": "ens3",
+		"default proto ra metric 100 expires 1797sec pref medium\n" +
+			"\tnexthop via fe80::1 dev ens3 weight 1\n" +
+			"\tnexthop via fe80::2 dev ens4 weight 1\n": "ens3",
+		"unreachable default dev lo proto kernel metric 4294967295 pref medium\n": "",
+		"": "",
+	} {
+		r := &Rules{Run: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+			if got := name + " " + strings.Join(args, " "); got != "ip -6 route show default table main" {
+				t.Errorf("ran %s", got)
+			}
+			return []byte(out), nil
+		}}
+		if got := r.IPv6Route(context.Background()); got != want {
+			t.Errorf("IPv6Route(%q) = %q, want %q", out, got, want)
+		}
+	}
+}
+
 // TestRenderGateway 把生成的脚本与 testdata/gateway.nft 逐字比对；用 -update 重新生成。
 func TestRenderGateway(t *testing.T) {
 	got, err := RenderGateway("ens3")

@@ -26,9 +26,13 @@ func TestNetns(t *testing.T) {
 	}
 	r := &Rules{Run: inNS, IPv6: func() bool { return true }}
 
-	for range 2 {
-		if err := r.Up(ctx); err != nil {
+	// 拒绝经 IPv6 的 DNS 查询的链随选项加上、去掉，nft 接受其中的表达式。
+	for _, reject := range []bool{true, true, false} {
+		if err := r.Up(ctx, TableOptions{RejectIPv6DNS: reject}); err != nil {
 			t.Fatal(err)
+		}
+		if got := r.RejectsIPv6DNS(ctx); got != reject {
+			t.Fatalf("RejectsIPv6DNS = %t, want %t", got, reject)
 		}
 	}
 	tables, err := r.Tables(ctx)

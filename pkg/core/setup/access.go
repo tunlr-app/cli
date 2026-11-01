@@ -306,8 +306,8 @@ func (i *Installer) repairTables(ctx context.Context, st *state.State) ([]string
 		switch {
 		case err != nil:
 			errs = append(errs, err)
-		case !tables[netfilter.Table]:
-			if err := i.rules().Up(ctx); err != nil {
+		case !tables[netfilter.Table], tableOptions(st).RejectIPv6DNS != i.rules().RejectsIPv6DNS(ctx):
+			if err := i.rules().Up(ctx, tableOptions(st)); err != nil {
 				errs = append(errs, err)
 			} else {
 				actions = append(actions, "reloaded the nftables table inet "+netfilter.Table)

@@ -42,6 +42,7 @@ func TestRenderUnits(t *testing.T) {
 	for _, want := range []string{
 		"User=tunlr\n",
 		"ExecStart=/var/lib/tunlr/bin/mihomo -d /var/lib/tunlr/core\n",
+		"Environment=SKIP_SYSTEM_IPV6_CHECK=1\n",
 		"ReadWritePaths=/var/lib/tunlr/bin /var/lib/tunlr/core\n",
 		"OnFailure=" + RescueUnit + "\n",
 		"ExecStartPre=-+/usr/local/bin/tunlr _prestart\n",

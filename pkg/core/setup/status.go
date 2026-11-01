@@ -28,6 +28,8 @@ type Status struct {
 	Subscription string `json:"subscription,omitempty"`
 	// SubDNS 是让启用的订阅采用它自己的 DNS 的 mixin（tunlr.sub-dns: true），用 tunlr 的 DNS 时为空。
 	SubDNS string `json:"sub_dns,omitempty"`
+	// IPv6Bypass 报告 IPv6 不经 mihomo（tunlr ipv6 bypass）：经 IPv6 地址的连接直连，doctor 不算泄露。
+	IPv6Bypass bool `json:"ipv6_bypass,omitempty"`
 	// Revision 是与生效配置一致的历史修订，没有发布过或手工改过时为 nil。
 	Revision *config.Revision `json:"revision,omitempty"`
 	// Updates 是各定时更新任务的周期和执行情况。
@@ -146,7 +148,7 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	if st != nil {
-		s.PanelLAN, s.ProxyLAN = st.PanelLAN != nil, st.ProxyLAN != nil
+		s.PanelLAN, s.ProxyLAN, s.IPv6Bypass = st.PanelLAN != nil, st.ProxyLAN != nil, st.IPv6Bypass
 		if s.PanelLAN || s.ProxyLAN {
 			// 不列网卡：status 常被菜单刷新，选过的入口按保存的顺序就够了。
 			access := lanAccess(st, nil)

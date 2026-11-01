@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/tunlr-app/cli/pkg/core/config"
+	"github.com/tunlr-app/cli/pkg/core/setup"
 )
 
 // TestDNSChooses 验证终端中不带子命令的 dns：先选改什么；fake-ip-filter 在文本框中编辑你自己的条目，
@@ -19,7 +20,7 @@ func TestDNSChooses(t *testing.T) {
 	et.prompt.texts = []string{"nas.example.com\n\n+.lan\n printer.example.com \n"}
 	et.run(0, "dns", "--yes")
 	opts := et.prompt.asked[0]
-	if len(opts) != 5 || opts[2] != "Let the configuration decide (now: fake-ip)" || et.prompt.initials[0] != 2 {
+	if len(opts) != 6 || opts[2] != "Let the configuration decide (now: fake-ip)" || et.prompt.initials[0] != 2 {
 		t.Errorf("options = %q, cursor %d", opts, et.prompt.initials[0])
 	}
 	if shown := et.prompt.textShown[0]; !strings.HasPrefix(shown, "|Only your own names; the configuration's list already has ") {
@@ -105,5 +106,22 @@ func TestDNSChooses(t *testing.T) {
 	cfg, _ = os.ReadFile(et.a.layout.CoreConfig())
 	if _, other := config.DNSServers(cfg); other[0] != "https://1.1.1.1/dns-query" {
 		t.Errorf("after emptying: %q\n%s", other, et.stdout)
+	}
+
+	// IPv6：先选这一项，再选设置；光标停在“按配置”上（tunlr 的兜底值为 off）。
+	et.stdout.Reset()
+	et.prompt.picks = []string{"IPv6:", "On"}
+	et.run(0, "dns", "--yes")
+	last = len(et.prompt.asked) - 1
+	if opts := et.prompt.asked[last]; len(opts) != 4 || opts[3] != "Let the configuration decide whether names get IPv6 addresses (now: off)" || et.prompt.initials[last] != 3 {
+		t.Errorf("options = %q, cursor %d", opts, et.prompt.initials[last])
+	}
+	if out := et.stdout.String(); !strings.Contains(out, "  90-dns.yaml  set dns.fake-ip-range6, dns.ipv6\n") ||
+		!strings.Contains(out, "Names get IPv6 addresses too now; IPv6 goes through mihomo.") {
+		t.Errorf("output:\n%s", out)
+	}
+	cfg, _ = os.ReadFile(et.a.layout.CoreConfig())
+	if !config.DNSIPv6(cfg) || !strings.Contains(string(cfg), "fake-ip-range6: "+setup.FakeIPRange6) {
+		t.Errorf("published:\n%s", cfg)
 	}
 }

@@ -305,6 +305,9 @@ func (i *Installer) GatewayPreflight(ctx context.Context, iface string) (*Gatewa
 		p.Warnings = append(p.Warnings, "the LAN on "+iface+" has IPv6, which the gateway does not forward: devices may ask the router's "+
 			"IPv6 DNS server and connect over IPv6 directly. Turn IPv6 off on the router, or at least the IPv6 DNS it hands out (RDNSS, DHCPv6)")
 	}
+	if w := i.publishedGatewayIPv6Warning(); w != "" {
+		p.Warnings = append(p.Warnings, w+". tunlr ipv6 off turns the IPv6 answers off")
+	}
 	if s.On {
 		p.Current = s
 	}

@@ -17,6 +17,9 @@ Group={{.User}}
 # _prestart 加载透明代理的回包规则，并关闭过期仍未确认的 TUN；_poststop 在内核以任何方式退出后清理规则。
 ExecStartPre=-+{{.Tool}} _prestart
 ExecStart={{.Binary}} -d {{.CoreDir}}
+# 内核启动时本机没有 IPv6 就不给 TUN 配 IPv6 地址，开机时 IPv6 地址常比内核晚到，之后的 IPv6 流量
+# 便绕过 TUN。跳过这个检查：没有 IPv6 时 TUN 照样带 IPv6 地址，IPv6 默认路由指向它。
+Environment=SKIP_SYSTEM_IPV6_CHECK=1
 ExecStopPost=-+{{.Tool}} _poststop
 Restart=on-failure
 RestartSec=3

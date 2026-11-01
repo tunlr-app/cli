@@ -27,9 +27,10 @@ import (
 const DNSMixinFile = "90-dns.yaml"
 
 // dnsHead 是 DNSMixinFile 开头的注释。
-const dnsHead = "DNS settings for all subscriptions, written by tunlr dns: the mode (dns.enhanced-mode), the servers\n" +
-	"(dns.nameserver, the geosite:cn entry of dns.nameserver-policy, dns.proxy-server-nameserver) and the names\n" +
-	"added to dns.fake-ip-filter. You may edit it too; tunlr dns shows what you write here. What is not here\n" +
+const dnsHead = "DNS settings for all subscriptions, written by tunlr dns and tunlr ipv6: the mode (dns.enhanced-mode),\n" +
+	"whether names get IPv6 addresses (dns.ipv6, with dns.fake-ip-range6), the servers (dns.nameserver, the\n" +
+	"geosite:cn entry of dns.nameserver-policy, dns.proxy-server-nameserver) and the names added to\n" +
+	"dns.fake-ip-filter. You may edit it too; tunlr dns shows what you write here. What is not here\n" +
 	"comes from tunlr's fallbacks, or the subscription's with tunlr sub set <sub> --dns sub (tunlr config shows them)."
 
 // SubscriptionDNSMixinFile 是 SetSubscriptionDNS 在订阅的 mixin 目录中写入的文件名。
@@ -237,8 +238,13 @@ func modeOf(plan *pipeline.Plan, mixins []config.Mixin) *DNSMode {
 
 // DNSStatus 是 tunlr dns 显示的 DNS 设置，按启用的订阅合成。
 type DNSStatus struct {
-	Mode    DNSMode    `json:"mode"`
-	Servers DNSServers `json:"servers"`
+	Mode DNSMode `json:"mode"`
+	// FakeIPRange、FakeIPRange6 是 fake-ip 模式下 IPv4、IPv6 假地址的地址段（dns.fake-ip-range、fake-ip-range6），
+	// 没有写时为空（IPv4 的内核用 198.18.0.1/16）。
+	FakeIPRange  string     `json:"fake_ip_range,omitempty"`
+	FakeIPRange6 string     `json:"fake_ip_range6,omitempty"`
+	IPv6         IPv6Status `json:"ipv6"`
+	Servers      DNSServers `json:"servers"`
 	// FakeIPFilter 是你加进 dns.fake-ip-filter 的条目（DNSMixinFile 中的 tunlr.fake-ip-filter.append）。
 	FakeIPFilter []string `json:"fake_ip_filter"`
 	// SubDNS 是让启用的订阅采用它自己的 DNS 的 mixin（tunlr.sub-dns: true），用 tunlr 的时为空。
@@ -247,6 +253,8 @@ type DNSStatus struct {
 	Enabled bool `json:"enabled"`
 	// Tun 报告透明代理（TUN）的开关是否打开；关着时模式和 fake-ip-filter 用不到，问谁照样用到。
 	Tun bool `json:"tun"`
+	// GatewayIPv6 是网关开着、DNS 又返回 IPv6 地址时的提醒（见 gatewayIPv6Warning），没有时为空。
+	GatewayIPv6 string `json:"gateway_ipv6,omitempty"`
 }
 
 // DNSStatus 返回 DNS 模式、问谁和你加进 fake-ip-filter 的条目，只合成一次配置。
@@ -263,8 +271,13 @@ func (i *Installer) DNSStatus(ctx context.Context) (*DNSStatus, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	return &DNSStatus{Mode: *modeOf(plan, mixins), Servers: *servers, FakeIPFilter: orEmpty(entries), SubDNS: plan.SubDNS,
-		Enabled: config.DNSEnabled(plan.Config), Tun: st != nil && st.TunEnabled()}, nil
+	s := &DNSStatus{Mode: *modeOf(plan, mixins), IPv6: *ipv6Of(plan, mixins, st), Servers: *servers, FakeIPFilter: orEmpty(entries),
+		SubDNS: plan.SubDNS, Enabled: config.DNSEnabled(plan.Config), Tun: st != nil && st.TunEnabled(),
+		FakeIPRange: plan.KeySource(fakeIPRangeKey).Value, FakeIPRange6: plan.KeySource(fakeIPRange6Key).Value}
+	if st != nil && st.Gateway != nil {
+		s.GatewayIPv6 = gatewayIPv6Warning(plan.Config)
+	}
+	return s, nil
 }
 
 // composeActive 按启用的订阅合成配置（pipeline.Compose），并读出共用的和它的 mixin。

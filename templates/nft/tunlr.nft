@@ -16,4 +16,12 @@ table inet {{.Table}} {
 		# 本机进程发出的回包；标记变化后内核按 ip rule 重新选路。
 		ct direction reply ct mark & {{.Mark}} == {{.Mark}} meta mark set meta mark | {{.Mark}}
 	}
+{{- if .RejectIPv6DNS}}
+	# IPv6 不经 mihomo（tunlr ipv6 bypass）而 TUN 开着：拒绝本机经 IPv6 的 DNS 查询，解析改问 IPv4 的服务器，
+	# 由 TUN 劫持给 mihomo（DESIGN.md 8.3）。mihomo 此时自己不用 IPv6，不必排除它。
+	chain {{.IPv6DNSChain}} {
+		type filter hook output priority filter; policy accept;
+		meta nfproto ipv6 oifname != "lo" meta l4proto { tcp, udp } th dport 53 reject
+	}
+{{- end}}
 }

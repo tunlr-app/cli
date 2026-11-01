@@ -100,6 +100,22 @@ func DNSEnabled(cfg []byte) bool {
 	return dnsSection(cfg).Enable
 }
 
+// DNSIPv6 报告 tunlr 生成的配置 cfg 中内核的 DNS 是否返回 IPv6 地址：dns.ipv6（没有写时不返回，与内核相同），
+// 且顶层的 ipv6 不是 false（false 时内核不回答 IPv6 地址，见 tunlr ipv6 bypass）。
+func DNSIPv6(cfg []byte) bool {
+	return dnsSection(cfg).IPv6 && TopIPv6(cfg)
+}
+
+// TopIPv6 报告 tunlr 生成的配置 cfg 中顶层的 ipv6 不是 false（mihomo 接管 IPv6；没有写时为 true，与内核相同）。
+func TopIPv6(cfg []byte) bool {
+	for line := range bytes.Lines(cfg) {
+		if string(bytes.TrimRight(line, "\r\n")) == "ipv6: false" {
+			return false
+		}
+	}
+	return true
+}
+
 // ChinaPolicy 是 nameserver-policy 中中国的域名的键，tunlr dns servers 改的是它。
 const ChinaPolicy = "geosite:cn"
 
@@ -265,9 +281,10 @@ func serverList(n yaml.Node) []string {
 	return nil
 }
 
-// dnsFields 是 DNSMode、FakeIPFilter、DNSServers 读出的 dns 中的键。服务器的设置可以是列表或字符串，按节点读。
+// dnsFields 是 DNSMode、FakeIPFilter、DNSServers 等读出的 dns 中的键。服务器的设置可以是列表或字符串，按节点读。
 type dnsFields struct {
 	Enable       bool                 `yaml:"enable"`
+	IPv6         bool                 `yaml:"ipv6"`
 	Mode         string               `yaml:"enhanced-mode"`
 	FakeIPFilter []string             `yaml:"fake-ip-filter"`
 	Nameserver   yaml.Node            `yaml:"nameserver"`
