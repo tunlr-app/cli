@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/tunlr-app/cli/pkg/core"
@@ -102,13 +103,16 @@ type InitResult struct {
 	// Started 是启动后的健康检查结果；没有启动时为 nil，原因见 NotStarted。
 	Started    *mihomo.Health `json:"started,omitempty"`
 	NotStarted string         `json:"not_started,omitempty"`
+	// KeptRunning 报告内核没有重启：它本来在运行且健康，内核和它的 unit 都没有变（Started 是这次检查的结果）。
+	KeptRunning bool `json:"kept_running,omitempty"`
 	// PanelLAN 报告面板的局域网访问是否开启（局域网设备可以直接打开面板）。
 	PanelLAN bool `json:"panel_lan"`
 }
 
 // Init 安装或修复 tunlr，可以重复执行：检查环境 → 把自身复制到 /usr/local/bin/tunlr → 创建内核用户 →
 // 建目录并设置属主与权限 → 没有内核时安装 → 写入 unit、启用服务和定时更新 → 添加订阅 →
-// 有启用的订阅时发布配置 → 有配置时（重新）启动内核并做健康检查。
+// 有启用的订阅时发布配置 → 有配置时（重新）启动内核并做健康检查；内核本来就健康地运行、内核和它的 unit
+// 都没变时不重启，只重新加载 tunlr 的表。
 func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, error) {
 	progress := opts.Progress
 	if progress == nil {
@@ -173,7 +177,8 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 	}
 
 	progress("Installing the systemd units")
-	if err := i.systemd().Install(ctx); err != nil {
+	changedUnits, err := i.systemd().Install(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -219,9 +224,22 @@ func (i *Installer) Init(ctx context.Context, opts InitOptions) (*InitResult, er
 	if _, err := os.Stat(i.Layout.CoreConfig()); err != nil {
 		res.NotStarted = "no configuration has been published yet: add a subscription (tunlr sub add), then run tunlr config apply and tunlr core start"
 	} else {
-		progress("Starting mihomo")
-		if res.Started, err = kernels.Restart(ctx); err != nil {
-			return nil, err
+		// 内核在运行、刚才没有装内核、它的 unit 也没变时不重启（升级 tunlr 后的 init 就是这样），已有的连接不断；
+		// 只检查它，并按现在的模板重新加载 tunlr 的表。检查不通过时照常重启。
+		if res.Kernel == nil && !slices.Contains(changedUnits, service.CoreUnit) {
+			progress("Checking mihomo")
+			if h, err := kernels.Check(ctx); err == nil {
+				res.Started, res.KeptRunning = h, true
+				if err := i.reloadTables(ctx); err != nil {
+					return nil, fmt.Errorf("reload tunlr's nftables rules: %w", err)
+				}
+			}
+		}
+		if res.Started == nil {
+			progress("Starting mihomo")
+			if res.Started, err = kernels.Restart(ctx); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -297,6 +315,14 @@ func (i *Installer) InitSteps(ctx context.Context, opts InitOptions) ([]string, 
 	}
 	if sd.Installed() {
 		if s, err := sd.Status(ctx, service.CoreUnit); err == nil && s.Active() {
+			outdated, err := sd.Outdated()
+			if err != nil {
+				return nil, err
+			}
+			if i.kernels(nil, mihomo.Arch{}).Installed() && !slices.Contains(outdated, service.CoreUnit) {
+				return append(steps, "Keep mihomo running (its service unit is unchanged): check that it is healthy and reload tunlr's nftables rules; "+
+					"it restarts only if the check fails"), nil
+			}
 			return append(steps, "Restart mihomo (open connections drop)"), nil
 		}
 	}

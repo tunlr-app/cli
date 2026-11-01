@@ -2,6 +2,8 @@ package setup
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -54,5 +56,39 @@ func TestInitSteps(t *testing.T) {
 	}
 	if _, err = i.InitSteps(context.Background(), InitOptions{KernelFile: "/tmp/mihomo.gz"}); err == nil || !strings.Contains(err.Error(), "is not a mihomo release asset") {
 		t.Errorf("bad file name: err = %v", err)
+	}
+}
+
+// TestInitStepsKeepsMihomoRunning 验证内核在运行、已经装好、它的 unit 没变时（如升级 tunlr 之后）init 不重启它；
+// unit 变了时要重启。
+func TestInitStepsKeepsMihomoRunning(t *testing.T) {
+	ctx := context.Background()
+	i, h, _ := newTunInstaller(t)
+	h.active = true
+	if _, err := i.systemd().Install(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(i.Layout.CoreBinary()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(i.Layout.CoreBinary(), []byte("mihomo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	last := func() string {
+		t.Helper()
+		steps, err := i.InitSteps(ctx, InitOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return steps[len(steps)-1]
+	}
+	if got := last(); !strings.HasPrefix(got, "Keep mihomo running (its service unit is unchanged)") {
+		t.Errorf("unit unchanged: %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(i.Layout.UnitDir(), service.CoreUnit), []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := last(); got != "Restart mihomo (open connections drop)" {
+		t.Errorf("unit changed: %q", got)
 	}
 }

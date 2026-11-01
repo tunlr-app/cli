@@ -368,6 +368,22 @@ func TestBlockerWarnings(t *testing.T) {
 	}
 }
 
+// TestReloadTables 验证 init 不重启内核时，各表都在也按现在的模板整表重新加载（升级后不留旧版本的规则）。
+func TestReloadTables(t *testing.T) {
+	i, h := newGatewayInstaller(t, "1")
+	gatewayOn(t, i, "ens3")
+	if err := i.PreStart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h.tunlr, h.gateway, h.devicesSync, h.calls = "", "", "", nil
+	if err := i.reloadTables(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h.tunlr == "" || h.gateway == "" || h.devicesSync == "" || h.called("systemctl restart") {
+		t.Errorf("tunlr %v, gateway %v, devices %v; calls %q", h.tunlr != "", h.gateway != "", h.devicesSync != "", h.calls)
+	}
+}
+
 func TestPreStartReloadsGateway(t *testing.T) {
 	i, h := newGatewayInstaller(t, "1")
 	gatewayOn(t, i, "ens3")

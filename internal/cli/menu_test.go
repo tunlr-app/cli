@@ -427,7 +427,7 @@ func TestMenuItems(t *testing.T) {
 
 	// 升级 tunlr 的说明是当前版本和查到的新版本；开发版没有这一项（要用 --version 指明版本）。
 	_, _, items = a.menuItems(groupMaintain, menuWith(runningStatus, 2, 3))
-	if up := items[len(items)-2]; up.desc != "Now 0.2.0; verified, then the menu reopens; mihomo keeps running" ||
+	if up := items[len(items)-2]; up.desc != "Now 0.2.0; verified, then the menu reopens; mihomo keeps running unless its service unit changes" ||
 		!slices.Equal(up.args, []string{"upgrade"}) {
 		t.Errorf("Upgrade tunlr: %+v", up)
 	}

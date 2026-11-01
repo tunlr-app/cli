@@ -73,6 +73,36 @@ func TestSuggestLANSwitches(t *testing.T) {
 	}
 }
 
+// TestSuggestIPv6Bypass 验证备份时开着 IPv6 bypass、这里关着时建议打开，这里也开着时不建议。
+func TestSuggestIPv6Bypass(t *testing.T) {
+	i := &Installer{Layout: paths.Layout{Root: t.TempDir()}}
+	st, _, err := state.LoadOrNew(i.Layout.StateFile(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	b := &backup.Backup{Switches: backup.Switches{IPv6Bypass: true}}
+	if !b.Switches.Any() {
+		t.Error("Switches.Any() = false with IPv6 bypass")
+	}
+	s, err := i.SuggestSwitches(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.IPv6Bypass || !s.Any() || s.Tun {
+		t.Errorf("suggestion = %+v", s)
+	}
+	st.IPv6Bypass = true
+	if err := state.Save(i.Layout.StateFile(), st); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := i.SuggestSwitches(context.Background(), b); err != nil || s.Any() {
+		t.Errorf("already on here: suggestion = %+v, err = %v", s, err)
+	}
+}
+
 func TestWriteKeepsOtherFiles(t *testing.T) {
 	i := &Installer{Layout: paths.Layout{Root: t.TempDir()}}
 	if _, err := i.Backup(context.Background()); !errors.Is(err, core.ErrCheckFailed) {

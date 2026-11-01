@@ -674,7 +674,7 @@ func (a *app) toolUpgradeDesc(s *setup.Status) string {
 	if s.UpdateCheck != nil && s.UpdateCheck.Tool != "" {
 		now += " (" + s.UpdateCheck.Tool + " available)"
 	}
-	return now + "; verified, then the menu reopens; mihomo keeps running"
+	return now + "; verified, then the menu reopens; mihomo keeps running unless its service unit changes"
 }
 
 // attention 是第一级最上面需要处理的事项，每项对应一个命令：有还没发布的改动、内核服务失败或没有运行

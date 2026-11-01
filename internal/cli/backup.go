@@ -118,6 +118,9 @@ func (a *app) describeSwitches(s backup.Switches) string {
 	if s.PanelLAN {
 		on = append(on, "panel LAN access"+note)
 	}
+	if s.IPv6Bypass {
+		on = append(on, "IPv6 bypass")
+	}
 	if len(on) == 0 {
 		return a.style.dim("nothing")
 	}
@@ -277,9 +280,9 @@ func (a *app) newBackupRestoreCommand() *cobra.Command {
 			"current contents are saved to /var/lib/tunlr/backups first (the last 3 are kept); if\n" +
 			"publishing fails, they are put back.\n\n" +
 			"Switches that were on in the backup (TUN, gateway mode, LAN access to the proxy port and\n" +
-			"the panel) are not turned on by themselves: the network here may differ. Afterwards you\n" +
-			"choose which to turn on, each with its usual checks; without a terminal, or with --yes,\n" +
-			"the commands are listed instead.\n\n" +
+			"the panel, IPv6 bypass) are not turned on by themselves: the network here may differ.\n" +
+			"Afterwards you choose which to turn on, each with its usual checks; without a terminal, or\n" +
+			"with --yes, the commands are listed instead.\n\n" +
 			"Without a file, choose one of the automatic backups (see tunlr backup) or enter a file.",
 		Args: usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -440,6 +443,9 @@ func switchCommands(s setup.SwitchSuggestion) []string {
 	if s.PanelLAN {
 		cmds = append(cmds, "tunlr panel lan on"+flags)
 	}
+	if s.IPv6Bypass {
+		cmds = append(cmds, "tunlr ipv6 bypass")
+	}
 	return cmds
 }
 
@@ -472,7 +478,7 @@ func lanThrough(s setup.SwitchSuggestion) string {
 }
 
 // restoreSwitches 让用户勾选要打开的开关（默认全选），再依次走 gateway on（或 tun on）、proxy lan on、
-// panel lan on 的流程，同 init 的 initLAN：已经勾选过，不再逐一确认，但各自的检查照常进行。
+// panel lan on、ipv6 bypass 的流程，同 init 的 initLAN：已经勾选过，不再逐一确认，但各自的检查照常进行。
 func (a *app) restoreSwitches(ctx context.Context, s setup.SwitchSuggestion) error {
 	type step struct {
 		label, title string
@@ -502,6 +508,10 @@ func (a *app) restoreSwitches(ctx context.Context, s setup.SwitchSuggestion) err
 	}
 	if s.PanelLAN {
 		steps = append(steps, step{"LAN access to the panel" + lanThrough(s), "Panel", func() error { return a.panelLANOn(ctx, choice) }})
+	}
+	if s.IPv6Bypass {
+		steps = append(steps, step{"IPv6 bypass (connections to IPv6 addresses go out directly, not through mihomo)", "IPv6 bypass",
+			func() error { return a.setIPv6(ctx, setup.IPv6Bypass) }})
 	}
 	options := make([]string, len(steps))
 	all := make([]int, len(steps))

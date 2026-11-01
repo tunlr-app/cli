@@ -100,7 +100,41 @@ func (i *Installer) toolRelease(ctx context.Context, version string) (*download.
 	if !toolVersionPattern.MatchString(rel.Tag) {
 		return nil, fmt.Errorf("unexpected tunlr release tag %q", rel.Tag)
 	}
+	if version == "" {
+		i.recordToolLatest(ctx, strings.TrimPrefix(rel.Tag, "v"))
+	}
 	return rel, nil
+}
+
+// recordToolLatest 把刚查到的 tunlr 最新版本记入状态文件（state.UpdateCheck.Tool），免得菜单还按一天前的查询
+// 提示升级到旧的版本。不改查询时间，mihomo 的版本照旧由定时更新查询。只是提示用的记录：没有安装或写不了时
+// 记入日志后跳过，不影响升级。
+func (i *Installer) recordToolLatest(ctx context.Context, tool string) {
+	err := func() error {
+		if _, err := os.Stat(i.Layout.StateFile()); errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		l, err := i.lock(ctx)
+		if err != nil {
+			return err
+		}
+		defer l.Release()
+		st, err := state.Load(i.Layout.StateFile())
+		if err != nil {
+			return err
+		}
+		if st.UpdateCheck == nil {
+			st.UpdateCheck = &state.UpdateCheck{}
+		}
+		if st.UpdateCheck.Tool == tool {
+			return nil
+		}
+		st.UpdateCheck.Tool = tool
+		return state.Save(i.Layout.StateFile(), st)
+	}()
+	if err != nil {
+		i.log().Warn("record the latest tunlr version", "err", err)
+	}
 }
 
 // Upgrade 把 /usr/local/bin/tunlr 换成 version（tag，为空时为最新的正式发布）：下载本平台的发布资产并按官方

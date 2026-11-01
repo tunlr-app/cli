@@ -62,8 +62,8 @@ type fakeHost struct {
 	// table main 的输出，为空时主路由表中没有 IPv6 默认路由。
 	ipv6Route string
 	mainIPv6  string
-	// tunlr 是最近一次加载 inet tunlr 的脚本。
-	tunlr string
+	// tunlr、gateway 是最近一次加载 inet tunlr、inet tunlr_gateway 的脚本。
+	tunlr, gateway string
 }
 
 func (h *fakeHost) systemd(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -94,6 +94,7 @@ func (h *fakeHost) netfilter(_ context.Context, stdin []byte, name string, args 
 				return nil, errors.New("nft: Error: Could not process rule")
 			}
 			table = netfilter.GatewayTable
+			h.gateway = string(stdin)
 		}
 		if strings.Contains(string(stdin), "table inet "+netfilter.AccessTable+" {") {
 			table = netfilter.AccessTable

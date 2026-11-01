@@ -112,6 +112,22 @@ func (m *Manager) Restart(ctx context.Context) (*Health, error) {
 	return m.cycle(ctx, m.Service.Restart)
 }
 
+// Check 不重启，检查运行中的内核：服务为 active，且经 socket 得到 /version 的响应。
+func (m *Manager) Check(ctx context.Context) (*Health, error) {
+	st, err := m.Service.Status(ctx, service.CoreUnit)
+	if err != nil {
+		return nil, err
+	}
+	if !st.Active() {
+		return nil, fmt.Errorf("%w: the service is %s", ErrUnhealthy, st.ActiveState)
+	}
+	v, err := NewClient(m.Layout.CoreSocket()).Version(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: no API response: %v (see: tunlr core logs)", ErrUnhealthy, err)
+	}
+	return &Health{Version: v, MainPID: st.MainPID}, nil
+}
+
 // Stop 停止内核服务。
 func (m *Manager) Stop(ctx context.Context) error {
 	if !m.Service.Installed() {

@@ -79,10 +79,14 @@ type Switches struct {
 	// LANInterfaces、LANContainers 是代理端口和面板放行的入口（见 state.LANAccess），选过时才有。
 	LANInterfaces []string `json:"lan_interfaces,omitempty"`
 	LANContainers bool     `json:"lan_containers,omitempty"`
+	// IPv6Bypass 是 tunlr ipv6 bypass（见 state.State.IPv6Bypass）。
+	IPv6Bypass bool `json:"ipv6_bypass,omitempty"`
 }
 
 // Any 报告是否有开着的开关。
-func (s Switches) Any() bool { return s.Tun || s.Gateway != "" || s.ProxyLAN || s.PanelLAN }
+func (s Switches) Any() bool {
+	return s.Tun || s.Gateway != "" || s.ProxyLAN || s.PanelLAN || s.IPv6Bypass
+}
 
 // Write 把备份写成 tar.gz。
 func Write(w io.Writer, b *Backup) error {

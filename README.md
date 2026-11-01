@@ -120,7 +120,7 @@ Maintenance
 - 同一个定时任务每天查询一次 tunlr 和 mihomo 的最新版本（只查询，不下载，不自动升级）。有新版本时主菜单的状态行和 `tunlr status` 提示，升级由用户执行；tunlr 自己的升级也在主菜单的 Maintenance 里，有新版本时第一级最上面也有一项，升级后菜单用新版本重新打开：
 
 ```bash
-tunlr upgrade          # 升级 tunlr 自身：下载、校验 sha256、确认能运行、原子替换，然后由新版本重写 unit
+tunlr upgrade          # 升级 tunlr 自身：下载、校验 sha256、确认能运行、原子替换，然后由新版本重写 unit、重载 nft 规则；内核的 unit 没变时 mihomo 不重启
 tunlr core upgrade     # 升级 mihomo：下载、校验、用新内核校验当前配置、重启并做健康检查，失败则换回
 tunlr core rollback    # 换回上一个已知可用的内核版本
 ```

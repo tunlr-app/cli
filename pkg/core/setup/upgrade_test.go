@@ -121,6 +121,10 @@ func TestUpgrade(t *testing.T) {
 	if target, err := i.UpgradeTarget(ctx, ""); err != nil || target != "0.2.0" {
 		t.Fatalf("target = %q, %v", target, err)
 	}
+	// 查到的最新版本记入状态文件，菜单的提示随之更新；查询时间不变。
+	if uc := tunSwitch(t, i).UpdateCheck; uc == nil || uc.Tool != "0.2.0" || !uc.At.IsZero() {
+		t.Errorf("latest version not recorded: %+v", uc)
+	}
 	res, err := i.Upgrade(ctx, "")
 	if err != nil {
 		t.Fatal(err)
@@ -153,6 +157,10 @@ func TestUpgrade(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(i.Layout.ToolBinary()); string(data) != "bin-0.2.0" {
 		t.Errorf("binary replaced by an unverified one: %q", data)
+	}
+	// 用 --version 指明的不是最新版本，不记。
+	if uc := tunSwitch(t, i).UpdateCheck; uc.Tool != "0.2.0" {
+		t.Errorf("a version given with --version recorded: %+v", uc)
 	}
 
 	// init 失败时二进制已经换好，错误说明怎么补救。

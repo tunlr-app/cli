@@ -20,6 +20,7 @@ func TestSwitchCommands(t *testing.T) {
 		{setup.SwitchSuggestion{ProxyLAN: true, PanelLAN: true, LANInterfaces: []string{"ens3", "wg0"}, LANContainers: true},
 			[]string{"tunlr proxy lan on --interface ens3,wg0 --containers", "tunlr panel lan on --interface ens3,wg0 --containers"}},
 		{setup.SwitchSuggestion{PanelLAN: true, LANWas: []string{"eth9"}}, []string{"tunlr panel lan on"}},
+		{setup.SwitchSuggestion{Tun: true, IPv6Bypass: true}, []string{"tunlr tun on", "tunlr ipv6 bypass"}},
 	}
 	for _, tt := range tests {
 		if got := switchCommands(tt.s); !slices.Equal(got, tt.want) {

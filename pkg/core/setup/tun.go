@@ -454,6 +454,29 @@ func tableOptions(st *state.State) netfilter.TableOptions {
 	return netfilter.TableOptions{RejectIPv6DNS: st != nil && st.IPv6Bypass && st.TunEnabled()}
 }
 
+// reloadTables 在内核继续运行时（init 没有重启它，如升级 tunlr 之后）按现在的模板和状态重新加载 tunlr 的表：
+// inet tunlr 平时随内核启动由 _prestart 加载，网关的表只在不完整时才补，不重新加载的话都还是旧版本的规则。
+// 各表都是整表替换，可以重复执行。
+func (i *Installer) reloadTables(ctx context.Context) error {
+	l, err := i.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer l.Release()
+	st, err := state.Load(i.Layout.StateFile())
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	errs := []error{i.rules().Up(ctx, tableOptions(st))}
+	if st != nil && st.Gateway != nil {
+		errs = append(errs, i.rules().GatewayUp(ctx, st.Gateway.Interface))
+	}
+	if _, err := i.repairAccess(ctx, st); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(append(errs, i.syncDevices(ctx, st))...)
+}
+
 // refreshRules 在 inet tunlr 存在（内核在运行）时按状态 st 重新加载它，用于 TUN、IPv6 的开关变化之后；
 // 不存在时由内核下次启动的 _prestart 加载。
 func (i *Installer) refreshRules(ctx context.Context, st *state.State) error {

@@ -49,7 +49,7 @@ func (i *Installer) collect() (*backup.Backup, error) {
 	b := &backup.Backup{
 		Version: backup.Version, Tunlr: i.Version, Host: host, CreatedAt: i.now().UTC(),
 		APISecret: st.APISecret, Devices: st.Devices, Filter: st.Filter,
-		Switches: backup.Switches{Tun: st.TunEnabled(), ProxyLAN: st.ProxyLAN != nil, PanelLAN: st.PanelLAN != nil},
+		Switches: backup.Switches{Tun: st.TunEnabled(), ProxyLAN: st.ProxyLAN != nil, PanelLAN: st.PanelLAN != nil, IPv6Bypass: st.IPv6Bypass},
 		Contents: map[string][]byte{},
 	}
 	if st.Gateway != nil {
@@ -305,6 +305,8 @@ type SwitchSuggestion struct {
 	Gateway  bool `json:"gateway,omitempty"`
 	ProxyLAN bool `json:"proxy_lan,omitempty"`
 	PanelLAN bool `json:"panel_lan,omitempty"`
+	// IPv6Bypass 是 tunlr ipv6 bypass。
+	IPv6Bypass bool `json:"ipv6_bypass,omitempty"`
 	// Interface 是网关要用的网卡：备份中的网卡在这台机器上也是局域网网卡的候选时用它，否则为空（默认路由
 	// 所在的网卡）。Was 是备份中的网卡。
 	Interface string `json:"interface,omitempty"`
@@ -317,7 +319,9 @@ type SwitchSuggestion struct {
 }
 
 // Any 报告是否有要打开的开关。
-func (s SwitchSuggestion) Any() bool { return s.Tun || s.Gateway || s.ProxyLAN || s.PanelLAN }
+func (s SwitchSuggestion) Any() bool {
+	return s.Tun || s.Gateway || s.ProxyLAN || s.PanelLAN || s.IPv6Bypass
+}
 
 // SuggestSwitches 比较备份 b 与这台机器的开关，返回备份时开着、这里关着的。网关开着时 TUN 也开着，
 // 打开网关会先打开 TUN，所以要打开网关时 Tun 为 false。
@@ -328,9 +332,10 @@ func (i *Installer) SuggestSwitches(ctx context.Context, b *backup.Backup) (Swit
 	}
 	sw := b.Switches
 	s := SwitchSuggestion{
-		Gateway:  sw.Gateway != "" && st.Gateway == nil,
-		ProxyLAN: sw.ProxyLAN && st.ProxyLAN == nil,
-		PanelLAN: sw.PanelLAN && st.PanelLAN == nil,
+		Gateway:    sw.Gateway != "" && st.Gateway == nil,
+		ProxyLAN:   sw.ProxyLAN && st.ProxyLAN == nil,
+		PanelLAN:   sw.PanelLAN && st.PanelLAN == nil,
+		IPv6Bypass: sw.IPv6Bypass && !st.IPv6Bypass,
 	}
 	s.Tun = sw.Tun && !st.TunEnabled() && !s.Gateway
 	if s.Gateway {

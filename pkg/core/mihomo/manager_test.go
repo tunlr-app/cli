@@ -221,6 +221,26 @@ func binary(t *testing.T, m *Manager) string {
 	return string(data)
 }
 
+// TestManagerCheck 验证 Check 不重启：服务没有运行时报告不健康，运行时返回版本和进程，且没有调用 systemctl。
+func TestManagerCheck(t *testing.T) {
+	ctx := context.Background()
+	m, svc := newTestManager(t, fakeReleases(t, "v1.19.34", testBinaries))
+	if _, err := m.Upgrade(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Check(ctx); !errors.Is(err, ErrUnhealthy) {
+		t.Fatalf("not running: err = %v", err)
+	}
+	if _, err := m.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	svc.calls = nil
+	h, err := m.Check(ctx)
+	if err != nil || h.Version != "v1.19.34" || h.MainPID != svc.pid || len(svc.calls) != 0 {
+		t.Errorf("check = %+v, %v; calls %v", h, err, svc.calls)
+	}
+}
+
 func TestManagerUpgradeAndRollback(t *testing.T) {
 	ctx := context.Background()
 	m, _ := newTestManager(t, fakeReleases(t, "v1.19.34", testBinaries))

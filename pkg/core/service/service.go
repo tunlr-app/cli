@@ -153,26 +153,44 @@ func (s *Systemd) ResetFailed(ctx context.Context, unit string) error {
 	return err
 }
 
-// Install 写入全部 unit，重新加载 systemd，启用内核服务（不启动）。timer 是否启用由调用方按设置和
-// 状态用 SetTimer 决定。
-func (s *Systemd) Install(ctx context.Context) error {
+// Outdated 返回磁盘上内容与现在的模板不同（或还不存在）的 unit，只读取。
+func (s *Systemd) Outdated() ([]string, error) {
 	units, err := RenderUnits(s.Layout)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	var out []string
+	for _, name := range Units {
+		if old, err := os.ReadFile(filepath.Join(s.Layout.UnitDir(), name)); err != nil || !bytes.Equal(old, units[name]) {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+// Install 写入全部 unit，重新加载 systemd，启用内核服务（不启动）。timer 是否启用由调用方按设置和
+// 状态用 SetTimer 决定。返回内容有变化（含新建）的 unit：内核服务的 unit 变了，要重启内核才生效。
+func (s *Systemd) Install(ctx context.Context) (changed []string, err error) {
+	units, err := RenderUnits(s.Layout)
+	if err != nil {
+		return nil, err
+	}
+	if changed, err = s.Outdated(); err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(s.Layout.UnitDir(), 0o755); err != nil {
-		return err
+		return nil, err
 	}
-	for _, name := range Units {
+	for _, name := range changed {
 		if err := fsutil.WriteFile(filepath.Join(s.Layout.UnitDir(), name), units[name], 0o644); err != nil {
-			return err
+			return changed, err
 		}
 	}
 	if _, err := s.systemctl(ctx, "daemon-reload"); err != nil {
-		return err
+		return changed, err
 	}
 	_, err = s.systemctl(ctx, "enable", CoreUnit)
-	return err
+	return changed, err
 }
 
 // SetTimer 启用并启动（on）或停止并禁用 timer（或 path unit）。只启用不启动的话，要到下次开机才开始计时。

@@ -99,9 +99,21 @@ func TestInstallAndUninstall(t *testing.T) {
 	f := &fakeSystemctl{}
 	s := &Systemd{Layout: paths.Layout{Root: t.TempDir()}, Run: f.run}
 	ctx := context.Background()
-	if err := s.Install(ctx); err != nil {
+	changed, err := s.Install(ctx)
+	if err != nil || !slices.Equal(changed, Units) {
+		t.Fatalf("changed %v, %v", changed, err)
+	}
+	// 再次安装时内容没有变化；只改了一个 unit 时只报告它。
+	if changed, err := s.Install(ctx); err != nil || len(changed) != 0 {
+		t.Errorf("reinstall: changed %v, %v", changed, err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Layout.UnitDir(), CoreUnit), []byte("old\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if changed, err := s.Install(ctx); err != nil || !slices.Equal(changed, []string{CoreUnit}) {
+		t.Errorf("after editing %s: changed %v, %v", CoreUnit, changed, err)
+	}
+	f.calls = f.calls[:2]
 	for _, name := range Units {
 		if _, err := os.Stat(filepath.Join(s.Layout.UnitDir(), name)); err != nil {
 			t.Errorf("%s not written: %v", name, err)

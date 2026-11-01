@@ -106,7 +106,8 @@ func (a *app) newInitCommand() *cobra.Command {
 			"mihomo, install the latest mihomo release (checksum verified), install and enable\n" +
 			"tunlr-core.service, tunlr-update.timer (see: tunlr update) and tunlr-aftercare.path\n" +
 			"(checks mihomo after the panel upgrades it), add a subscription,\n" +
-			"publish the configuration and start mihomo. Running it again repairs the installation.\n\n" +
+			"publish the configuration and start mihomo. Running it again repairs the installation; a\n" +
+			"healthy mihomo is not restarted unless its service unit changed (tunlr core restart does).\n\n" +
 			"Interactively it asks for a GitHub mirror and a subscription with its proxy filter (all\n" +
 			"optional), and what this server is for: only itself, a proxy for LAN devices (tunlr proxy\n" +
 			"lan on), or their gateway (tunlr tun gateway on); otherwise pass --mirror, --sub\n" +
@@ -352,7 +353,11 @@ func (a *app) renderInit(res *setup.InitResult, hint, panelNext bool) error {
 			fmt.Fprintf(w, "Published revision %d.\n", res.Revision)
 		}
 		if res.Started != nil {
-			fmt.Fprintf(w, "mihomo %s is running (pid %d) and passed the health check.\n", res.Started.Version, res.Started.MainPID)
+			if res.KeptRunning {
+				fmt.Fprintf(w, "mihomo %s keeps running (pid %d, not restarted) and answers; tunlr's nftables rules are reloaded.\n", res.Started.Version, res.Started.MainPID)
+			} else {
+				fmt.Fprintf(w, "mihomo %s is running (pid %d) and passed the health check.\n", res.Started.Version, res.Started.MainPID)
+			}
 			switch {
 			case panelNext:
 			case res.PanelLAN:
@@ -810,8 +815,9 @@ func (a *app) newUpgradeCommand() *cobra.Command {
 					return err
 				}
 				if target != strings.TrimPrefix(a.info.Version, "v") {
-					desc := "The running tunlr keeps working until it exits; afterwards the new one runs init --yes\n" +
-						"to refresh the systemd units (mihomo restarts only if its configuration changes)."
+					desc := "The running tunlr keeps working until it exits; afterwards the new one runs init --yes to\n" +
+						"refresh the systemd units and tunlr's nftables rules. mihomo keeps running unless the new\n" +
+						"version changes its service unit (then it restarts and open connections drop)."
 					if ok, err := a.ask(ctx, fmt.Sprintf("Replace tunlr %s with %s?", a.info.Version, target), desc, "tunlr not changed."); !ok {
 						return err
 					}
