@@ -60,6 +60,8 @@ type app struct {
 	aborted bool
 	// fullDiff 对应 --full-diff：差异很长时也完整显示，而不是按段汇总。
 	fullDiff bool
+	// restart 是 tunlr upgrade 换上的新二进制，主菜单据此退出并用它重新打开菜单。
+	restart string
 
 	// 以下供测试替换，为空时使用默认实现。
 	validator pipeline.Validator
@@ -73,6 +75,8 @@ type app struct {
 	prompt prompter
 	// screenSize 返回标准输出所在终端的列数和行数，不是终端时为 0（不清屏、不分页）。
 	screenSize func() (cols, rows int)
+	// reexec 用 path 处的二进制替换本进程（execve），默认为 syscall.Exec。
+	reexec func(path string, argv, env []string) error
 }
 
 // Main 执行命令并返回进程退出码。收到 SIGINT 或 SIGTERM 时取消命令的 context。
@@ -90,6 +94,7 @@ func Main(info BuildInfo, args []string) int {
 	a.style, a.errStyle = detectStyles(os.Stdout), detectStyles(os.Stderr)
 	a.editor = a.runEditor
 	a.prompt = huhPrompter{a}
+	a.reexec = execBinary
 	a.screenSize = func() (int, int) {
 		if !term.IsTerminal(os.Stdout.Fd()) {
 			return 0, 0

@@ -259,6 +259,16 @@ func TestMenuResult(t *testing.T) {
 	}
 }
 
+// 菜单中升级了 tunlr（restart 不为空）时，操作结束后菜单退出，由 runMenu 换成新的二进制。
+func TestMenuQuitsAfterUpgrade(t *testing.T) {
+	mt := newMenuTest(t, menuWith(runningStatus, 2, 3))
+	mt.m.a.restart = "/usr/local/bin/tunlr"
+	mt.send(menuDoneMsg{})
+	if !mt.m.quitting || mt.view() != "" {
+		t.Errorf("quitting = %v, view:\n%s", mt.m.quitting, mt.view())
+	}
+}
+
 // 菜单不嵌表单：需要提问的项直接执行子命令，由子命令自己问。
 func TestMenuRunsWithoutForm(t *testing.T) {
 	mt := newMenuTest(t, menuWith(runningStatus, 2, 3))
@@ -323,7 +333,7 @@ func TestMenuWithoutTerminalShowsHelp(t *testing.T) {
 }
 
 func TestMenuItems(t *testing.T) {
-	a := &app{}
+	a := &app{info: BuildInfo{Version: "0.2.0"}}
 	labels := func(group string, s *setup.Status, subs, revs int) string {
 		t.Helper()
 		title, _, items := a.menuItems(group, menuWith(s, subs, revs))
@@ -342,7 +352,7 @@ func TestMenuItems(t *testing.T) {
 		groupFilters:  "tunlr › Filters: Block QUIC|Proxy some ports only|Send a network direct|Filter details|← Back",
 		groupCore:     "tunlr › mihomo: Restart mihomo|Stop mihomo|Recent logs|Upgrade mihomo|mihomo details|← Back",
 		groupPanel:    "tunlr › Panel: Open panel to LAN|New API secret|Open the panel|← Back",
-		groupMaintain: "tunlr › Maintenance: Back up to a file|Restore a backup|Edit settings|Diagnose|Repair install|← Back",
+		groupMaintain: "tunlr › Maintenance: Back up to a file|Restore a backup|Edit settings|Diagnose|Repair install|Upgrade tunlr|← Back",
 	} {
 		if got := labels(group, runningStatus, 2, 3); got != want {
 			t.Errorf("running %q:\n got %s\nwant %s", group, got, want)
@@ -415,6 +425,22 @@ func TestMenuItems(t *testing.T) {
 		}
 	}
 
+	// 升级 tunlr 的说明是当前版本和查到的新版本；开发版没有这一项（要用 --version 指明版本）。
+	_, _, items = a.menuItems(groupMaintain, menuWith(runningStatus, 2, 3))
+	if up := items[len(items)-2]; up.desc != "Now 0.2.0; verified, then the menu reopens; mihomo keeps running" ||
+		!slices.Equal(up.args, []string{"upgrade"}) {
+		t.Errorf("Upgrade tunlr: %+v", up)
+	}
+	newer := *runningStatus
+	newer.UpdateCheck = &setup.UpdateCheck{Tool: "0.3.0"}
+	if _, _, items = a.menuItems(groupMaintain, menuWith(&newer, 2, 3)); !strings.HasPrefix(items[len(items)-2].desc, "Now 0.2.0 (0.3.0 available); ") {
+		t.Errorf("Upgrade tunlr with a newer release: %q", items[len(items)-2].desc)
+	}
+	dev := &app{info: BuildInfo{Version: setup.DevVersion}}
+	if _, _, items := dev.menuItems(groupMaintain, menuWith(runningStatus, 2, 3)); slices.ContainsFunc(items, func(it menuItem) bool { return it.label == "Upgrade tunlr" }) {
+		t.Errorf("dev build offers Upgrade tunlr: %+v", items)
+	}
+
 	// 没安装时分类不存在（例如在分类里卸载了），菜单回到第一级。
 	if _, _, items := a.menuItems(groupCore, menuData{status: &setup.Status{}}); items != nil {
 		t.Errorf("not installed: %v", items)
@@ -475,7 +501,9 @@ func TestMenuAttention(t *testing.T) {
 		{Task: setup.TaskSubscription, Name: "spare", Last: &state.UpdateRun{Status: setup.StepFailed}},
 		{Task: setup.TaskGeo},
 	}
-	want := "! Publish the changes not yet published = config apply|! Start mihomo (failed) = core start|! Fetch subs again (the last fetch failed) = sub update"
+	s.UpdateCheck = &setup.UpdateCheck{Tool: "0.3.0", Kernel: "v1.19.34"}
+	want := "! Publish the changes not yet published = config apply|! Start mihomo (failed) = core start|" +
+		"! Fetch subs again (the last fetch failed) = sub update|! Upgrade tunlr to 0.3.0 = upgrade"
 	if got := attention(&s, 3); got != want {
 		t.Errorf("attention:\n got %s\nwant %s", got, want)
 	}

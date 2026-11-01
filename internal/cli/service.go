@@ -825,6 +825,9 @@ func (a *app) newUpgradeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if res.Changed {
+				a.restart = res.Path
+			}
 			return a.render(res, func() error {
 				w := a.stdout
 				switch {

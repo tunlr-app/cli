@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -95,6 +96,14 @@ func (a *app) runMenu(cmd *cobra.Command) error {
 	p := tea.NewProgram(a.newMenu(ctx, d), tea.WithContext(ctx), tea.WithInput(a.stdin), tea.WithOutput(a.stderr))
 	if _, err := p.Run(); err != nil && !errors.Is(err, tea.ErrInterrupted) && ctx.Err() == nil {
 		return err
+	}
+	if a.restart == "" {
+		return nil
+	}
+	// 在菜单中升级了 tunlr：用新的二进制原样重新执行（exec 替换本进程），菜单显示新版本的状态。
+	fmt.Fprintln(a.stdout, a.style.dim("Opening the menu of the new tunlr."))
+	if err := a.reexec(a.restart, os.Args, os.Environ()); err != nil {
+		return fmt.Errorf("tunlr is upgraded, but opening its menu failed (run tunlr again): %w", err)
 	}
 	return nil
 }
@@ -194,6 +203,11 @@ func (m *menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loaded(msg)
 	case menuDoneMsg:
 		m.running = nil
+		// tunlr 换了版本：退出，由 runMenu 换成新的二进制重新打开菜单。
+		if m.a.restart != "" {
+			m.quitting = true
+			return m, tea.Quit
+		}
 		return m, m.reload()
 	}
 	if m.running != nil || m.pending != nil || m.quitting {
@@ -524,6 +538,10 @@ func (a *app) menuItems(group string, d menuData) (title, note string, items []m
 			diagnose,
 			op("Repair install", "Set up the service, kernel and timers again; your config is kept", "init"),
 		}
+		// 开发版没有版本号，tunlr upgrade 要用 --version 指明版本，菜单不提供。
+		if a.info.Version != setup.DevVersion {
+			items = append(items, op("Upgrade tunlr", a.toolUpgradeDesc(s), "upgrade"))
+		}
 	}
 	return title, note, append(items, menuItem{label: menuBack, back: true})
 }
@@ -650,8 +668,18 @@ func (a *app) panelItems(s *setup.Status) []menuItem {
 // lanInterfacesNote 是菜单中修改放行网卡一项的说明。
 const lanInterfacesNote = "Which interfaces LAN devices reach the proxy port and the panel through"
 
+// toolUpgradeDesc 是升级 tunlr 一项的说明：当前版本，查到更新时是哪个版本。
+func (a *app) toolUpgradeDesc(s *setup.Status) string {
+	now := "Now " + a.info.Version
+	if s.UpdateCheck != nil && s.UpdateCheck.Tool != "" {
+		now += " (" + s.UpdateCheck.Tool + " available)"
+	}
+	return now + "; verified, then the menu reopens; mihomo keeps running"
+}
+
 // attention 是第一级最上面需要处理的事项，每项对应一个命令：有还没发布的改动、内核服务失败或没有运行
-// （发布过配置时）、订阅最近一次抓取失败。
+// （发布过配置时）、订阅最近一次抓取失败、tunlr 有新版本。mihomo 的新版本不在这里：升级会重启内核，
+// 只在状态行和 mihomo 分类中提示。
 func (a *app) attention(d menuData) []menuItem {
 	s := d.status
 	mark := a.style.warn("!") + " "
@@ -671,6 +699,9 @@ func (a *app) attention(d menuData) []menuItem {
 		return sc.Task == setup.TaskSubscription && sc.Last != nil && sc.Last.Status == setup.StepFailed
 	}) {
 		items = append(items, op(mark+"Fetch subs again (the last fetch failed)", "Fetch every sub; the last good copy is kept if it fails again", "sub", "update"))
+	}
+	if s.UpdateCheck != nil && s.UpdateCheck.Tool != "" {
+		items = append(items, op(mark+"Upgrade tunlr to "+s.UpdateCheck.Tool, a.toolUpgradeDesc(s), "upgrade"))
 	}
 	return items
 }
