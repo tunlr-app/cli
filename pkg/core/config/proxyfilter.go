@@ -166,25 +166,41 @@ func CheckPatterns(s string) error {
 	return nil
 }
 
-// FilterMixin 生成只含节点筛选的订阅 mixin（sub add --include/--exclude），filter、exclude 为空的字段省略。
+// FilterMixin 生成只含节点筛选的订阅 mixin（sub add --include/--exclude；tunlr config edit 新建
+// <订阅>/10-filter 时 filter、exclude 都为空）。开头说明三个字段的含义和写法，为空的字段写成注释掉的示例。
 func FilterMixin(sub, filter, exclude string) []byte {
-	pf := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	if filter != "" {
-		setValue(pf, "filter", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: filter})
+	var b strings.Builder
+	b.WriteString("# Proxy filter of subscription " + sub + ", applied only while it is active (tunlr.proxy-filter,\n" +
+		"# the same keys as mihomo's proxy-providers; also applied to the subscription's providers).\n" +
+		"# The keys run in this order, each on the proxies the previous one left:\n" +
+		"#   filter          allowlist: keep only the proxies whose names match\n" +
+		"#   exclude-filter  blocklist: remove the proxies whose names match\n" +
+		"#   exclude-type    remove the proxies of these types (type: in the subscription, e.g. ss, vmess,\n" +
+		"#                   trojan, hysteria2), separated by |; case does not matter\n" +
+		"# filter and exclude-filter are regular expressions on proxy names; separate several with a\n" +
+		"# backtick (`): a proxy matching any one of them counts. Matching is case-sensitive; (?i) at the\n" +
+		"# start of an expression ignores case. Leave a key out to skip it. Groups left with no proxies\n" +
+		"# are removed; if rules still use them, the configuration is not published.\n" +
+		"# Edit with: tunlr config edit " + sub + "/" + strings.TrimSuffix(FilterMixinFile, mixinExt) + "\n")
+	// 两个都为空时整段注释掉，否则只注释掉为空的字段。
+	prefix, example := "# ", "#     "
+	if filter != "" || exclude != "" {
+		prefix, example = "", "    # "
 	}
-	if exclude != "" {
-		setValue(pf, "exclude-filter", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: exclude})
+	b.WriteString(prefix + namespace + ":\n" + prefix + "  proxy-filter:\n")
+	for _, f := range []struct{ key, value, example string }{
+		{"filter", filter, "香港|日本|(?i)hk|jp"},
+		{"exclude-filter", exclude, "倍率|剩余流量|套餐到期|官网"},
+		{"exclude-type", "", "ssr|vmess"},
+	} {
+		if f.value == "" {
+			b.WriteString(example + f.key + ": " + f.example + "\n")
+			continue
+		}
+		v, _ := yaml.Marshal(f.value)
+		b.WriteString("    " + f.key + ": " + strings.TrimSuffix(string(v), "\n") + "\n")
 	}
-	ns := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	setValue(ns, "proxy-filter", pf)
-	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	setValue(root, namespace, ns)
-	root.HeadComment = "Proxy filter of subscription " + sub + ", applied only while it is active.\n" +
-		"filter keeps the proxies whose names match, exclude-filter then removes those that match;\n" +
-		"separate several regular expressions with a backtick. Same as mihomo's proxy-providers.\n" +
-		"Edit with: tunlr config edit " + sub + "/" + strings.TrimSuffix(FilterMixinFile, mixinExt)
-	out, _ := yaml.Marshal(&yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{root}})
-	return out
+	return []byte(b.String())
 }
 
 // splitPatterns 把 filter、exclude-filter 按反引号拆成多条正则，与 mihomo 相同；空字符串表示没有设置。

@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -1115,11 +1114,27 @@ func marshal(v any) []byte {
 	return b.Bytes()
 }
 
-// newSecret 生成 32 个十六进制字符的随机 secret。
+// secretChars 是 secret 用的字符：前 52 个是大小写字母，后 10 个是数字。
+const secretChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+// newSecret 生成 8 个字符的随机 secret，字母和数字都有：面板登录时要手动输入，太长不便。
 func newSecret() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
+	for {
+		var b [8]byte
+		for i := 0; i < len(b); {
+			var r [1]byte
+			if _, err := rand.Read(r[:]); err != nil {
+				return "", err
+			}
+			// 只用小于 62 的整数倍的值，各字符的概率才相同。
+			if r[0] < 248 {
+				b[i] = secretChars[int(r[0])%len(secretChars)]
+				i++
+			}
+		}
+		s := string(b[:])
+		if strings.ContainsAny(s, secretChars[:52]) && strings.ContainsAny(s, secretChars[52:]) {
+			return s, nil
+		}
 	}
-	return hex.EncodeToString(b[:]), nil
 }

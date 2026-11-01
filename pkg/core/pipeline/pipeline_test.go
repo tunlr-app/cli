@@ -167,7 +167,7 @@ func TestFirstApply(t *testing.T) {
 	if !strings.Contains(cfg, "\nexternal-controller-unix: api.sock\n") {
 		t.Errorf("enforced socket missing:\n%s", cfg)
 	}
-	if !strings.Contains(cfg, "\nsecret: "+plan.newSecret+"\n") || len(plan.newSecret) != 32 {
+	if !strings.Contains(cfg, "\nsecret: "+plan.newSecret+"\n") || !secretPattern.MatchString(plan.newSecret) {
 		t.Errorf("secret %q not in config", plan.newSecret)
 	}
 	// 只预览不保存：再预览一次会生成另一个 secret。
@@ -674,7 +674,7 @@ func TestPlanResetSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.newSecret == old || len(plan.newSecret) != 32 || !slices.Contains(plan.Restart, "secret") {
+	if plan.newSecret == old || !secretPattern.MatchString(plan.newSecret) || !slices.Contains(plan.Restart, "secret") {
 		t.Fatalf("new %q (old %q), restart %v", plan.newSecret, old, plan.Restart)
 	}
 	mustApply(t, p, plan)
@@ -1016,5 +1016,23 @@ func TestDefaultsManaged(t *testing.T) {
 	}
 	if _, err := os.Stat(p.Layout.MixinDir()); !os.IsNotExist(err) {
 		t.Errorf("mixin.d: %v", err)
+	}
+}
+
+// secretPattern 是 newSecret 生成的格式：8 个字母或数字。
+var secretPattern = regexp.MustCompile(`^[A-Za-z0-9]{8}$`)
+
+func TestNewSecret(t *testing.T) {
+	seen := map[string]bool{}
+	for range 1000 {
+		s, err := newSecret()
+		if err != nil || !secretPattern.MatchString(s) || !strings.ContainsAny(s, "0123456789") ||
+			!strings.ContainsFunc(s, func(r rune) bool { return r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' }) {
+			t.Fatalf("newSecret() = %q, %v", s, err)
+		}
+		seen[s] = true
+	}
+	if len(seen) < 990 {
+		t.Errorf("only %d distinct secrets in 1000", len(seen))
 	}
 }

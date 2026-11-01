@@ -187,7 +187,7 @@ sh 的优势（轻量、随处可跑、可随手改）服务于路由器和老�
   - 独占类（`tunlr:core`、`tunlr:tun`、`tunlr:panel`、`tunlr:proxy`）在用户 mixin 之后；用户 mixin 写了它的键（即使值相同）、用 `null` 删、或整个替换其上级，报错不发布（退出码 3），指出文件、行和该用的命令；同一映射的其他键照常可改。
   - 默认值类（`tunlr:defaults`、`tunlr:dns`、`tunlr:mirror`、`tunlr:filter`）在用户 mixin 之前，允许覆盖，plan 记为覆盖。放在订阅之后，因为插入规则要订阅的 `rules` 就位、`dns.listen` 要补在订阅的 `dns` 上。
   - 拒绝而不是忽略：被忽略的设置让人以为生效了。代价：升级新增独占键后，已写了它的 mixin 会让定时更新保持当前配置，`doctor` 列出。
-  - `secret` 不支持自定义，只能 `panel reset-secret`；任何列表都不显示它。
+  - `secret` 不支持自定义，只能 `panel reset-secret`；任何列表都不显示它。它是 8 个随机的字母和数字（两种都有）：在面板登录时要手动输入，32 位十六进制太长；面板默认只监听本机，经 SSH 隧道访问，这个长度够用。
   - 只在内存中合成，不写入 `mixin.d`：写成文件会让人以为可编辑、改了又被覆盖。命令替用户写的文件（如 `<订阅>/10-filter.yaml`、`<订阅>/20-geo.yaml`、`90-dns.yaml`）归用户所有。
 - **只有系统依赖的键独占，偏好由命令编辑 mixin 文件**。独占的是 tunlr 在配置之外依赖的键（`tunlr:core`、`tunlr:tun`、`tunlr:panel`、`tunlr:proxy` 的：内核 socket、TUN、面板、代理端口的局域网访问）：nft 规则、检测、救援要靠它们。DNS 模式、问谁、fake-ip-filter、geo 这类偏好不独占，也不存在状态里：
   - 命令改的是现在决定这个键的 mixin 文件（按合成时记下的来源，先找键本身，再找最近的上级映射），没有时写进命令自己的文件（`90-dns.yaml`、`<订阅>/20-geo.yaml`）；恢复默认时从可改范围内所有写了它的文件中删除，删空的文件删除。可改范围按命令的作用域：全局的（DNS）是共用的和启用的订阅的 mixin，按订阅的（geo、`--dns`）只是那个订阅的。

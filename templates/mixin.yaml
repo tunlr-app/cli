@@ -23,7 +23,13 @@
 #              fake-ip-filter                      在生效的 dns.fake-ip-filter 上 append 追加、delete 删除
 #                                                  条目，不必整份替换。tunlr dns fake-ip-filter 写在
 #                                                  90-dns.yaml 中
-#              proxy-filter                      筛选订阅的节点（规则同 mihomo 的 proxy-providers）
+#              proxy-filter                        筛选订阅的节点，字段同 mihomo 的 proxy-providers，依次执行：
+#                filter                            白名单：只保留名称匹配的节点
+#                exclude-filter                    黑名单：去掉名称匹配的节点
+#                exclude-type                      去掉这些类型（订阅中写的 type）的节点，用 | 分隔，不分大小写
+#                                                  前两个是对节点名称的正则，多条用反引号分隔，匹配任一条即算；
+#                                                  区分大小写，开头写 (?i) 不区分。订阅专用的筛选通常写在
+#                                                  mixin.d/<订阅名>/10-filter.yaml（tunlr config edit <订阅名>/10-filter）
 #              proxies / proxy-groups / rules      对订阅的这几个列表做操作，各有四种：
 #                prepend / append                  在前面插入 / 后面追加（规则追加在最后的 MATCH 之前）
 #                patch                             按 name 修改已有的项；项里用 prepend-proxies 等改其中的列表
@@ -60,8 +66,9 @@
 #
 #   # ---- 只要一部分节点 ----
 #   proxy-filter:
-#     # filter: (?i)港|hk|日本        # 只保留匹配的节点，多条用反引号分隔
-#     exclude-filter: 倍率           # 去掉匹配的节点
+#     # filter: (?i)港|hk|日本        # 白名单：只保留匹配的节点
+#     exclude-filter: 倍率           # 黑名单：去掉匹配的节点
+#     # exclude-type: ssr|vmess      # 去掉这些类型的节点
 #
 #   # ---- 自己的节点，去掉机场的信息节点 ----
 #   proxies:

@@ -312,7 +312,9 @@ func (a *app) editMixin(cmd *cobra.Command, name string) error {
 		return err
 	}
 	start := original
-	if !existed {
+	if sub, file := splitMixin(name); !existed && sub != "" && file == config.FilterMixinFile {
+		start = config.FilterMixin(sub, "", "")
+	} else if !existed {
 		start = templates.Mixin
 	}
 

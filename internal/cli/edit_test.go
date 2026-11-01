@@ -406,6 +406,10 @@ func TestEditChooseSubscriptionFile(t *testing.T) {
 	if got := et.mixin("backup/10-filter.yaml"); got != "tunlr:\n  proxy-filter:\n    exclude-filter: x\n" {
 		t.Errorf("saved = %q", got)
 	}
+	// 新建订阅的 10-filter 从节点筛选的说明和示例开始，不是整份 mixin 示例。
+	if len(et.seen) != 1 || et.seen[0] != string(config.FilterMixin("backup", "", "")) {
+		t.Errorf("new filter file did not start from the filter example: %q", et.seen)
+	}
 	if strings.Contains(et.stdout.String(), "Published revision") {
 		t.Errorf("published a mixin of an inactive subscription:\n%s", et.stdout)
 	}
@@ -423,7 +427,7 @@ func TestSubAddAsksFilter(t *testing.T) {
 	et.prompt.choices = []int{0}
 	et.prompt.inputs = []string{"香港", ""}
 	et.run(0, "sub", "add", "home", file, "--yes")
-	if got := et.mixin("home/10-filter.yaml"); !strings.Contains(got, "filter: 香港") || strings.Contains(got, "exclude-filter:") {
+	if got := et.mixin("home/10-filter.yaml"); !strings.Contains(got, "\n    filter: 香港\n") || strings.Contains(got, "\n    exclude-filter:") {
 		t.Errorf("filter mixin = %q", got)
 	}
 

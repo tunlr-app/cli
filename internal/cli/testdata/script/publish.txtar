@@ -23,8 +23,8 @@ exec tunlr config apply --yes
 stdout 'Published revision 1 to '
 stdout 'mihomo is not running; it will use this configuration when it starts'
 grep '^external-controller-unix: api\.sock$' root/var/lib/tunlr/core/config.yaml
-grep '^secret: [0-9a-f]{32}$' root/var/lib/tunlr/core/config.yaml
-grep '"api_secret": "[0-9a-f]{32}"' root/var/lib/tunlr/state.json
+grep '^secret: [A-Za-z0-9]{8}$' root/var/lib/tunlr/core/config.yaml
+grep '"api_secret": "[A-Za-z0-9]{8}"' root/var/lib/tunlr/state.json
 exec tunlr config plan
 stdout 'No changes'
 exec tunlr config apply --yes

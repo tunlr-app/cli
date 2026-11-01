@@ -209,6 +209,24 @@ func TestFilterMixin(t *testing.T) {
 	if res.ProxyFilter == nil || res.ProxyFilter.Kept != 2 {
 		t.Errorf("ProxyFilter = %+v\n%s", res.ProxyFilter, data)
 	}
+	if !strings.Contains(string(data), "\n    filter: 香港`(?i)hk\n    # exclude-filter: ") || !strings.Contains(string(data), "\n    # exclude-type: ") {
+		t.Errorf("unset keys are not shown as examples:\n%s", data)
+	}
+	// 都为空时（config edit 新建）整段是注释，三个字段都有示例。
+	empty := FilterMixin("home", "", "")
+	res, err = Compose(Layers{Template: []byte("a: 1\n"), Subscription: []byte("proxies:\n  - {name: 香港 1}\n"),
+		Mixins: []Mixin{{Name: "home/" + FilterMixinFile, Data: empty}}})
+	if err != nil || res.ProxyFilter != nil {
+		t.Errorf("empty filter: %+v, %v\n%s", res, err, empty)
+	}
+	for _, k := range proxyFilterKeys {
+		if !strings.Contains(string(empty), "\n#     "+k+": ") {
+			t.Errorf("no example of %s:\n%s", k, empty)
+		}
+	}
+	if q := FilterMixin("home", "`a", ""); !strings.Contains(string(q), "    filter: '`a'\n") {
+		t.Errorf("value not quoted:\n%s", q)
+	}
 	if CheckPatterns("a`(") == nil || CheckPatterns("a`b") != nil {
 		t.Error("CheckPatterns")
 	}
