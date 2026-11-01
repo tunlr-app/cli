@@ -44,6 +44,8 @@ type fakeSystem struct {
 	tables []string
 	rules  map[string][]string // 地址族 → ip rule show 的各行
 	stdin  []byte
+	// loaded 是每张表最近一次加载的脚本，nft list chain 返回它。
+	loaded map[string][]byte
 	// docker 为 nil 时没有 DOCKER-USER 链；否则是链中规则的参数（不含链名）。
 	docker []string
 }
@@ -57,9 +59,14 @@ func (f *fakeSystem) run(_ context.Context, stdin []byte, name string, args ...s
 		// 脚本的最后一个 “table inet X {” 是加载的表。
 		for line := range strings.Lines(string(stdin)) {
 			if t, ok := strings.CutPrefix(line, "table inet "); ok && strings.HasSuffix(t, " {\n") {
-				if t = strings.TrimSuffix(t, " {\n"); !slices.Contains(f.tables, t) {
+				t = strings.TrimSuffix(t, " {\n")
+				if !slices.Contains(f.tables, t) {
 					f.tables = append(f.tables, t)
 				}
+				if f.loaded == nil {
+					f.loaded = map[string][]byte{}
+				}
+				f.loaded[t] = stdin
 			}
 		}
 	case name == "iptables":
@@ -88,6 +95,8 @@ func (f *fakeSystem) run(_ context.Context, stdin []byte, name string, args ...s
 			fmt.Fprintf(&b, "table inet %s\n", t)
 		}
 		return []byte(b.String()), nil
+	case strings.HasPrefix(call, "nft list chain inet "):
+		return f.loaded[args[3]], nil
 	case strings.HasPrefix(call, "nft delete table inet "):
 		f.tables = slices.DeleteFunc(f.tables, func(t string) bool { return t == args[3] })
 	case name == "ip" && args[2] == "show":

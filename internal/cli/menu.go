@@ -483,8 +483,9 @@ func (a *app) menuItems(group string, d menuData) (title, note string, items []m
 			desc: "How traffic reaches mihomo (TUN, gateway mode, the proxy port) and DNS"},
 		{label: groupFilters, group: groupFilters, note: a.describeFilterNote(s.Filter), nouns: []string{"filter"},
 			desc: "What skips the sub's rules: QUIC, ports and networks sent direct"},
-		{label: groupDevices, group: groupDevices, note: a.describeDevicesNote(s.Devices), nouns: []string{"devices"},
-			desc: "Devices on the LAN that use this server: names and how each one goes"},
+		// 设备的操作都针对某一台设备，所以不是分类：先在 tunlr devices 的表格中选设备，再选做什么。
+		{label: groupDevices, note: a.describeDevicesNote(s.Devices), args: []string{"devices"},
+			desc: "Devices on the LAN that use this server: choose one to name it or send it direct"},
 		{label: groupCore, group: groupCore, note: a.describeService(s), nouns: []string{"core"},
 			desc: "Start, stop, logs, upgrade and roll back the kernel"},
 		{label: groupPanel, group: groupPanel, note: a.panelNote(s), nouns: []string{"panel"},
@@ -511,14 +512,6 @@ func (a *app) menuItems(group string, d menuData) (title, note string, items []m
 		items = a.trafficItems(s)
 	case groupFilters:
 		items = a.filterItems(s)
-	case groupDevices:
-		items = []menuItem{
-			op("Name a device", "Choose a device, then enter a name; an empty name removes it", "devices", "name"),
-			op("Route a device", "Through the proxies (it follows the rules) or direct for everything", "devices", "route"),
-			op("Forget a device", "Remove its name and setting; it follows the rules again", "devices", "forget"),
-			op("List devices", "Devices that use this server, their names and how they go", "devices"),
-			op("List all LAN devices", "Including those that do not use this server", "devices", "--all"),
-		}
 	case groupCore:
 		items = a.coreItems(s)
 	case groupPanel:

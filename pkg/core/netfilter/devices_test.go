@@ -54,6 +54,15 @@ func TestDevicesSync(t *testing.T) {
 		t.Fatalf("script:\n%s", f.stdin)
 	}
 
+	// 规则是旧版本（注释不是 devicesRevision）：整张表重新加载。
+	f.loaded[DevicesTable] = []byte("table inet tunlr_devices {\n\tchain prerouting {\n\t}\n}\n")
+	if err := r.DevicesSync(ctx, nil, []int{7890}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(f.stdin), "table inet tunlr_devices {") || !strings.HasSuffix(string(f.stdin), want) {
+		t.Fatalf("old revision, script:\n%s", f.stdin)
+	}
+
 	for _, bad := range []struct {
 		ifaces []string
 		ports  []int

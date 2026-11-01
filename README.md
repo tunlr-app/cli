@@ -101,7 +101,7 @@ Network
   dns                         mihomo 问谁、怎么回答 DNS 查询；dns servers、dns mode、dns fake-ip-filter
   ipv6                        IPv6 怎么走；ipv6 off|on|bypass|default
   filter                      流量过滤：source 网段直连、quic 拒绝 QUIC、ports 只代理常用端口
-  devices                     使用本机的局域网设备；name、route、forget
+  devices                     使用本机的局域网设备，终端里选中一台再起名、设直连或忘记；name、route、forget、--all
 
 Kernel and panel
   core                        内核与服务；start、stop、restart、logs、upgrade、rollback

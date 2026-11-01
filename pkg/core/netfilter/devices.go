@@ -19,6 +19,9 @@ const (
 	DevicesTable = "tunlr_devices"
 	// DeviceTimeout 是设备没有流量后从记录中过期的时间。
 	DeviceTimeout = 24 * time.Hour
+	// devicesRevision 是 inet tunlr_devices 规则的版本，写在规则的注释中；规则改变时加一，DevicesSync 遇到
+	// 别的版本时重新加载整张表（已记下的设备随之清空）。
+	devicesRevision = "tunlr devices rev 2"
 )
 
 // 设备使用本机的方式，也是 inet tunlr_devices 中集合的名称。
@@ -35,14 +38,15 @@ func RenderDevices() ([]byte, error) {
 	}
 	var b bytes.Buffer
 	err = t.Execute(&b, privateVars(map[string]string{
-		"Table":   DevicesTable,
-		"Timeout": fmt.Sprintf("%dh", int(DeviceTimeout.Hours())),
+		"Table":    DevicesTable,
+		"Timeout":  fmt.Sprintf("%dh", int(DeviceTimeout.Hours())),
+		"Revision": devicesRevision,
 	}))
 	return b.Bytes(), err
 }
 
-// DevicesSync 确保 inet tunlr_devices 表存在（不存在时加载），并把集合 lan 设为 ifaces（网关的局域网
-// 网卡）、ports 设为 ports（对局域网开放的代理端口）。表已存在时只替换这两个集合，已记下的设备保留。
+// DevicesSync 确保 inet tunlr_devices 表存在（不存在或规则是旧版本时加载），并把集合 lan 设为 ifaces（网关的
+// 局域网网卡）、ports 设为 ports（对局域网开放的代理端口）。表已存在时只替换这两个集合，已记下的设备保留。
 // 两者都为空时删除整张表。可以重复执行。
 func (r *Rules) DevicesSync(ctx context.Context, ifaces []string, ports []int) error {
 	if len(ifaces) == 0 && len(ports) == 0 {
@@ -52,8 +56,13 @@ func (r *Rules) DevicesSync(ctx context.Context, ifaces []string, ports []int) e
 	if err != nil {
 		return err
 	}
+	current := tables[DevicesTable]
+	if current {
+		out, err := r.run(ctx, nil, "nft", "list", "chain", "inet", DevicesTable, "prerouting")
+		current = err == nil && bytes.Contains(out, []byte(`"`+devicesRevision+`"`))
+	}
 	var b bytes.Buffer
-	if !tables[DevicesTable] {
+	if !current {
 		script, err := RenderDevices()
 		if err != nil {
 			return err

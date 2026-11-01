@@ -340,7 +340,6 @@ func TestMenuItems(t *testing.T) {
 		groupConfig:   "tunlr › Config: Edit a mixin|Publish config|Roll back config|Update geo data now|Config details|← Back",
 		groupTraffic:  "tunlr › Traffic: Turn TUN off|Turn gateway on|Open proxy port to LAN|DNS|TUN details|Proxy port details|← Back",
 		groupFilters:  "tunlr › Filters: Block QUIC|Proxy some ports only|Send a network direct|Filter details|← Back",
-		groupDevices:  "tunlr › LAN devices: Name a device|Route a device|Forget a device|List devices|List all LAN devices|← Back",
 		groupCore:     "tunlr › mihomo: Restart mihomo|Stop mihomo|Recent logs|Upgrade mihomo|mihomo details|← Back",
 		groupPanel:    "tunlr › Panel: Open panel to LAN|New API secret|Open the panel|← Back",
 		groupMaintain: "tunlr › Maintenance: Back up to a file|Restore a backup|Edit settings|Diagnose|Repair install|← Back",
@@ -401,7 +400,7 @@ func TestMenuItems(t *testing.T) {
 	}
 
 	// 每一项都有说明，执行的项都有命令；每个分类不超过 7 项，第一级 10 行。
-	for _, group := range []string{"", groupSubs, groupConfig, groupTraffic, groupFilters, groupDevices, groupCore, groupPanel, groupMaintain} {
+	for _, group := range []string{"", groupSubs, groupConfig, groupTraffic, groupFilters, groupCore, groupPanel, groupMaintain} {
 		_, _, items := a.menuItems(group, menuWith(runningStatus, 2, 3))
 		if limit := 8; group != "" && len(items) > limit || group == "" && len(items) > maxListRows {
 			t.Errorf("%q has %d items", group, len(items))
@@ -419,6 +418,11 @@ func TestMenuItems(t *testing.T) {
 	// 没安装时分类不存在（例如在分类里卸载了），菜单回到第一级。
 	if _, _, items := a.menuItems(groupCore, menuData{status: &setup.Status{}}); items != nil {
 		t.Errorf("not installed: %v", items)
+	}
+	// LAN devices 不是分类，直接执行 tunlr devices（在表格中选设备）；状态写在右侧。
+	if k := slices.IndexFunc(top, func(it menuItem) bool { return it.label == groupDevices }); k < 0 || top[k].group != "" ||
+		!slices.Equal(top[k].args, []string{"devices"}) {
+		t.Errorf("LAN devices: %+v", top)
 	}
 
 	// 有可以换回的已知可用内核时才能回滚：当前的是已知可用版本时要有另一份，不是时有一份就行。

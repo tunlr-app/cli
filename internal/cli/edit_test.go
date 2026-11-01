@@ -136,6 +136,35 @@ func (p *scriptedPrompt) Choose(_ context.Context, _ string, options []string, i
 	return c, nil
 }
 
+// ChooseRow 也用 picks：以 key: 开头的回答按下那个键，否则选包含这段文字的第一行（单元格以两个空格相连）；
+// 每次的各行记在 asked 中。
+func (p *scriptedPrompt) ChooseRow(_ context.Context, c rowChoice) (int, string, error) {
+	rows := make([]string, len(c.rows))
+	for i, r := range c.rows {
+		rows[i] = strings.Join(r, "  ")
+	}
+	p.asked = append(p.asked, rows)
+	p.initials = append(p.initials, c.initial)
+	if len(p.picks) == 0 {
+		p.t.Fatalf("unexpected table: %q", rows)
+	}
+	pick := p.picks[0]
+	p.picks = p.picks[1:]
+	if pick == "" {
+		return 0, "", huh.ErrUserAborted
+	}
+	if k, ok := strings.CutPrefix(pick, "key:"); ok {
+		return -1, k, nil
+	}
+	for i, r := range rows {
+		if strings.Contains(r, pick) {
+			return i, "", nil
+		}
+	}
+	p.t.Fatalf("no row %q in %q", pick, rows)
+	return 0, "", nil
+}
+
 func (p *scriptedPrompt) ChooseMany(_ context.Context, _ string, options []string, selected []int) ([]int, error) {
 	p.asked = append(p.asked, options)
 	p.selected = append(p.selected, selected)

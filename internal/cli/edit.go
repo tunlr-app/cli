@@ -36,6 +36,8 @@ type prompter interface {
 	Confirm(ctx context.Context, title, description string) (bool, error)
 	// Text 让用户编辑多行文字（一行一条的列表），value 是预先填好的内容，validate 不通过时要求改正。
 	Text(ctx context.Context, title, description, value string, validate func(string) error) (string, error)
+	// ChooseRow 让用户在表格中选一行，返回它的下标；按下 c.keys 中的键时返回 -1 和那个键。
+	ChooseRow(ctx context.Context, c rowChoice) (int, string, error)
 }
 
 // inputField 是提问时的一项输入（见 sourceFields、filterFields）。

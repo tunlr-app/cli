@@ -34,7 +34,9 @@ stdout 'DHCP reservation'
 grep '^  - SRC-IP-CIDR,192.168.1.50/32,DIRECT$' root/var/lib/tunlr/core/config.yaml
 grep '"route": "direct"' root/var/lib/tunlr/state.json
 exec tunlr devices
-stdout '^-\s+192\.168\.1\.50\s+-\s+-\s+away\s+-\s+0\s+direct$'
+stdout '^Devices recorded by tunlr:$'
+stdout '^NAME\s+IP\s+MAC\s+STATE\s+LAST SEEN\s+CONN\s+ROUTE$'
+stdout '^-\s+192\.168\.1\.50\s+-\s+away\s+-\s+0\s+direct$'
 exec tunlr config
 stdout 'tunlr:filter'
 

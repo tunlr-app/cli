@@ -486,9 +486,13 @@ sh 的优势（轻量、随处可跑、可随手改）服务于路由器和老�
 **设备列表**：
 
 - 主要来源是 `inet tunlr_devices` 的 nft 动态集合：在 prerouting 的 raw 优先级（早于 TCP 重定向，看到原始目标）记下 `MAC . IPv4`，分网关与代理两类，24 小时过期。只记录。另取内核 `/connections` 的连接数、邻居表补全 MAC，名称向路由器反向解析（连接带工具的标记，不被内核劫持 DNS）。
+- 经网关只记发给本机 MAC（`meta pkttype host`）、去往别处单播地址（`fib daddr type unicast`）的包。最初只要求目标不是本机，局域网里每台设备的广播、组播（mDNS、SSDP、VRRP、DHCP 请求的 `0.0.0.0`）都被记成经网关，连路由器自己也在列表中。规则的注释带版本号，`DevicesSync` 遇到别的版本时重载整张表。
 - 表在网关或代理端口局域网访问开启时加载，都关闭时删除；开关变化只替换集合、不重建表。`_check`、`_firewall` 补缺，`_poststop` 保留，`uninstall` 删除。加载失败只记日志，不影响开关。
 - 不保存历史；持久保存的只有设过走法或名称的设备。
 - 走法是设备的属性，所以和列出、起名、删除记录都在 `tunlr devices` 下。
+- 交互以设备为先：终端里的 `tunlr devices`（主菜单的 LAN devices，不再是分类）用 bubbles 的 table 内联列出用本机的设备，选中后再选起名、改走法、忘记，做完回到刷新过的表格；`a` 输入地址指定还没出现的设备（预先设直连）。`name`、`route`、`forget` 不给设备时用同一张表。
+- 列只列有信息的：两种用法都开着才有 USES，有设备直连才有 ROUTE（只在直连的设备上写 `direct`，原先每行都写 `proxy`，像是都走代理）。静态输出用 `lipgloss/table` 按显示宽度对齐：`tabwriter` 把颜色控制符算进宽度，带颜色的状态列会错位。
+- 局域网中其他设备只在 `--all` 中列出（另一段，只有名称、地址、MAC），菜单不列：主要用途是查找地址，表格中按 `a` 输入地址即可。
 
 ### 8.13 流量过滤
 
@@ -566,7 +570,8 @@ tunlr dns mode [fake-ip | redir-host | default]
 tunlr dns fake-ip-filter [--add <名称>]... [--remove <名称>]... [--reset]
 tunlr ipv6 [off | on | bypass | default]
 tunlr filter
-tunlr devices
+tunlr devices [--all]
+tunlr devices name | route | forget
 
 Kernel and panel
 tunlr core

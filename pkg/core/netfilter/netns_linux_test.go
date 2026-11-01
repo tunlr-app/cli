@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestNetns 在一个临时的 network namespace 中加载和清理真实的规则，不影响宿主机。
@@ -153,6 +154,46 @@ func TestNetns(t *testing.T) {
 	}
 	if tables, _ := r.Tables(ctx); tables[AccessTable] {
 		t.Errorf("access table left after down: %v", tables)
+	}
+
+	// 记录设备：另一个 namespace 经 veth 发来的广播、组播和发给本机的包不记；把这里当网关、发往别处的单播记下。
+	peer := ns + "-b"
+	if _, err := Exec(ctx, nil, "ip", "netns", "add", peer); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { Exec(context.Background(), nil, "ip", "netns", "del", peer) })
+	inPeer := func(name string, args ...string) {
+		Exec(ctx, nil, "ip", append([]string{"netns", "exec", peer, name}, args...)...)
+	}
+	for _, args := range [][]string{
+		{"ip", "link", "add", "tl0", "type", "veth", "peer", "name", "tl1", "netns", peer},
+		{"ip", "addr", "add", "192.168.77.1/24", "dev", "tl0"},
+		{"ip", "link", "set", "tl0", "up"},
+		{"ip", "route", "add", "default", "dev", "tl0"},
+	} {
+		if _, err := inNS(ctx, nil, args[0], args[1:]...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inPeer("ip", "addr", "add", "192.168.77.2/24", "dev", "tl1")
+	inPeer("ip", "link", "set", "tl1", "up")
+	inPeer("ip", "route", "add", "default", "via", "192.168.77.1")
+	if err := r.DevicesSync(ctx, []string{"tl0"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// ping 收不到回应时退出码不为 0，只要包发出去。
+	for _, dst := range []string{"192.168.77.255", "255.255.255.255", "224.0.0.251", "192.168.77.1"} {
+		inPeer("ping", "-b", "-c", "1", "-W", "1", dst)
+	}
+	if seen, _, err := r.SeenDevices(ctx, time.Now()); err != nil || len(seen) != 0 {
+		t.Fatalf("seen after broadcasts = %+v, %v", seen, err)
+	}
+	inPeer("ping", "-c", "1", "-W", "1", "8.8.8.8")
+	if seen, _, err := r.SeenDevices(ctx, time.Now()); err != nil || len(seen) != 1 || seen[0].IP != "192.168.77.2" || seen[0].Use != UseGateway {
+		t.Fatalf("seen through the gateway = %+v, %v", seen, err)
+	}
+	if err := r.DevicesDown(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	left, err := r.Down(ctx)

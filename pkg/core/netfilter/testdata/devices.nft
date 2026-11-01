@@ -28,7 +28,9 @@ table inet tunlr_devices {
 	chain prerouting {
 		# 早于内核的 TCP 重定向（dstnat），看到的是原始的目标地址。
 		type filter hook prerouting priority raw; policy accept;
-		ether type ip iifname @lan fib daddr type != local update @gateway { ether saddr . ip saddr }
+		# 经网关的包发给本机的 MAC，去往别处的单播地址；广播、组播（mDNS、SSDP、DHCP 等）不算。
+		# 注释是规则的版本，tunlr 发现旧版本时整张表重新加载。
+		ether type ip iifname @lan meta pkttype host fib daddr type unicast update @gateway { ether saddr . ip saddr } comment "tunlr devices rev 2"
 		ether type ip ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } fib daddr type local tcp dport @ports update @proxy { ether saddr . ip saddr }
 	}
 }
