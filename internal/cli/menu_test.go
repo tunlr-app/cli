@@ -153,7 +153,7 @@ var (
 		Subscription: "home",
 		Revision:     &config.Revision{Number: 7},
 		Service:      &service.Status{ActiveState: "active", SubState: "running"},
-		Tun:          &setup.TunStatus{Switch: "on", PublishedDNSMode: "fake-ip"},
+		Tun:          &setup.TunStatus{Switch: "on", DNSMode: "fake-ip"},
 		Updates: []setup.Schedule{
 			{Task: setup.TaskSubscription, Name: "home", Period: "1d"},
 			{Task: setup.TaskSubscription, Name: "spare", Period: "1d"},
@@ -340,7 +340,7 @@ func TestMenuItems(t *testing.T) {
 		groupConfig:   "tunlr › Config: Edit a mixin|Publish config|Roll back config|Update geo data now|Config details|← Back",
 		groupTraffic:  "tunlr › Traffic: Turn TUN off|Turn gateway on|Open proxy port to LAN|DNS|TUN details|Proxy port details|← Back",
 		groupFilters:  "tunlr › Filters: Block QUIC|Proxy some ports only|Send a network direct|Filter details|← Back",
-		groupDevices:  "tunlr › LAN devices: List devices|List all LAN devices|Name a device|Route a device|Forget a device|← Back",
+		groupDevices:  "tunlr › LAN devices: Name a device|Route a device|Forget a device|List devices|List all LAN devices|← Back",
 		groupCore:     "tunlr › mihomo: Restart mihomo|Stop mihomo|Recent logs|Upgrade mihomo|mihomo details|← Back",
 		groupPanel:    "tunlr › Panel: Open panel to LAN|New API secret|Open the panel|← Back",
 		groupMaintain: "tunlr › Maintenance: Back up to a file|Restore a backup|Edit settings|Diagnose|Repair install|← Back",
@@ -378,11 +378,18 @@ func TestMenuItems(t *testing.T) {
 		!slices.ContainsFunc(items, func(it menuItem) bool { return it.label == "Stop sending a network direct" }) {
 		t.Errorf("ports on: %+v", items)
 	}
+	// Traffic 最满时（TUN 开着、代理端口开放给局域网）正好 7 项。
+	lan := *runningStatus
+	lan.ProxyLAN = true
+	if got := labels(groupTraffic, &lan, 2, 3); got != "tunlr › Traffic: Turn TUN off|Turn gateway on|Close proxy port to LAN|"+
+		"Change LAN interfaces|DNS|TUN details|Proxy port details|← Back" {
+		t.Errorf("proxy port open: %s", got)
+	}
 
 	for group, want := range map[string]string{
 		groupSubs:    "tunlr › Subscriptions: Add a sub|Change a sub|Fetch subs now|List subs|← Back",
 		groupConfig:  "tunlr › Config: Edit a mixin|Publish config|Config details|← Back",
-		groupTraffic: "tunlr › Traffic: Turn TUN on|Turn gateway on|Open proxy port to LAN|TUN details|Proxy port details|← Back",
+		groupTraffic: "tunlr › Traffic: Turn TUN on|Turn gateway on|Open proxy port to LAN|DNS|TUN details|Proxy port details|← Back",
 		groupCore:    "tunlr › mihomo: Start mihomo|Recent logs|Upgrade mihomo|mihomo details|← Back",
 	} {
 		if got := labels(group, stoppedStatus, 1, 0); got != want {
@@ -464,7 +471,7 @@ func TestMenuAttention(t *testing.T) {
 		{Task: setup.TaskSubscription, Name: "spare", Last: &state.UpdateRun{Status: setup.StepFailed}},
 		{Task: setup.TaskGeo},
 	}
-	want := "! Publish the changes not yet published = config apply|! Start mihomo (failed) = core start|! Fetch subs again (the last fetch failed) = update run sub"
+	want := "! Publish the changes not yet published = config apply|! Start mihomo (failed) = core start|! Fetch subs again (the last fetch failed) = sub update"
 	if got := attention(&s, 3); got != want {
 		t.Errorf("attention:\n got %s\nwant %s", got, want)
 	}
@@ -487,7 +494,7 @@ func TestMenuHint(t *testing.T) {
 		t.Errorf("Subscriptions: %q / %q", desc, cmd)
 	}
 	mt.keys("down", "down")
-	if _, cmd := mt.hintLines(); cmd != "$ tunlr tun  ·  tunlr proxy" {
+	if _, cmd := mt.hintLines(); cmd != "$ tunlr tun  ·  tunlr proxy  ·  tunlr dns" {
 		t.Errorf("Traffic: %q", cmd)
 	}
 	mt.keys("up", "up")

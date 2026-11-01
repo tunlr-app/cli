@@ -105,11 +105,11 @@ stdout '"key": "sniffer",\s*$'
 exec tunlr config
 stdout '^DNS settings: dns, sniffer from the fallbacks$'
 stdout '^No mixin files in '
-stdout '^  tunlr:tun \(tunlr tun on/off, tunlr tun dns\): tun.enable, tun.auto-route, '
+stdout '^  tunlr:tun \(tunlr tun on/off\): tun.enable, tun.auto-route, '
 stdout '^  tunlr:panel \(tunlr panel lan on/off, tunlr panel reset-secret\): external-controller, secret$'
 stdout '^Defaults from tunlr:dns \(a mixin can override these\):$'
 stdout '^      listen: 127.0.0.1:1053$'
-stdout '^Fallbacks from tunlr:defaults \(used where the subscription does not set them; per subscription: tunlr sub set <sub> --geo-update, --geo-url, --dns; a mixin can override these\):$'
+stdout '^Fallbacks from tunlr:defaults \(geo data where the subscription sets none, dns and sniffer unless a subscription''s own are chosen; per subscription: tunlr sub set <sub> --geo-update, --geo-url, --dns; a mixin can override these\):$'
 stdout '^      geo-update-interval: 168$'
 ! stdout 'tunlr:mirror'
 exec tunlr config --json
@@ -126,7 +126,7 @@ rm root/etc/tunlr/mixin.d/10-dns.yaml
 # mixin 动了 tunlr 管理的键：拒绝，指出行和改用的命令，退出码 3
 cp managed-mixin.yaml root/etc/tunlr/mixin.d/20-mine.yaml
 exitcode 3 tunlr config plan
-stderr '^tunlr: mixin 20-mine.yaml:4: tun.enable is managed by tunlr:tun \(change it with: tunlr tun on/off, tunlr tun dns\); remove it from the mixin$'
+stderr '^tunlr: mixin 20-mine.yaml:4: tun.enable is managed by tunlr:tun \(change it with: tunlr tun on/off\); remove it from the mixin$'
 exitcode 3 tunlr config apply --yes
 rm root/etc/tunlr/mixin.d/20-mine.yaml
 

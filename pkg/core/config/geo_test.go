@@ -126,7 +126,7 @@ func TestDefaults(t *testing.T) {
 	if err != nil || !bytes.Contains(res.Config, []byte("  enable: true\n  nameserver: [9.9.9.9]\n")) || !bytes.Contains(res.Config, []byte("a.example: 10.0.0.1")) {
 		t.Fatalf("without a subscription: %v\n%s", err, res.Config)
 	}
-	res, err = Compose(Layers{Template: tpl, Subscription: []byte("dns:\n  nameserver: [8.8.8.8]\n"), Mixins: []Mixin{mx}})
+	res, err = Compose(Layers{Template: tpl, Subscription: []byte("dns:\n  nameserver: [8.8.8.8]\n"), Mixins: []Mixin{useSubDNS, mx}})
 	if err != nil || bytes.Contains(res.Config, []byte("9.9.9.9")) || bytes.Contains(res.Config, []byte("enable: true")) || !bytes.Contains(res.Config, []byte("a.example")) {
 		t.Fatalf("with a subscription: %v\n%s", err, res.Config)
 	}

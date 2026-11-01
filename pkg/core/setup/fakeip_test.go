@@ -21,7 +21,7 @@ func (brokenReloader) Reload(context.Context) error { return errors.New("reload 
 func TestFakeIPFilter(t *testing.T) {
 	i, _, _ := newTunInstaller(t)
 	ctx := context.Background()
-	path := filepath.Join(i.Layout.MixinDir(), FakeIPFilterMixinFile)
+	path := filepath.Join(i.Layout.MixinDir(), DNSMixinFile)
 
 	f, err := i.FakeIPFilter(ctx)
 	if err != nil || len(f.Entries) != 0 || len(f.Base) < 10 || f.Base[0] != "+.lan" {

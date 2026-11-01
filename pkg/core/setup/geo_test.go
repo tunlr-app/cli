@@ -11,8 +11,8 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
-// TestSetGeo 验证按订阅修改 geo 数据设置：写进订阅的 geo mixin，default 删除，删空时删除文件；
-// 排在它之后的订阅 mixin 写了的键拒绝修改；订阅不存在、地址不对时报错。
+// TestSetGeo 验证按订阅修改 geo 数据设置：写进订阅的 geo mixin，或现在决定那个键的订阅 mixin；default 删除，
+// 删空时删除文件；订阅不存在、地址不对时报错。
 func TestSetGeo(t *testing.T) {
 	i, _, _ := newTunInstaller(t)
 	ctx := context.Background()
@@ -42,18 +42,33 @@ func TestSetGeo(t *testing.T) {
 		}
 	}
 
-	writeFileIn(t, filepath.Join(i.Layout.MixinDir(), "home", "50-late.yaml"), "mihomo:\n  geo-update-interval: 6\n")
-	if _, err := i.SetGeo(ctx, "home", GeoChange{Update: "1d"}); err == nil || !strings.Contains(err.Error(), "home/50-late.yaml, which is applied after home/20-geo.yaml") {
-		t.Errorf("later mixin: %v", err)
+	// 排在后面的订阅 mixin 写了的键改在那个文件里；default 从这个订阅的所有 mixin 中删除，共用的不动。
+	late := filepath.Join(i.Layout.MixinDir(), "home", "50-late.yaml")
+	writeFileIn(t, late, "# mine\nmihomo:\n  geo-update-interval: 6\n")
+	shared := filepath.Join(i.Layout.MixinDir(), "10-shared.yaml")
+	writeFileIn(t, shared, "mihomo:\n  geo-update-interval: 3\n")
+	// geo-auto-update 在 20-geo.yaml 中已经是 true，只改 50-late.yaml。
+	w, err = i.SetGeo(ctx, "home", GeoChange{Update: "1d"})
+	if err != nil || len(w.Changes) != 1 || w.Changes[0].Name != "home/50-late.yaml" {
+		t.Fatalf("later mixin: %+v, %v", w, err)
 	}
-	if err := os.Remove(filepath.Join(i.Layout.MixinDir(), "home", "50-late.yaml")); err != nil {
-		t.Fatal(err)
+	if got := string(mustRead(t, late)); !strings.Contains(got, "# mine") || !strings.Contains(got, "geo-update-interval: 24") {
+		t.Errorf("late:\n%s", got)
+	}
+	if sources, _ := i.GeoSources(ctx, "home"); GeoPeriod(sources) != "1d" {
+		t.Errorf("period = %s", GeoPeriod(sources))
 	}
 	if _, err := i.SetGeo(ctx, "home", GeoChange{Update: GeoDefault, URLs: map[string]string{"geosite": GeoDefault}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("emptied mixin not removed: %v", err)
+	}
+	if _, err := os.Stat(late); !os.IsNotExist(err) {
+		t.Errorf("emptied late mixin not removed: %v", err)
+	}
+	if string(mustRead(t, shared)) != "mihomo:\n  geo-update-interval: 3\n" {
+		t.Error("shared mixin changed")
 	}
 	if _, err := i.SetGeo(ctx, "nope", GeoChange{Update: "1d"}); err == nil {
 		t.Error("unknown subscription accepted")

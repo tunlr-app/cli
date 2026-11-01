@@ -724,7 +724,7 @@ func TestManagedConflicts(t *testing.T) {
 	for _, tt := range []struct{ mixin, want string }{
 		{"mihomo:\n  secret: mine\n", "mixin 10-a.yaml:2: secret is managed by tunlr:panel (change it with: tunlr panel lan on/off, tunlr panel reset-secret)"},
 		{"mihomo:\n  x: 1\n  external-controller: 0.0.0.0:9091\n", "mixin 10-a.yaml:3: external-controller is managed by tunlr:panel"},
-		{"mihomo:\n  tun:\n    stack: system\n    enable: true\n", "mixin 10-a.yaml:4: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off, tunlr tun dns)"},
+		{"mihomo:\n  tun:\n    stack: system\n    enable: true\n", "mixin 10-a.yaml:4: tun.enable is managed by tunlr:tun (change it with: tunlr tun on/off)"},
 		{"mihomo:\n  tun:\n    auto-detect-interface: false\n", "mixin 10-a.yaml:3: tun.auto-detect-interface is managed by tunlr:tun"},
 		// 测试用的布局不知道内核用户，exclude-uid 不写，仍然独占。
 		{"mihomo:\n  tun:\n    exclude-uid: [1000]\n", "mixin 10-a.yaml:3: tun.exclude-uid is managed by tunlr:tun"},
@@ -880,13 +880,20 @@ func TestMirrorNoRules(t *testing.T) {
 	}
 }
 
-// TestSubscriptionDNS 验证采用订阅的 dns：listen 由 tunlr:dns 提供、用户的 mixin 可以覆盖，开启 TUN 时
-// 强制 enable，指向本机没有的网卡的 DNS 服务器给出警告。
+// TestSubscriptionDNS 验证采用订阅的 dns（tunlr.sub-dns）：listen 由 tunlr:dns 提供、用户的 mixin 可以覆盖，
+// 开启 TUN 时强制 enable，指向本机没有的网卡的 DNS 服务器给出警告。
 func TestSubscriptionDNS(t *testing.T) {
 	p, _, _ := newPipeline(t)
 	ctx := context.Background()
 	useSubscription(t, p.Layout, "main", subscriptionV1+"dns:\n  enable: false\n  listen: 0.0.0.0:53\n  nameserver: [dhcp://tunlr-test-none0]\n")
+	if plan := mustPlan(t, p); strings.Contains(string(plan.Config), "tunlr-test-none0") || !slices.Equal(plan.UnusedDNS, []string{"dns"}) {
+		t.Errorf("without sub-dns: unused %v\n%s", plan.UnusedDNS, plan.Config)
+	}
+	writeFile(t, filepath.Join(p.Layout.MixinDir(), "main", "20-dns.yaml"), "tunlr:\n  sub-dns: true\n")
 	plan := mustPlan(t, p)
+	if plan.SubDNS != "main/20-dns.yaml" {
+		t.Errorf("sub-dns = %q", plan.SubDNS)
+	}
 	if cfg := string(plan.Config); !strings.Contains(cfg, "\ndns:\n  enable: false\n  nameserver: ['dhcp://tunlr-test-none0']\n  listen: 127.0.0.1:1053\n") {
 		t.Errorf("config:\n%s", cfg)
 	}

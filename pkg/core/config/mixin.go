@@ -302,8 +302,8 @@ type mixer struct {
 	defaults bool
 	// filled 记录订阅的映射中缺少、由兜底值补上的路径（见 fillFiles）。
 	filled map[string]bool
-	// ignored 是 mixin 要求不从订阅采用的顶层键，值为最先列出它的文件（见 takeIgnored）。
-	ignored   map[string]string
+	// subDNS 是采用订阅的 DNS 的文件（tunlr.sub-dns: true，见 takeSubDNS），为空时不采用。
+	subDNS    string
 	warnings  []Warning
 	overrides []Override
 }

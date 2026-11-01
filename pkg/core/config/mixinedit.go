@@ -17,9 +17,18 @@ func SetMixinKeys(data []byte, head string, values map[string]any) ([]byte, erro
 	return setMixinValues(data, head, mihomoKey, values)
 }
 
-// SetTunlrKeys 同 SetMixinKeys，设置的是 tunlr: 中的键（如 ignore-from-subscription）。
+// SetTunlrKeys 同 SetMixinKeys，设置的是 tunlr: 中的键（如 sub-dns）。
 func SetTunlrKeys(data []byte, head string, values map[string]any) ([]byte, error) {
 	return setMixinValues(data, head, namespace, values)
+}
+
+// MixinSets 报告 mixin 内容 data 的 mihomo: 中有没有点分路径 path 的键（值为 null 也算），内容读不出时为 false。
+func MixinSets(data []byte, path string) bool {
+	doc, err := parseNode(data)
+	if err != nil || doc == nil {
+		return false
+	}
+	return lookup(doc.Content[0], append([]string{mihomoKey}, strings.Split(path, ".")...)) != nil
 }
 
 // setMixinValues 在 mixin 内容 data 的命名空间 ns（mihomo 或 tunlr）中设置点分路径的键，见 SetMixinKeys。

@@ -14,15 +14,15 @@
 #              映射逐层合并，标量和列表整体替换，键: null 删除这个键
 #   tunlr:   tunlr 的操作，不写入配置：
 #              defaults                            兜底值，写法同 mihomo:，但在订阅之前应用：订阅写了的
-#                                                  顶层键（dns 等）整个替换它，没写的才用它；geox-url 按
-#                                                  文件替换。tunlr 内置的兜底值是 tunlr:defaults，这里写的
-#                                                  排在它之后
-#              ignore-from-subscription            不从订阅采用的顶层键（dns、sniffer、hosts），改用兜底值；
-#                                                  各文件列出的合在一起。tunlr sub set <订阅> --dns tunlr
-#                                                  写的就是它
-#              fake-ip-filter                      在生效的 dns.fake-ip-filter（订阅的或兜底的）上 append 追加、
-#                                                  delete 删除条目，不必整份替换。tunlr tun dns fake-ip-filter
-#                                                  写在 90-fake-ip-filter.yaml 中
+#                                                  顶层键整个替换它，没写的才用它；geox-url 按文件替换。
+#                                                  tunlr 内置的兜底值是 tunlr:defaults（含 DNS 和嗅探），
+#                                                  这里写的排在它之后
+#              sub-dns: true                       采用订阅写的 dns 和 sniffer；默认不采用，用 tunlr 的兜底值。
+#                                                  后面的文件优先，写 false 取消。tunlr sub set <订阅>
+#                                                  --dns sub 写的就是它
+#              fake-ip-filter                      在生效的 dns.fake-ip-filter 上 append 追加、delete 删除
+#                                                  条目，不必整份替换。tunlr dns fake-ip-filter 写在
+#                                                  90-dns.yaml 中
 #              proxy-filter                      筛选订阅的节点（规则同 mihomo 的 proxy-providers）
 #              proxies / proxy-groups / rules      对订阅的这几个列表做操作，各有四种：
 #                prepend / append                  在前面插入 / 后面追加（规则追加在最后的 MATCH 之前）
@@ -38,9 +38,9 @@
 # mihomo:
 #   log-level: warning
 #
-#   # ---- DNS 和嗅探：订阅写了的用订阅的，否则用 tunlr 的兜底值（tunlr config 显示用的是哪份）----
-#   # 映射逐层合并，只写要改的键；只想改兜底值、不动订阅的，写在 tunlr.defaults 下；不要订阅的，
-#   # 见下面的 tunlr.ignore-from-subscription。fake-ip 还是 redir-host 用 tunlr tun dns 切换。
+#   # ---- DNS 和嗅探：默认用 tunlr 的兜底值（tunlr config 列出），写了 tunlr.sub-dns 时用订阅的 ----
+#   # 映射逐层合并，只写要改的键。tunlr dns 也改模式、问谁和 fake-ip-filter，改的是这些键现在
+#   # 所在的文件（可能就是这里），没有时写进 90-dns.yaml；两边改的是同一处。
 #   dns:
 #     nameserver:                   # 中国以外的域名问谁（按规则连接，通常经代理）
 #       - https://9.9.9.9/dns-query
@@ -48,8 +48,8 @@
 #     enable: false                 # 不从连接中认域名
 
 # tunlr:
-#   # ---- 订阅写了也不用它的 DNS 和嗅探，用 tunlr 的兜底值 ----
-#   ignore-from-subscription: [dns, sniffer]
+#   # ---- 用订阅自己写的 DNS 和嗅探 ----
+#   sub-dns: true
 #
 #   # ---- fake-ip 模式下返回真实地址的域名：加在生效的列表上 ----
 #   fake-ip-filter:

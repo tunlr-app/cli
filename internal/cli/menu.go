@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -480,10 +479,10 @@ func (a *app) menuItems(group string, d menuData) (title, note string, items []m
 			desc: "Add, switch, change, fetch and remove subs"},
 		{label: groupConfig, group: groupConfig, note: a.describeRevision(s), nouns: []string{"config", "update"},
 			desc: "Your mixins on top of the sub; publish or roll back the config; geo data"},
-		{label: groupTraffic, group: groupTraffic, note: a.trafficNote(s), nouns: []string{"tun", "proxy"},
-			desc: "How traffic reaches mihomo: TUN, gateway mode and the proxy port"},
+		{label: groupTraffic, group: groupTraffic, note: a.trafficNote(s), nouns: []string{"tun", "proxy", "dns"},
+			desc: "How traffic reaches mihomo (TUN, gateway mode, the proxy port) and DNS"},
 		{label: groupFilters, group: groupFilters, note: a.describeFilterNote(s.Filter), nouns: []string{"filter"},
-			desc: "What skips mihomo: QUIC, ports and networks sent direct"},
+			desc: "What skips the sub's rules: QUIC, ports and networks sent direct"},
 		{label: groupDevices, group: groupDevices, note: a.describeDevicesNote(s.Devices), nouns: []string{"devices"},
 			desc: "Devices on the LAN that use this server: names and how each one goes"},
 		{label: groupCore, group: groupCore, note: a.describeService(s), nouns: []string{"core"},
@@ -514,11 +513,11 @@ func (a *app) menuItems(group string, d menuData) (title, note string, items []m
 		items = a.filterItems(s)
 	case groupDevices:
 		items = []menuItem{
-			op("List devices", "Devices that use this server, their names and how they go", "devices"),
-			op("List all LAN devices", "Including those that do not use this server", "devices", "--all"),
 			op("Name a device", "Choose a device, then enter a name; an empty name removes it", "devices", "name"),
 			op("Route a device", "Through the proxies (it follows the rules) or direct for everything", "devices", "route"),
 			op("Forget a device", "Remove its name and setting; it follows the rules again", "devices", "forget"),
+			op("List devices", "Devices that use this server, their names and how they go", "devices"),
+			op("List all LAN devices", "Including those that do not use this server", "devices", "--all"),
 		}
 	case groupCore:
 		items = a.coreItems(s)
@@ -584,14 +583,16 @@ func (a *app) trafficItems(s *setup.Status) []menuItem {
 	if s.ProxyLAN {
 		items = append(items, op("Change LAN interfaces", lanInterfacesNote, "proxy", "lan", "on"))
 	}
-	// DNS 模式只在 TUN 开着时有意义，只给出与现在生效的相反的那个；回到按配置用 tunlr tun dns default。
+	// DNS 总是列出：问谁在 TUN 关着时也用到（代理端口的连接、节点的域名），模式和 fake-ip-filter 只在 TUN 开着时。
+	dns := "The servers, and with TUN on the mode and fake-ip-filter"
 	if tun {
-		mode := "The mode"
-		if m := cmp.Or(s.Tun.DNSMode, s.Tun.PublishedDNSMode); m != "" {
-			mode += " (now " + m + ")"
+		dns = "The mode"
+		if m := s.Tun.DNSMode; m != "" {
+			dns += " (now " + m + ")"
 		}
-		items = append(items, op("DNS", mode+" and the names that get real addresses (fake-ip-filter)", "tun", "dns"))
+		dns += ", the servers and fake-ip-filter"
 	}
+	items = append(items, op("DNS", dns, "dns"))
 	return append(items,
 		op("TUN details", "TUN, gateway mode, the DNS mode and the checks behind them", "tun"),
 		op("Proxy port details", "The address other devices enter as their proxy", "proxy"))
@@ -610,11 +611,11 @@ func (a *app) filterItems(s *setup.Status) []menuItem {
 	if f.Ports {
 		items = append(items,
 			op("Change proxied ports", "Now: "+strings.Join(f.PortList, ","), "filter", "ports", "set"),
-			op("Proxy all ports", "Every port goes through mihomo again", "filter", "ports", "off"))
+			op("Proxy all ports", "Every port follows the rules again", "filter", "ports", "off"))
 	} else {
 		items = append(items, op("Proxy some ports only", "Asks which ports; others go direct", "filter", "ports", "on"))
 	}
-	items = append(items, op("Send a network direct", "All traffic from an address range skips mihomo", "filter", "source", "add"))
+	items = append(items, op("Send a network direct", "All traffic from an address range goes direct, skipping the rules", "filter", "source", "add"))
 	if len(f.Sources) > 0 {
 		items = append(items, op("Stop sending a network direct", "Traffic from that range follows the rules again", "filter", "source", "remove"))
 	}
@@ -676,7 +677,7 @@ func (a *app) attention(d menuData) []menuItem {
 	if slices.ContainsFunc(s.Updates, func(sc setup.Schedule) bool {
 		return sc.Task == setup.TaskSubscription && sc.Last != nil && sc.Last.Status == setup.StepFailed
 	}) {
-		items = append(items, op(mark+"Fetch subs again (the last fetch failed)", "Fetch every sub; the last good copy is kept if it fails again", "update", "run", "sub"))
+		items = append(items, op(mark+"Fetch subs again (the last fetch failed)", "Fetch every sub; the last good copy is kept if it fails again", "sub", "update"))
 	}
 	return items
 }

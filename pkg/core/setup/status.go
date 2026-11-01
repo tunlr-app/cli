@@ -26,6 +26,8 @@ type Status struct {
 	Kernel *mihomo.KernelStatus `json:"kernel"`
 	// Subscription 是启用的订阅。
 	Subscription string `json:"subscription,omitempty"`
+	// SubDNS 是让启用的订阅采用它自己的 DNS 的 mixin（tunlr.sub-dns: true），用 tunlr 的 DNS 时为空。
+	SubDNS string `json:"sub_dns,omitempty"`
 	// Revision 是与生效配置一致的历史修订，没有发布过或手工改过时为 nil。
 	Revision *config.Revision `json:"revision,omitempty"`
 	// Updates 是各定时更新任务的周期和执行情况。
@@ -156,6 +158,10 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	s.Subscription = list.Active
+	// mixin 写错时不在这里报错：漂移（合成配置）会报出来。
+	if from, file, err := i.SubscriptionDNS(list.Active); list.Active != "" && err == nil && from == DNSFromSubscription {
+		s.SubDNS = file
+	}
 	if s.Updates, err = i.Schedules(); err != nil {
 		return nil, err
 	}

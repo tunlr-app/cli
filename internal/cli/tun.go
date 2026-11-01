@@ -39,7 +39,7 @@ func (a *app) newTunCommand() *cobra.Command {
 		Short: "Show the transparent proxy (TUN) and gateway mode; turn them on or off",
 		Long: "Without a subcommand, show whether the transparent proxy is on, what mihomo actually\n" +
 			"runs (the panel can switch TUN temporarily), whether the network rules are in place,\n" +
-			"the DNS mode (tunlr tun dns) and the state of gateway mode (tunlr tun gateway).",
+			"the DNS mode (tunlr dns) and the state of gateway mode (tunlr tun gateway).",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			inst := a.installer()
@@ -59,7 +59,7 @@ func (a *app) newTunCommand() *cobra.Command {
 			})
 		},
 	}
-	cmd.AddCommand(a.withFullDiff(a.newTunOnCommand()), a.withFullDiff(a.newTunOffCommand()), a.newTunDNSCommand(), a.newGatewayCommand())
+	cmd.AddCommand(a.withFullDiff(a.newTunOnCommand()), a.withFullDiff(a.newTunOffCommand()), a.newGatewayCommand())
 	return cmd
 }
 
@@ -97,7 +97,12 @@ func (a *app) printTunStatus(s *setup.TunStatus) {
 	}
 	fmt.Fprintf(w, "Interface:         %s %s\n", netfilter.Device, yes(s.Device))
 	fmt.Fprintf(w, "nftables:          inet %s %s, inet %s %s\n", netfilter.Table, yes(s.Rules), netfilter.KernelTable, yes(s.KernelRules))
-	a.printDNSMode(s)
+	if s.DNSMode != "" {
+		fmt.Fprintf(w, "DNS mode:          %s %s\n", s.DNSMode, a.style.dim("(tunlr dns: where it comes from, the servers, fake-ip-filter)"))
+	}
+	if len(s.FakeIPFilter) > 0 {
+		a.printFakeIPFilter(s.FakeIPFilter)
+	}
 }
 
 func (a *app) newTunOnCommand() *cobra.Command {

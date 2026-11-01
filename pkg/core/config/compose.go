@@ -57,8 +57,10 @@ type Result struct {
 	Config []byte
 	// Dropped 是订阅中被丢弃的顶层键，按出现顺序排列。
 	Dropped []string
-	// Ignored 是订阅中写了、mixin 要求不采用的顶层键（tunlr.ignore-from-subscription），按出现顺序排列。
-	Ignored []IgnoredKey
+	// SubDNS 是采用订阅的 DNS 的 mixin 文件（tunlr.sub-dns: true），没有时为空。
+	SubDNS string
+	// UnusedDNS 是订阅中写了、因为没有 tunlr.sub-dns 而没有采用的键（SubscriptionDNSKeys 中的），按出现顺序排列。
+	UnusedDNS []string
 	// Warnings 是不阻止发布的问题，例如 patch 没有匹配的项。
 	Warnings []Warning
 	// Overrides 是后面的 mixin 文件覆盖前面文件所设置的键。
@@ -73,6 +75,9 @@ type Result struct {
 	GeoSources []KeySource
 	// DNSSources 是 DNSKeys 中各键的来源。
 	DNSSources []SectionSource
+
+	// mixer 是合成用的，KeySource 从中读出键的来源。
+	mixer *mixer
 }
 
 // Compose 按 模板 → mixin 中的 tunlr.defaults → 订阅 → 提供默认值的受管 mixin → 用户的 mixin → 独占键的受管 mixin
@@ -108,8 +113,7 @@ func Compose(l Layers) (*Result, error) {
 	// 先检查所有 mixin，合并其中的 tunlr.proxy-filter（订阅的节点按合并后的筛选处理，然后才应用 mixin，
 	// mixin 自己加的节点不受筛选影响），并把 tunlr.defaults 合并进模板：它是兜底值，订阅采用的同名顶层键
 	// 随后整个替换它。
-	m := &mixer{root: root, subKeys: map[string]bool{}, setBy: map[string]string{}, fallback: map[string]bool{}, filled: map[string]bool{},
-		ignored: map[string]string{}}
+	m := &mixer{root: root, subKeys: map[string]bool{}, setBy: map[string]string{}, fallback: map[string]bool{}, filled: map[string]bool{}}
 	user := append(defaults, l.Mixins...)
 	order := make([]string, len(user))
 	for i, mx := range user {
@@ -131,7 +135,7 @@ func Compose(l Layers) (*Result, error) {
 		if err := m.takeFilter(ns, srcs[i]); err != nil {
 			return nil, err
 		}
-		m.takeIgnored(srcs[i])
+		m.takeSubDNS(srcs[i])
 		if err := m.applyDefaults(root, srcs[i]); err != nil {
 			return nil, err
 		}
@@ -141,6 +145,7 @@ func Compose(l Layers) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w (only full mihomo configs are supported as subscriptions)", err)
 	}
+	res.SubDNS = m.subDNS
 	if sub != nil {
 		s := sub.Content[0]
 		for i := 0; i < len(s.Content); i += 2 {
@@ -149,9 +154,9 @@ func Compose(l Layers) (*Result, error) {
 				res.Dropped = append(res.Dropped, k)
 				continue
 			}
-			// mixin 要求不采用的键（tunlr.ignore-from-subscription）留给兜底值。
-			if f := m.ignored[k]; f != "" {
-				res.Ignored = append(res.Ignored, IgnoredKey{Key: k, File: f})
+			// 订阅的 DNS 和嗅探默认不采用，留给兜底值；mixin 写了 tunlr.sub-dns: true 时才采用。
+			if m.subDNS == "" && slices.Contains(SubscriptionDNSKeys, k) {
+				res.UnusedDNS = append(res.UnusedDNS, k)
 				continue
 			}
 			// 订阅的 DNS 整段替换模板的，但不采用监听地址：机场常写 0.0.0.0:53，在公网服务器上
@@ -229,6 +234,7 @@ func Compose(l Layers) (*Result, error) {
 		}
 	}
 	res.Facts = factsOf(root)
+	res.mixer = m
 
 	out, err := encode(doc)
 	if err != nil {

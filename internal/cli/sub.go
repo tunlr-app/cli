@@ -575,13 +575,14 @@ func (a *app) newSubSetCommand() *cobra.Command {
 			"only the active one's configuration is published.\n\n" +
 			"--geo-update and --geo-url change its geo data settings: how often mihomo itself updates the\n" +
 			"geo data (off for never) and, with --geo-url geoip|geosite|mmdb|asn=<url>, where it downloads\n" +
-			"each file; default undoes the change. They are written to mixin.d/<name>/" + setup.GeoMixinFile + ",\n" +
-			"override what the subscription sets and apply only while it is active. What is not set there\n" +
-			"comes from the subscription, or else from tunlr's built-in fallbacks (tunlr:defaults:\n" +
-			setup.GeoDefaultUpdate + ", the official files).\n\n" +
-			"--dns tunlr uses tunlr's DNS and sniffer (the fallbacks, see tunlr config) while it is active,\n" +
-			"even where the subscription sets its own; --dns subscription (the default) takes the\n" +
-			"subscription's again. It is written to mixin.d/<name>/" + setup.DNSMixinFile + " (tunlr.ignore-from-subscription).\n\n" +
+			"each file; default undoes the change. They are written to its mixin that now sets them, or else\n" +
+			"mixin.d/<name>/" + setup.GeoMixinFile + ", override what the subscription sets and apply only while it is\n" +
+			"active. What is not set there comes from the subscription, or else from tunlr's built-in\n" +
+			"fallbacks (tunlr:defaults: " + setup.GeoDefaultUpdate + ", the official files).\n\n" +
+			"--dns sets whose DNS and sniffer are used while it is active: tunlr (the default: tunlr's\n" +
+			"fallbacks, see tunlr config, and what tunlr dns sets) or sub (the dns and sniffer the\n" +
+			"subscription sets, tunlr's where it sets none). It is written to mixin.d/<name>/" + setup.SubscriptionDNSMixinFile + "\n" +
+			"(tunlr.sub-dns: true), or to the mixin of the subscription that already sets it.\n\n" +
 			"After --geo-* and --dns the configuration is published if the subscription is active (--yes\n" +
 			"when there is no terminal).\n\n" +
 			"Without flags, choose the subscription and what to change (needs a terminal); the proxy\n" +
@@ -612,21 +613,24 @@ func (a *app) newSubSetCommand() *cobra.Command {
 					return err
 				}
 			}
+			wrote := false
 			if changed("dns") {
 				if dns == "" {
 					return usageErrorf("--dns takes %s or %s", setup.DNSFromTunlr, setup.DNSFromSubscription)
 				}
 				if geo {
 					// 与 geo 数据一起改时只写入，随后与它一并发布。
-					if w, err := a.writeSubDNS(cmd, name, dns); err != nil || w == nil {
+					w, err := a.writeSubDNS(cmd, name, dns)
+					if err != nil || w == nil {
 						return err
 					}
+					wrote = len(w.Changes) > 0
 				} else if err := a.setSubDNS(cmd, name, dns); err != nil {
 					return err
 				}
 			}
 			if geo {
-				if err := a.setGeoUpdate(cmd, name, geoUpdate, geoURLs); err != nil {
+				if err := a.setGeoUpdate(cmd, name, geoUpdate, geoURLs, wrote); err != nil {
 					return err
 				}
 			}
@@ -654,7 +658,7 @@ func (a *app) newSubSetCommand() *cobra.Command {
 	cmd.Flags().StringVar(&update, "update", "", updateFlagHelp+", or default")
 	cmd.Flags().StringVar(&geoUpdate, "geo-update", "", "how often mihomo updates the geo data while this subscription is active: hours or days, off, or default")
 	cmd.Flags().StringArrayVar(&geoURLs, "geo-url", nil, "where mihomo downloads a geo file, as <file>=<url> or <file>=default (repeatable)")
-	cmd.Flags().StringVar(&dns, "dns", "", "whose DNS and sniffer to use while this subscription is active: tunlr or subscription")
+	cmd.Flags().StringVar(&dns, "dns", "", "whose DNS and sniffer to use while this subscription is active: tunlr (default) or sub")
 	return cmd
 }
 
@@ -680,7 +684,7 @@ func (a *app) changeSubscription(cmd *cobra.Command, name string) error {
 		setPeriod + " (now " + settings.DescribePeriod(e.UpdatePeriod()) + ")",
 		setFilter + " (" + name + "/" + strings.TrimSuffix(config.FilterMixinFile, ".yaml") + ")",
 		setGeo + " (how often mihomo updates it and where from)",
-		setDNS + " (the subscription's or tunlr's)",
+		setDNS + " (tunlr's or the subscription's)",
 	}
 	if e.Path != "" {
 		// 文件不经 HTTP 抓取，User-Agent 没有意义。
@@ -697,7 +701,7 @@ func (a *app) changeSubscription(cmd *cobra.Command, name string) error {
 	case setFilter:
 		return a.editMixin(cmd, name+"/"+config.FilterMixinFile)
 	case setGeo:
-		return a.setGeoUpdate(cmd, name, "", nil)
+		return a.setGeoUpdate(cmd, name, "", nil, false)
 	case setDNS:
 		return a.setSubDNS(cmd, name, "")
 	case setSource:

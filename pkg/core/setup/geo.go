@@ -2,11 +2,8 @@ package setup
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"net/url"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -40,19 +37,19 @@ type GeoChange struct {
 
 // GeoWrite 是 SetGeo 写了什么、写到了哪里。
 type GeoWrite struct {
-	// Keys 是改了的配置中的键（config.GeoKeys 中的）。
+	// Keys 是要改的配置中的键（config.GeoKeys 中的）。
 	Keys []string `json:"keys"`
-	// File 是写入的 mixin 文件（mixin.d/<订阅>/GeoMixinFile），改完没有内容时已删除。
-	File         string `json:"file"`
-	Subscription string `json:"subscription"`
+	// Changes 是改了的 mixin 文件，已经是这样时为空。
+	Changes      []*MixinChange `json:"changes"`
+	Subscription string         `json:"subscription"`
 	// Active 报告订阅是否为启用的订阅：是时调用方随后发布配置，否则修改在它启用时生效。
 	Active bool `json:"active"`
 }
 
-// SetGeo 修改订阅 sub 的 geo 数据设置：写进它的 mixin（mixin.d/<sub>/GeoMixinFile）的 mihomo:，覆盖订阅写的值，
-// 只在它启用时生效；没有写的键仍按订阅、兜底值（tunlr:defaults）的顺序取值。同一目录中排在这个文件之后的
-// mixin 写了的键拒绝修改，以免改了不生效。周期对应 geo-auto-update 和 geo-update-interval 两个键。
-// 只写文件，配置由调用方随后发布。
+// SetGeo 修改订阅 sub 的 geo 数据设置，只在它启用时生效，只改它自己的 mixin（共用的不动）：要设的键写进现在决定
+// 它的那个订阅 mixin，没有时写进 mixin.d/<sub>/GeoMixinFile 的 mihomo:，覆盖订阅写的值；恢复默认的键从它的 mixin
+// 中删除，回到共用的 mixin、订阅、兜底值（tunlr:defaults）写的值。周期对应 geo-auto-update 和
+// geo-update-interval 两个键。只写文件，配置由调用方随后发布。
 func (i *Installer) SetGeo(ctx context.Context, sub string, ch GeoChange) (*GeoWrite, error) {
 	if ch.Update != "" && ch.Update != GeoDefault {
 		if _, err := settings.ParsePeriod(ch.Update); err != nil {
@@ -89,23 +86,22 @@ func (i *Installer) SetGeo(ctx context.Context, sub string, ch GeoChange) (*GeoW
 	if err != nil {
 		return nil, err
 	}
-	own := sub + "/" + GeoMixinFile
-	from := map[string]config.KeySource{}
-	for _, s := range sources {
-		from[s.Path] = s
+	dir := i.Layout.MixinDir()
+	all, err := config.LoadMixinsFor(dir, sub)
+	if err != nil {
+		return nil, err
 	}
-	// 订阅的 mixin 在共用的之后、按文件名应用，排在 own 之后的会压过它。
-	check := func(key string) error {
-		s := from[key]
-		if strings.HasPrefix(s.From, sub+"/") && s.From > own {
-			return fmt.Errorf("%w: %s is set by the mixin %s, which is applied after %s; change it there (tunlr config edit %s)",
-				core.ErrInvalidArgument, key, s.From, own, strings.TrimSuffix(s.From, ".yaml"))
+	// 只改这个订阅的 mixin：它们在共用的之后应用，写在这里的总是生效。
+	scope := slices.DeleteFunc(all, func(m config.Mixin) bool { return !strings.HasPrefix(m.Name, sub+"/") })
+	from := map[string]string{}
+	for _, s := range sources {
+		if !s.Fallback {
+			from[s.Path] = s.From
 		}
-		return nil
 	}
 
 	values := map[string]any{}
-	w := &GeoWrite{File: config.MixinPath(i.Layout.MixinDir(), own), Subscription: sub, Active: sub == list.Active}
+	w := &GeoWrite{Subscription: sub, Active: sub == list.Active}
 	if ch.Update != "" {
 		var auto, interval any
 		if ch.Update != GeoDefault {
@@ -128,40 +124,16 @@ func (i *Installer) SetGeo(ctx context.Context, sub string, ch GeoChange) (*GeoW
 			w.Keys = append(w.Keys, key)
 		}
 	}
-	for _, k := range w.Keys {
-		if err := check(k); err != nil {
-			return nil, err
-		}
-	}
 	head := "geo data settings for subscription " + sub + ", applied only while it is active: they override\n" +
 		"what the subscription sets; what is not here comes from the subscription, or else from tunlr's fallbacks\n" +
 		"(tunlr:defaults, listed by tunlr config). Written by tunlr sub set " + sub + " --geo-update, --geo-url; you may edit it too."
-	if err := writeGeoMixin(i.Layout.MixinDir(), own, head, values); err != nil {
+	if w.Changes, err = planKeys(dir, scope, from, values, sub+"/"+GeoMixinFile, head); err != nil {
+		return nil, err
+	}
+	if err := writeChanges(dir, w.Changes); err != nil {
 		return nil, err
 	}
 	return w, nil
-}
-
-// writeGeoMixin 在订阅的 geo mixin name 的 mihomo: 中设置 values（见 config.SetMixinKeys），新文件以 head 为开头的
-// 注释；改完没有内容时删除文件。
-func writeGeoMixin(dir, name, head string, values map[string]any) error {
-	path := config.MixinPath(dir, name)
-	data, err := os.ReadFile(path)
-	existed := err == nil
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	out, err := config.SetMixinKeys(data, head, values)
-	if err != nil {
-		return fmt.Errorf("mixin %s: %w", name, err)
-	}
-	if out == nil {
-		if existed {
-			return os.Remove(path)
-		}
-		return nil
-	}
-	return config.SaveMixin(dir, config.Mixin{Name: name, Data: out}, data, existed)
 }
 
 // GeoPeriod 返回 sources（GeoSources 的结果）中内核更新 geo 数据的周期，写法同订阅的周期（off 为不更新）。

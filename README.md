@@ -96,8 +96,9 @@ Configuration
   update                      定时更新的日程（订阅、geo 数据）；update run [sub|geo] 立即执行
 
 Network
-  tun                         透明代理、DNS 模式与网关模式；tun on|off、tun dns（含 fake-ip-filter）、tun gateway on|off
+  tun                         透明代理与网关模式；tun on|off、tun gateway on|off
   proxy                       代理端口的地址；proxy lan on|off、proxy env
+  dns                         mihomo 问谁、怎么回答 DNS 查询；dns servers、dns mode、dns fake-ip-filter
   filter                      流量过滤：source 网段直连、quic 拒绝 QUIC、ports 只代理常用端口
   devices                     使用本机的局域网设备；name、route、forget
 
@@ -147,46 +148,36 @@ curl -fsSL https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/uninstall.sh | sudo sh
 
 ## DNS 怎么走
 
-订阅写了 `dns` 就整段用订阅的（只有监听地址固定为 `127.0.0.1:1053`）；没写时用 tunlr 的兜底值：
+默认用 tunlr 的 DNS 和嗅探，订阅写了 `dns`、`sniffer` 也不用（`hosts` 照常采用）：机场的 DNS 是为桌面客户端写的，在服务器上常常不合适。tunlr 的兜底值：
 
 - fake-ip 模式，不返回 IPv6 地址，免得设备经 IPv6 绕过代理。
 - `geosite:cn` 的域名经直连问阿里、腾讯的 DoH。其他域名问 Cloudflare、Google 的 DoH，按订阅的规则连接（`respect-rules`），通常经代理：查询不经过中国的解析器，`GEOIP,CN` 这类规则也不会因被污染的地址判错。节点的域名经直连用阿里、腾讯解析。节点都不可用时境外的域名解析不出来，但这时连接本来也不通。
 - 局域网、时间同步、联网检测、STUN、QQ 快捷登录、游戏主机等域名返回真实地址（`fake-ip-filter`）。
+- 嗅探 HTTP、TLS、QUIC：局域网设备自己用 DoH 或写死了 DNS 时，按域名的规则照样生效。
 
-嗅探（`sniffer`）也一样：订阅没写就用兜底值，嗅探 HTTP、TLS、QUIC。局域网设备自己用 DoH 或写死了 DNS 时，按域名的规则照样生效。
+`tunlr dns` 显示 DNS 模式、问谁、你加的 fake-ip-filter 条目，以及各来自哪里；在终端里接着选改哪项（主菜单 Traffic 中的 DNS 就是它）。问谁在 TUN 关着时也用到：代理端口来的连接、节点的域名都由 mihomo 自己解析；模式和 fake-ip-filter 只在开了 TUN 时用到。这些命令改的都是 mixin 文件：现在决定那个键的文件，没有时写进 `mixin.d/90-dns.yaml`；预览列出要改的文件和键，确认后发布。自己编辑这些文件效果相同，命令下次读到的就是你改的。
 
-两个开关和一份列表（`tunlr tun dns` 显示现状；在终端里接着选改哪项，主菜单 Traffic 中的 DNS 就是它）：
-
-- `tunlr sub set <订阅> --dns tunlr`：这个订阅启用时总用 tunlr 的 DNS 和嗅探，订阅写了也不用；`--dns subscription` 恢复默认。它写的是订阅自己的 mixin `mixin.d/<订阅>/20-dns.yaml`：
-
-  ```yaml
-  tunlr:
-    ignore-from-subscription: [dns, sniffer]
-  ```
-
-  `ignore-from-subscription` 也可以写在共用的 mixin 里，对所有订阅生效；能列的键有 `dns`、`sniffer`、`hosts`。
-- `tunlr tun dns fake-ip|redir-host`：DNS 模式（`dns.enhanced-mode`），不管 DNS 来自订阅还是兜底值都按它；`tunlr tun dns default` 回到按配置。设了之后 mixin 不能再写 `dns.enhanced-mode`。fake-ip 回答假地址（`198.18.0.0/16`），经代理的域名不必真的解析；有些应用、设备不接受假地址，可以换 redir-host，回答真实地址，按域名的规则靠映射和嗅探照样生效。DNS 模式只影响 mihomo 自己回答的查询：开了 TUN 时本机的，和把这台服务器当网关、DNS 的局域网设备的。
-- `tunlr tun dns fake-ip-filter`：fake-ip 模式下哪些域名返回真实地址。在终端里打开文本框，只编辑你自己加的条目，一行一条（`+.lan`、`*.example.com`、`nas.example.com`）：Enter 换行，Tab 完成，Ctrl+E 用编辑器打开，Esc 取消；随后显示 diff，确认后发布。没有终端时用 `--add`、`--remove`、`--reset`。条目存在 `mixin.d/90-fake-ip-filter.yaml`，加在生效的那份列表（订阅的或兜底的）上，那份列表以后变了照样生效：
+- `tunlr dns mode fake-ip|redir-host`：DNS 模式（`dns.enhanced-mode`）；`tunlr dns mode default` 从共用的和启用的订阅的 mixin 中删除它，回到按配置；不给模式时在终端里选。fake-ip 回答假地址（`198.18.0.0/16`），经代理的域名不必真的解析；有些应用、设备不接受假地址，可以换 redir-host，回答真实地址，按域名的规则靠映射和嗅探照样生效。DNS 模式只影响 mihomo 自己回答的查询：开了 TUN 时本机的，和把这台服务器当网关、DNS 的局域网设备的。
+- `tunlr dns servers`：问谁，分两组。中国的域名（`geosite:cn`）经直连问，也用来解析节点的域名，写进 `dns.nameserver-policy` 的 `geosite:cn`（加 `#DIRECT`）和 `dns.proxy-server-nameserver`；其他域名按规则问，写进 `dns.nameserver`。在终端里打开两个文本框，预填现在用的服务器（没有时填 tunlr 的默认值），一行一个，IP、`udp://`、`tcp://`、`tls://`（DoT）、`https://`（DoH）、`quic://`（DoQ）、`h3://`、`dhcp://<网卡>`、`system` 可以混写；清空一个框就删除你的设置。发布后经 mihomo 解析 `www.baidu.com` 和 `www.google.com`，不通时问你是否放回原来的服务器。没有终端时用 `--cn`、`--other`（可重复，替换整组）或 `--reset`。
+- `tunlr dns fake-ip-filter`：fake-ip 模式下哪些域名返回真实地址。在终端里打开文本框，只编辑你自己加的条目，一行一条（`+.lan`、`*.example.com`、`nas.example.com`）：Enter 换行，Tab 完成，Ctrl+E 用编辑器打开，Esc 取消。没有终端时用 `--add`、`--remove`、`--reset`。条目写在 `90-dns.yaml` 的 `tunlr.fake-ip-filter.append`，加在生效的那份列表上，那份列表以后变了照样生效；要去掉那份列表里的条目，在 mixin 中写 `delete`（可以用 `/正则/`）。
+- `tunlr sub set <订阅> --dns sub`：这个订阅启用时采用它写的 `dns` 和 `sniffer`（它没写的仍用 tunlr 的），`--dns tunlr` 恢复默认。它写的是订阅自己的 mixin `mixin.d/<订阅>/20-dns.yaml`：
 
   ```yaml
   tunlr:
-    fake-ip-filter:
-      append: [nas.example.com]
+    sub-dns: true
   ```
 
-  要去掉那份列表里的条目，在 mixin 中写 `delete`（可以用 `/正则/`）。
+  `sub-dns` 也可以写在共用的 mixin 里，对所有订阅生效；按文件顺序最后写的为准，`false` 取消前面的。用订阅的 DNS 时 `tunlr status` 多一行 `DNS:`；这时切到 redir-host，订阅的 DNS 缺 `respect-rules` 或 `nameserver-policy` 会提醒。
 
-`tunlr config plan` 和 `tunlr config` 有一行 `DNS settings:`，说明 dns、sniffer 来自订阅还是兜底值、被哪些 mixin 改过；`tunlr config` 还列出兜底值的完整内容。要改就写 mixin（`tunlr config edit 10-dns`），映射逐层合并，只写要改的键：
+`tunlr config plan` 和 `tunlr config` 有一行 `DNS settings:`，说明 dns、sniffer 来自订阅还是兜底值、被哪些 mixin 改过；`tunlr config` 还列出兜底值的完整内容。命令没有覆盖的键直接写 mixin（`tunlr config edit 10-dns`），映射逐层合并，只写要改的键：
 
 ```yaml
 mihomo:
-  dns:
-    nameserver: [https://9.9.9.9/dns-query]   # 境外域名问谁
   sniffer:
-    enable: false                              # 不嗅探
+    enable: false   # 不嗅探
 ```
 
-列表在 `mihomo:` 下整体替换；`fake-ip-filter` 用上面的 `tunlr.fake-ip-filter` 加减条目，不必整份复制。写在 `mihomo:` 下改的是生效的那一份（订阅的或兜底的）；只想改兜底值、订阅写了仍用订阅的，写在 `tunlr: {defaults: ...}` 下。
+列表在 `mihomo:` 下整体替换；`fake-ip-filter` 用 `tunlr.fake-ip-filter` 加减条目，不必整份复制。写在 `mihomo:` 下改的是生效的那一份（订阅的或兜底的）；只想改兜底值、订阅的 DNS 被采用时仍用订阅的，写在 `tunlr: {defaults: ...}` 下。
 
 ## 磁盘布局
 

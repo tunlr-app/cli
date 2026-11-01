@@ -65,10 +65,6 @@ type State struct {
 	// Filter 是全局过滤项，零值为都关闭。只由 tunlr filter 修改。
 	Filter Filter `json:"filter,omitzero"`
 
-	// DNSMode 是 DNS 模式的开关（dns.enhanced-mode）：DNSFakeIP 或 DNSRedirHost，为空时按配置（订阅或兜底值）。
-	// 只由 tunlr tun dns 修改。
-	DNSMode string `json:"dns_mode,omitempty"`
-
 	// UpdateCheck 是最近一次查询 tunlr 和 mihomo 最新版本的结果，nil 为还没有查询过。由每小时的定时更新
 	// 每天查一次（setup.CheckUpdates）；菜单和 status 只读它，不联网。
 	UpdateCheck *UpdateCheck `json:"update_check,omitempty"`
@@ -96,12 +92,6 @@ type UpdateRun struct {
 const (
 	TunPending = "pending"
 	TunOn      = "on"
-)
-
-// DNS 模式开关的取值，与内核的 dns.enhanced-mode 相同。
-const (
-	DNSFakeIP    = "fake-ip"
-	DNSRedirHost = "redir-host"
 )
 
 // TunEnabled 报告配置中是否开启 TUN：已确认或正在检测时都开启。

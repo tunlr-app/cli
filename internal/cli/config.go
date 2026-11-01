@@ -72,7 +72,8 @@ func writeDefaults(w io.Writer, vs []managedView) {
 		kind, how := "Defaults", "a mixin can override these"
 		switch {
 		case v.Name == pipeline.ManagedDefaults:
-			kind, how = "Fallbacks", "used where the subscription does not set them; per subscription: tunlr sub set <sub> --geo-update, --geo-url, --dns; "+how
+			kind, how = "Fallbacks", "geo data where the subscription sets none, dns and sniffer unless a subscription's own are chosen; "+
+				"per subscription: tunlr sub set <sub> --geo-update, --geo-url, --dns; "+how
 		case strings.Contains(v.Content, "\n  rules:"):
 			how += ", remove rules with tunlr.rules.delete"
 		}
@@ -135,9 +136,10 @@ func (a *app) newConfigCommand() *cobra.Command {
 			"and the mixins tunlr generates for its own settings (TUN, the panel, the LAN proxy).\n" +
 			"Your mixins may not set, change or delete the keys tunlr manages; plan, apply and edit\n" +
 			"refuse such a mixin and name the command that changes the key instead. tunlr:defaults\n" +
-			"(the DNS, sniffer and geo data settings used where the subscription does not set them),\n" +
-			"tunlr:dns, tunlr:mirror and tunlr:filter only give defaults you can override; the last\n" +
-			"line tells whether dns and sniffer come from the subscription or the fallbacks.",
+			"(the geo data settings used where the subscription sets none, and the DNS and sniffer used\n" +
+			"unless tunlr sub set <sub> --dns sub chooses the subscription's), tunlr:dns, tunlr:mirror and\n" +
+			"tunlr:filter only give defaults you can override; the last line tells whether dns and sniffer\n" +
+			"come from the subscription or the fallbacks.",
 		Args: usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error { return a.showConfig(cmd.Context()) },
 	}

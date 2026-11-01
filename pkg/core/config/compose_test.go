@@ -242,7 +242,7 @@ func TestComposeErrors(t *testing.T) {
 		{
 			name: "namespace unknown key",
 			l:    mixinLayers("a: 1\n", "tunlr:\n  proxy-filters: {}\n"),
-			want: "mixin 10-test.yaml:2: tunlr.proxy-filters: unknown key (known: defaults, ignore-from-subscription, fake-ip-filter, proxy-filter, proxies, proxy-groups, rules, sub-rules)",
+			want: "mixin 10-test.yaml:2: tunlr.proxy-filters: unknown key (known: defaults, sub-dns, fake-ip-filter, proxy-filter, proxies, proxy-groups, rules, sub-rules)",
 		},
 		{
 			name: "proxy filter unknown key",
@@ -440,7 +440,8 @@ func TestExternalUI(t *testing.T) {
 	}
 }
 
-// TestComposeDNS 检查订阅的 dns 整段替换模板的，但丢弃其中的 listen，由提供默认值的受管 mixin 补上。
+// TestComposeDNS 检查采用订阅的 dns 时（tunlr.sub-dns）它整段替换模板的，但丢弃其中的 listen，由提供默认值的
+// 受管 mixin 补上。
 func TestComposeDNS(t *testing.T) {
 	template := "dns:\n  enable: true\n  listen: 127.0.0.1:1053\n  ipv6: true\n"
 	dns := Managed{Name: "tunlr:dns", Default: true, Data: []byte("mihomo:\n  dns:\n    listen: 127.0.0.1:1053\n")}
@@ -455,7 +456,7 @@ func TestComposeDNS(t *testing.T) {
 		{"no dns", "rules: []\n", template + "\nrules: []\n", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			res, err := Compose(Layers{Template: []byte(template), Subscription: []byte(tt.sub), Managed: []Managed{dns}})
+			res, err := Compose(Layers{Template: []byte(template), Subscription: []byte(tt.sub), Managed: []Managed{dns}, Mixins: []Mixin{useSubDNS}})
 			if err != nil {
 				t.Fatal(err)
 			}

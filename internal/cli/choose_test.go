@@ -226,17 +226,17 @@ func TestSubSetChooses(t *testing.T) {
 	opts := et.prompt.asked[1]
 	if len(opts) != 6 || opts[0] != "URL or file (now https://example.net/...)" || opts[1] != "User-Agent (now default)" ||
 		opts[2] != "Fetch period (now daily)" || opts[3] != "Proxy filter (backup/10-filter)" ||
-		opts[4] != "Geo data (how often mihomo updates it and where from)" || opts[5] != "DNS (the subscription's or tunlr's)" {
+		opts[4] != "Geo data (how often mihomo updates it and where from)" || opts[5] != "DNS (tunlr's or the subscription's)" {
 		t.Errorf("options = %q", opts)
 	}
 
-	// 用谁的 DNS：现在用订阅的，选 tunlr 的写进订阅的 dns mixin。
-	et.prompt.picks = []string{setDNS, "tunlr's"}
+	// 用谁的 DNS：现在用 tunlr 的，选订阅的写进订阅的 dns mixin。
+	et.prompt.picks = []string{setDNS, "The subscription's"}
 	et.run(0, "sub", "set", "backup")
-	if _, err := os.Stat(filepath.Join(et.a.layout.MixinDir(), "backup", setup.DNSMixinFile)); err != nil {
+	if _, err := os.Stat(filepath.Join(et.a.layout.MixinDir(), "backup", setup.SubscriptionDNSMixinFile)); err != nil {
 		t.Errorf("dns mixin: %v\n%s", err, et.stdout)
 	}
-	if opts := et.prompt.asked[len(et.prompt.asked)-1]; len(opts) != 2 || !strings.HasPrefix(opts[0], "The subscription's") {
+	if opts := et.prompt.asked[len(et.prompt.asked)-1]; len(opts) != 2 || !strings.HasPrefix(opts[0], "tunlr's") {
 		t.Errorf("dns options = %q", opts)
 	}
 

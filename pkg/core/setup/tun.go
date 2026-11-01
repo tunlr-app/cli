@@ -40,11 +40,10 @@ type TunStatus struct {
 	KernelRules bool `json:"kernel_rules"`
 	// Gateway 是网关模式的局域网网卡，网关关闭时为空。
 	Gateway string `json:"gateway,omitempty"`
-	// DNSMode 是 DNS 模式的开关（tunlr tun dns）：fake-ip 或 redir-host，为空时按配置（订阅或兜底值）。
+	// DNSMode 是生效的配置中的 dns.enhanced-mode（fake-ip、redir-host），没有写或还没有发布过时为空；
+	// 它来自哪里见 Installer.DNSMode。
 	DNSMode string `json:"dns_mode,omitempty"`
-	// PublishedDNSMode 是生效的配置中的 dns.enhanced-mode，没有写或还没有发布过时为空。
-	PublishedDNSMode string `json:"published_dns_mode,omitempty"`
-	// FakeIPFilter 是你加进 dns.fake-ip-filter 的条目（tunlr tun dns fake-ip-filter），读不出时为空。
+	// FakeIPFilter 是你加进 dns.fake-ip-filter 的条目（tunlr dns fake-ip-filter），读不出时为空。
 	FakeIPFilter []string `json:"fake_ip_filter,omitempty"`
 }
 
@@ -88,11 +87,8 @@ func (i *Installer) TunStatus(ctx context.Context) (*TunStatus, error) {
 	if st != nil && st.Gateway != nil {
 		s.Gateway = st.Gateway.Interface
 	}
-	if st != nil {
-		s.DNSMode = st.DNSMode
-	}
 	if cfg, err := os.ReadFile(i.Layout.CoreConfig()); err == nil {
-		s.PublishedDNSMode = config.DNSMode(cfg)
+		s.DNSMode = config.DNSMode(cfg)
 	}
 	s.FakeIPFilter, _ = i.FakeIPFilterEntries()
 	if on, err := mihomo.NewClient(i.Layout.CoreSocket()).TunEnabled(ctx); err == nil {

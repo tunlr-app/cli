@@ -60,29 +60,44 @@ type KeySource struct {
 	Fallback bool `json:"fallback,omitempty"`
 }
 
-// geoSources 返回 GeoKeys 中各键的值和来源：最后写它的 mixin（mihomo: 或没有被订阅替换的 tunlr.defaults），
-// 否则订阅（采用了它所在的顶层键，补全进去的键除外），否则模板。在应用完用户的 mixin 之后、改写之前调用。
+// geoSources 返回 GeoKeys 中各键的值和来源（见 keySource）。在应用完用户的 mixin 之后、改写之前调用。
 func (m *mixer) geoSources() []KeySource {
 	out := make([]KeySource, 0, len(GeoKeys))
 	for _, k := range GeoKeys {
-		path := strings.Split(k, ".")
-		s := KeySource{Path: k, From: FromTemplate, Fallback: true}
-		v := lookup(m.root, path)
-		if v != nil && v.Kind == yaml.ScalarNode {
-			s.Value = v.Value
-		}
-		switch {
-		case m.setBy[k] != "":
-			s.From, s.Fallback = m.setBy[k], m.fallback[k]
-		case len(path) > 1 && m.setBy[path[0]] != "":
-			s.From, s.Fallback = m.setBy[path[0]], m.fallback[path[0]]
-		// 订阅的 geox-url 没写、前面也没有的文件用内核的默认地址，不算订阅的。
-		case m.subKeys[path[0]] && !m.filled[k] && v != nil:
-			s.From, s.Fallback = FromSubscription, false
-		}
-		out = append(out, s)
+		out = append(out, m.keySource(k))
 	}
 	return out
+}
+
+// keySource 返回点分路径 k 的值和来源：最后写它或它的上级映射的 mixin（mihomo: 或没有被订阅替换的
+// tunlr.defaults），否则订阅（采用了它所在的顶层键，补全进去的键除外），否则模板。
+func (m *mixer) keySource(k string) KeySource {
+	path := strings.Split(k, ".")
+	s := KeySource{Path: k, From: FromTemplate, Fallback: true}
+	v := lookup(m.root, path)
+	if v != nil && v.Kind == yaml.ScalarNode {
+		s.Value = v.Value
+	}
+	for i := len(path); i > 0; i-- {
+		if p := strings.Join(path[:i], "."); m.setBy[p] != "" {
+			s.From, s.Fallback = m.setBy[p], m.fallback[p]
+			return s
+		}
+	}
+	// 订阅的 geox-url 没写、前面也没有的文件用内核的默认地址，不算订阅的。
+	if m.subKeys[path[0]] && !m.filled[k] && v != nil {
+		s.From, s.Fallback = FromSubscription, false
+	}
+	return s
+}
+
+// KeySource 返回合成的配置中点分路径 path（如 dns.enhanced-mode）的值和来源，规则同 GeoSources；值取自最终的
+// 配置（经受管 mixin 改写之后），不是标量时为空。
+func (r *Result) KeySource(path string) KeySource {
+	if r.mixer == nil {
+		return KeySource{Path: path}
+	}
+	return r.mixer.keySource(path)
 }
 
 // DetectGeo 判断配置需要哪些 geo 数据。判断按名称宽松匹配（规则、DNS 设置中出现 geoip、

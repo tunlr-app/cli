@@ -607,6 +607,9 @@ func (a *app) printStatus(s *setup.Status) {
 	if s.Tun != nil {
 		fmt.Fprintf(w, "TUN:           %s\n", a.describeTun(s.Tun))
 	}
+	if s.SubDNS != "" {
+		fmt.Fprintf(w, "DNS:           %s's own where it sets one (tunlr.sub-dns in %s; details: tunlr dns)\n", s.Subscription, s.SubDNS)
+	}
 	if s.Installed {
 		fmt.Fprintf(w, "Panel:         %s (open it with: tunlr panel)\n", a.describePanelLAN(s.PanelLAN))
 		fmt.Fprintf(w, "Proxy port:    %s (details: tunlr proxy)\n", a.describeProxyLAN(s.ProxyLAN))

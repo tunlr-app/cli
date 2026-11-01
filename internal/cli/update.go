@@ -3,10 +3,7 @@ package cli
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -312,9 +309,10 @@ var periodChoices = []string{"1h", "6h", "12h", "1d", "7d", settings.PeriodOff}
 
 const periodOther = "Other..."
 
-// setGeoUpdate 是 sub set <sub> --geo-update <period> --geo-url <file>=<url>...：修改一个订阅的 geo 数据设置（写进它的
-// geo mixin），订阅启用时随后发布。period 和 urls 都为空时（菜单的“Change a sub”）列出当前的设置，选择改哪一项。
-func (a *app) setGeoUpdate(cmd *cobra.Command, sub, period string, urls []string) error {
+// setGeoUpdate 是 sub set <sub> --geo-update <period> --geo-url <file>=<url>...：修改一个订阅的 geo 数据设置（写进
+// 决定它的订阅 mixin，没有时写进它的 geo mixin），订阅启用时随后发布。period 和 urls 都为空时（菜单的“Change a
+// sub”）列出当前的设置，选择改哪一项。wrote 报告同一命令已经改了它的其他 mixin（--dns），geo 设置不变时也发布。
+func (a *app) setGeoUpdate(cmd *cobra.Command, sub, period string, urls []string, wrote bool) error {
 	ctx := cmd.Context()
 	if a.opts.DryRun {
 		return usageErrorf("sub set --geo-update, --geo-url does not support --dry-run")
@@ -352,12 +350,14 @@ func (a *app) setGeoUpdate(cmd *cobra.Command, sub, period string, urls []string
 	if err != nil {
 		return err
 	}
-	if !a.opts.JSON {
-		if _, err := os.Stat(w.File); errors.Is(err, fs.ErrNotExist) {
-			fmt.Fprintf(a.stdout, "Removed %s: %q uses what it sets, or else tunlr's fallbacks.\n", w.File, sub)
-		} else {
-			fmt.Fprintf(a.stdout, "Wrote %s for %q to %s.\n", strings.Join(w.Keys, ", "), sub, w.File)
-		}
+	if len(w.Changes) == 0 && !wrote {
+		return a.render(w, func() error {
+			_, err := fmt.Fprintf(a.stdout, "Already so for %q; nothing to change.\n", sub)
+			return err
+		})
+	}
+	if !a.opts.JSON && len(w.Changes) > 0 {
+		a.printMixinChanges(w.Changes, true)
 	}
 	return a.publishSubChange(cmd, sub, w.Active, w)
 }

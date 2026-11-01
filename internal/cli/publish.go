@@ -28,10 +28,12 @@ type planView struct {
 	FirstPublish bool     `json:"first_publish"`
 	Subscription string   `json:"subscription,omitempty"`
 	Dropped      []string `json:"dropped,omitempty"`
-	// Ignored 是订阅中写了、mixin 要求不采用的顶层键（tunlr.ignore-from-subscription）。
-	Ignored   []config.IgnoredKey `json:"ignored,omitempty"`
-	Mixins    []string            `json:"mixins,omitempty"`
-	Overrides []config.Override   `json:"overrides,omitempty"`
+	// SubDNS 是让订阅的 dns、sniffer 被采用的 mixin（tunlr.sub-dns: true）；UnusedDNS 是订阅写了、因为没有它而
+	// 没有采用的顶层键。
+	SubDNS    string            `json:"sub_dns,omitempty"`
+	UnusedDNS []string          `json:"unused_dns,omitempty"`
+	Mixins    []string          `json:"mixins,omitempty"`
+	Overrides []config.Override `json:"overrides,omitempty"`
 	// Rewrites 是受管 mixin 在合成的最后改写的值，如经镜像的 geox-url。
 	Rewrites []config.Rewrite `json:"rewrites,omitempty"`
 	// ProxyFilter 是节点筛选（tunlr.proxy-filter）的结果，没有设置时省略。
@@ -91,7 +93,7 @@ func (a *app) pipeline() *pipeline.Pipeline {
 func newPlanView(p *pipeline.Plan, full bool) planView {
 	v := planView{
 		Kind: p.Kind, Changed: p.Changed(), FirstPublish: p.Current == nil,
-		Subscription: p.Subscription, Dropped: p.Dropped, Ignored: p.Ignored, Mixins: p.Mixins,
+		Subscription: p.Subscription, Dropped: p.Dropped, SubDNS: p.SubDNS, UnusedDNS: p.UnusedDNS, Mixins: p.Mixins,
 		Overrides: p.Overrides, Rewrites: p.Rewrites, Warnings: p.Warnings, RollbackTo: p.RollbackTo, Restart: p.Restart, GeoReplaced: p.GeoReplaced, Proxies: p.Proxies, Diff: hideSecretInDiff(p.Diff),
 		DiffSections: p.DiffSections, ProxyFilter: p.ProxyFilter, GeoSources: p.GeoSources, DNSSources: p.DNSSources,
 	}
@@ -180,23 +182,6 @@ func describeDNSSources(sources []config.SectionSource) string {
 	return strings.Join(parts, "; ")
 }
 
-// describeIgnored 按文件列出不从订阅采用的键，如 "dns, sniffer (home/20-dns.yaml)"。
-func describeIgnored(ks []config.IgnoredKey) string {
-	var files []string
-	keys := map[string][]string{}
-	for _, k := range ks {
-		if _, ok := keys[k.File]; !ok {
-			files = append(files, k.File)
-		}
-		keys[k.File] = append(keys[k.File], k.Key)
-	}
-	parts := make([]string, len(files))
-	for i, f := range files {
-		parts[i] = strings.Join(keys[f], ", ") + " (" + f + ")"
-	}
-	return strings.Join(parts, "; ")
-}
-
 // describeLayer 说明配置的一层：订阅、模板、tunlr:defaults 的兜底值，或某个 mixin 文件的 tunlr.defaults。
 func describeLayer(from string, fallback bool) string {
 	switch {
@@ -246,8 +231,12 @@ func (a *app) writePlan(w io.Writer, v planView) {
 	if len(v.Dropped) > 0 {
 		fmt.Fprintf(w, "Ignored from the subscription: %s\n", strings.Join(v.Dropped, ", "))
 	}
-	if len(v.Ignored) > 0 {
-		fmt.Fprintf(w, "Not taken from the subscription (tunlr.ignore-from-subscription): %s\n", describeIgnored(v.Ignored))
+	switch {
+	case v.SubDNS != "":
+		fmt.Fprintf(w, "The subscription's dns and sniffer are used where it sets them (tunlr.sub-dns in %s)\n", v.SubDNS)
+	case len(v.UnusedDNS) > 0:
+		fmt.Fprintf(w, "Not taken from the subscription: %s (tunlr's are used; tunlr sub set %s --dns sub takes them)\n",
+			strings.Join(v.UnusedDNS, ", "), v.Subscription)
 	}
 	if len(v.Mixins) > 0 {
 		fmt.Fprintf(w, "Mixins (in order): %s\n", strings.Join(v.Mixins, ", "))

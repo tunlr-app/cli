@@ -93,10 +93,57 @@ func DNSMode(cfg []byte) string {
 	return dnsSection(cfg).Mode
 }
 
-// dnsFields 是 DNSMode、FakeIPFilter 读出的 dns 中的键。
+// DNSEnabled 报告 tunlr 生成的配置 cfg 是否开启了内核的 DNS（dns.enable；tunlr 的兜底值开启它，TUN 开启时必须开启）。
+func DNSEnabled(cfg []byte) bool {
+	return dnsSection(cfg).Enable
+}
+
+// ChinaPolicy 是 nameserver-policy 中中国的域名的键，tunlr dns servers 改的是它。
+const ChinaPolicy = "geosite:cn"
+
+// DNSServers 读出 tunlr 生成的配置 cfg 中问谁：china 是 nameserver-policy 中 ChinaPolicy 的服务器，other 是
+// nameserver。没有写时为空。
+func DNSServers(cfg []byte) (china, other []string) {
+	d := dnsSection(cfg)
+	return serverList(d.Policy[ChinaPolicy]), serverList(d.Nameserver)
+}
+
+// DNSLacks 返回 tunlr 生成的配置 cfg 的 dns 中 redir-host 模式需要、却没有的设置：respect-rules（经规则问境外的
+// 服务器，免得拿到污染的地址）和 nameserver-policy（中国的域名问中国的服务器）。tunlr 的兜底值两者都有，机场的
+// DNS 常常没有。
+func DNSLacks(cfg []byte) []string {
+	d := dnsSection(cfg)
+	var lacks []string
+	if !d.RespectRules {
+		lacks = append(lacks, "respect-rules")
+	}
+	if len(d.Policy) == 0 {
+		lacks = append(lacks, "nameserver-policy")
+	}
+	return lacks
+}
+
+// serverList 读出一项服务器的设置：列表，或只写了一个时的字符串。
+func serverList(n yaml.Node) []string {
+	var list []string
+	if n.Decode(&list) == nil {
+		return list
+	}
+	var s string
+	if n.Kind == yaml.ScalarNode && n.Decode(&s) == nil && s != "" {
+		return []string{s}
+	}
+	return nil
+}
+
+// dnsFields 是 DNSMode、FakeIPFilter、DNSServers 读出的 dns 中的键。服务器的设置可以是列表或字符串，按节点读。
 type dnsFields struct {
-	Mode         string   `yaml:"enhanced-mode"`
-	FakeIPFilter []string `yaml:"fake-ip-filter"`
+	Enable       bool                 `yaml:"enable"`
+	Mode         string               `yaml:"enhanced-mode"`
+	FakeIPFilter []string             `yaml:"fake-ip-filter"`
+	Nameserver   yaml.Node            `yaml:"nameserver"`
+	Policy       map[string]yaml.Node `yaml:"nameserver-policy"`
+	RespectRules bool                 `yaml:"respect-rules"`
 }
 
 // dnsSection 读出 cfg 中顶层 dns 这一段，读不出时为零值。

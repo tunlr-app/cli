@@ -139,6 +139,34 @@ func (c *Client) ConnectionsBySource(ctx context.Context) (map[string]int, error
 	return counts, nil
 }
 
+// Resolve 让内核解析 name 的 IPv4 地址（GET /dns/query）：按配置中的 DNS 设置问上游，不返回 fake-ip。
+// 上游返回错误码或没有地址时报错。
+func (c *Client) Resolve(ctx context.Context, name string) ([]string, error) {
+	var v struct {
+		Status int `json:"Status"`
+		Answer []struct {
+			Type int    `json:"type"`
+			Data string `json:"data"`
+		} `json:"Answer"`
+	}
+	if err := c.do(ctx, apiTimeout, http.MethodGet, "/dns/query?type=A&name="+url.QueryEscape(name), nil, &v); err != nil {
+		return nil, err
+	}
+	if v.Status != 0 {
+		return nil, fmt.Errorf("%s: DNS error code %d", name, v.Status)
+	}
+	var addrs []string
+	for _, a := range v.Answer {
+		if a.Type == 1 { // A
+			addrs = append(addrs, a.Data)
+		}
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("%s: no addresses", name)
+	}
+	return addrs, nil
+}
+
 // geoUpdateTimeout 是 UpdateGeo 的时限。内核逐个下载 geo 文件，单个文件的时限是 90 秒。
 const geoUpdateTimeout = 10 * time.Minute
 

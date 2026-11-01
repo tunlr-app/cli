@@ -14,9 +14,9 @@ func TestFakeIPFilterOps(t *testing.T) {
 	fallbacks := Managed{Name: "tunlr:defaults", Default: true,
 		Data: []byte("tunlr:\n  defaults:\n    dns:\n      enable: true\n      fake-ip-filter: [+.lan, time.*.com]\n")}
 	compose := func(sub string, mixins ...Mixin) (*Result, error) {
-		return Compose(Layers{Template: tpl, Subscription: []byte(sub), Managed: []Managed{fallbacks}, Mixins: mixins})
+		return Compose(Layers{Template: tpl, Subscription: []byte(sub), Managed: []Managed{fallbacks}, Mixins: append([]Mixin{useSubDNS}, mixins...)})
 	}
-	ours := Mixin{Name: "90-fake-ip-filter.yaml", Data: []byte("tunlr:\n  fake-ip-filter:\n    append: [nas.example.com, +.lan]\n    delete: [time.*.com, /^stun/]\n")}
+	ours := Mixin{Name: "90-dns.yaml", Data: []byte("tunlr:\n  fake-ip-filter:\n    append: [nas.example.com, +.lan]\n    delete: [time.*.com, /^stun/]\n")}
 
 	// 兜底值的列表。
 	res, err := compose("mode: rule\n", ours)

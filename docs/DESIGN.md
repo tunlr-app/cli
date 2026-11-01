@@ -172,7 +172,7 @@ sh 的优势（轻量、随处可跑、可随手改）服务于路由器和老�
 - **订阅的来源**：地址（只认 http/https）、本地文件或标准输入。文件和标准输入的内容也复制到 `subscriptions/`，源文件删了照常可用。文件默认不自动更新（只有用户自己改它）；标准输入（文件在自己电脑上，`ssh host tunlr sub add x - < a.yaml`）不能自动更新。换来源、换 User-Agent 都是抓取成功才保存。
 - **分层合成，各层职责固定**（`pkg/core/config`）：
   1. 模板：系统部分（端口、面板、profile、TUN），再合并兜底值 `tunlr:defaults`、用户的 `tunlr.defaults`。
-  2. 订阅：**只取白名单中的键**，其余丢弃并在 plan 列出：订阅不可信，不能开端口、改监听地址或设 API。白名单为路由（`proxies`、`proxy-groups`、`rules`、各 providers、`sub-rules`）、DNS（`dns`、`hosts`、`sniffer`，整段采用，因为机场规则常与它的 DNS 配合）、geo（`geox-url` 等，规则要用它指定来源的数据）。采用的顶层键整个替换兜底值，`geox-url` 按文件替换，未写的文件不退回内核默认地址（不经镜像时国内下载不了）。
+  2. 订阅：**只取白名单中的键**，其余丢弃并在 plan 列出：订阅不可信，不能开端口、改监听地址或设 API。白名单为路由（`proxies`、`proxy-groups`、`rules`、各 providers、`sub-rules`）、DNS（`hosts`；`dns`、`sniffer` 只在 mixin 写了 `tunlr.sub-dns: true` 时整段采用，见下文“用谁的 DNS 按订阅选”）、geo（`geox-url` 等，规则要用它指定来源的数据）。采用的顶层键整个替换兜底值，`geox-url` 按文件替换，未写的文件不退回内核默认地址（不经镜像时国内下载不了）。
      - 例外：订阅的 `dns.listen` 一律丢弃（决定 DNS 是否暴露），由 `tunlr:dns` 设为回环。开 TUN 时 `tunlr:tun` 独占 `dns.enable`。
      - 订阅的 DNS 为桌面客户端而写，合成后对明显问题（如 `dhcp://en0` 指向不存在的网卡）只警告。
      - 然后执行节点筛选。
@@ -188,7 +188,12 @@ sh 的优势（轻量、随处可跑、可随手改）服务于路由器和老�
   - 默认值类（`tunlr:defaults`、`tunlr:dns`、`tunlr:mirror`、`tunlr:filter`）在用户 mixin 之前，允许覆盖，plan 记为覆盖。放在订阅之后，因为插入规则要订阅的 `rules` 就位、`dns.listen` 要补在订阅的 `dns` 上。
   - 拒绝而不是忽略：被忽略的设置让人以为生效了。代价：升级新增独占键后，已写了它的 mixin 会让定时更新保持当前配置，`doctor` 列出。
   - `secret` 不支持自定义，只能 `panel reset-secret`；任何列表都不显示它。
-  - 只在内存中合成，不写入 `mixin.d`：写成文件会让人以为可编辑、改了又被覆盖。命令替用户写的文件（如 `<订阅>/10-filter.yaml`、`<订阅>/20-geo.yaml`）归用户所有。
+  - 只在内存中合成，不写入 `mixin.d`：写成文件会让人以为可编辑、改了又被覆盖。命令替用户写的文件（如 `<订阅>/10-filter.yaml`、`<订阅>/20-geo.yaml`、`90-dns.yaml`）归用户所有。
+- **只有系统依赖的键独占，偏好由命令编辑 mixin 文件**。独占的是 tunlr 在配置之外依赖的键（`tunlr:core`、`tunlr:tun`、`tunlr:panel`、`tunlr:proxy` 的：内核 socket、TUN、面板、代理端口的局域网访问）：nft 规则、检测、救援要靠它们。DNS 模式、问谁、fake-ip-filter、geo 这类偏好不独占，也不存在状态里：
+  - 命令改的是现在决定这个键的 mixin 文件（按合成时记下的来源，先找键本身，再找最近的上级映射），没有时写进命令自己的文件（`90-dns.yaml`、`<订阅>/20-geo.yaml`）；恢复默认时从可改范围内所有写了它的文件中删除，删空的文件删除。可改范围按命令的作用域：全局的（DNS）是共用的和启用的订阅的 mixin，按订阅的（geo、`--dns`）只是那个订阅的。
+  - 基于 `yaml.Node` 修改，文件中的其他键和注释保留。
+  - 这样命令和手写的 mixin 是同一份数据，不会冲突，也不会“改了不生效”：命令改的就是生效的那一处。也不需要在用户写了同一键时拒绝或警告。
+  - 预览列出要改的文件和键；写入后发布失败时文件恢复原状，配置由流水线回滚。写入前文件被别处改过时拒绝（`ErrMixinChanged`），不覆盖。
   - 回滚和自动关闭透明代理不重新合成，只按当前状态重写独占的受管 mixin（含面板监听地址和 `secret`）。
 - **mixin**（`pkg/core/config/mixin.go`）。参考 clashctl（单文件、嵌套操作）和 ShellCrash（分文件、`-t` 失败静默丢弃全部自定义）。
   - **两个命名空间：`mihomo:` 是原生配置，`tunlr:` 是 tunlr 的语法**。顶层只能有这两个和放锚点的 `x-`：
@@ -210,13 +215,15 @@ sh 的优势（轻量、随处可跑、可随手改）服务于路由器和老�
       - `ipv6: false`：fake-ip 只给 A 记录假地址，AAAA 返回真实地址时，有 IPv6 出口的设备会绕过代理。
       - 嗅探默认开启（HTTP、TLS、QUIC）：网关模式下设备自己用 DoH 或写死 DNS 时，只有它能认出域名。
     - **来源提示**：dns、sniffer 由订阅整段替换，plan 和 `tunlr config` 用一行说明各来自订阅还是兜底值、被哪些 mixin 改过（`--json` 的 `dns_sources`），否则看不出生效的是哪一份。
-    - **用谁的 DNS 按订阅选**：订阅写了 dns 时，`mihomo:` 只能在它上面改，退不回兜底值，所以 mixin 有 `tunlr.ignore-from-subscription`，列出不从订阅采用的键（`dns`、`sniffer`、`hosts`：整段采用、又没有别的办法退回的映射）。各文件的列表取并集，后面的不能取消前面的。机场的 DNS 好坏因机场而异，`tunlr sub set <订阅> --dns tunlr|subscription` 像 geo 一样写进订阅自己的 mixin（`20-dns.yaml`），dns 和 sniffer 一起换：兜底的嗅探是配合兜底的 DNS 调的。别的 mixin 也列了时 `--dns subscription` 拒绝，免得改了不生效。
-    - **DNS 模式是全局开关**（`tunlr tun dns`，存在 `state.json`）：fake-ip 与 redir-host 的取舍看设备和应用，与订阅无关。只在设了时由 tunlr:tun 写 `dns.enhanced-mode` 并独占它；没设时不独占，已有的 mixin 照常生效，升级不会让它们报错。nameserver 等内容不做开关：各人的选择太多，用 mixin。
-    - **fake-ip-filter 只编辑自己的条目**（`tunlr tun dns fake-ip-filter`）：要加的通常是一两个内网域名，整份替换要复制十几行，复制出去的也跟不上订阅或兜底值的更新。所以 `tunlr.fake-ip-filter` 在生效的那份列表上 `append`、`delete`（顺序不影响匹配，没有 prepend、patch），追加时已有的不重复。命令只管 `append`，写在共用的 `90-fake-ip-filter.yaml`（排在多数共用文件之后，不被它们整份替换的列表盖掉）；文件中手写的 `delete` 保留。之后的 mixin 仍整份替换了列表时，预览指出是哪个文件。
+    - **用谁的 DNS 按订阅选，默认用 tunlr 的**：机场的 DNS 为桌面客户端而写，常缺 `respect-rules`、`nameserver-policy`，在服务器上未必合适；订阅写了 dns 时 `mihomo:` 又只能在它上面改，退不回兜底值。所以订阅的 `dns`、`sniffer` 默认不采用（plan 列出没有采用的），mixin 写了 `tunlr.sub-dns: true` 才整段采用；`hosts` 照常采用。开关按文件顺序最后写的为准，`false` 或 `null` 取消前面的。`tunlr sub set <订阅> --dns tunlr|sub` 像 geo 一样写进订阅自己的 mixin（`20-dns.yaml`），dns 和 sniffer 一起换：兜底的嗅探是配合兜底的 DNS 调的。共用的 mixin 写了 true 时，`--dns tunlr` 在订阅的 mixin 中写 false。启用的订阅用自己的 DNS 时 `tunlr status` 多一行，免得出了问题想不到这里。
+    - **DNS 是顶层命令**（`tunlr dns`），不在 `tun` 下：问谁在 TUN 关着时也用到（代理端口来的连接、节点的域名都由 mihomo 自己解析），只有模式和 fake-ip-filter 依赖 TUN。TUN 关着时 `tunlr dns` 注明这两项现在用不到。
+    - **DNS 模式**（`tunlr dns mode fake-ip|redir-host|default`）：fake-ip 与 redir-host 的取舍看设备和应用，与订阅无关，所以没有决定它的文件时写进共用的 `90-dns.yaml`；`default` 从共用的和启用的订阅的 mixin 中删除它。改为 redir-host 时，采用的订阅的 DNS 缺 `respect-rules` 或 `nameserver-policy` 的，预览提醒：redir-host 下设备拿到的就是这些上游的回答。取值写在 `mode` 之后，不各自做成子命令：`dns default` 读起来像恢复全部 DNS 设置，`fake-ip` 又与 `fake-ip-filter` 并列难分；写法同 `devices route <设备> proxy|direct`，终端里不给值时选择。
+    - **问谁只分两组**（`tunlr dns servers`）：中国的域名（`nameserver-policy` 的 `geosite:cn`，加 `#DIRECT`，同一组也写进 `proxy-server-nameserver` 解析节点的域名）和其他的（`nameserver`）。这是兜底 DNS 的结构，也是多数人要换的；`fallback`、`default-nameserver` 等更细的写 mixin。协议（UDP、DoT、DoH、DoQ）不做开关，同一列表里混写，mihomo 本来就支持。文本框预填现在用的，没有时填 tunlr 的默认值；清空即删除自己的设置。发布后经内核的 `/dns/query`（按配置的 policy 和规则问上游，不返回 fake-ip）解析 `www.baidu.com`、`www.google.com`，不通时问是否放回原来的服务器，没有终端时退出码 3；内核没运行或 DNS 关闭时不检查。
+    - **fake-ip-filter 只编辑自己的条目**（`tunlr dns fake-ip-filter`）：要加的通常是一两个内网域名，整份替换要复制十几行，复制出去的也跟不上订阅或兜底值的更新。所以 `tunlr.fake-ip-filter` 在生效的那份列表上 `append`、`delete`（顺序不影响匹配，没有 prepend、patch），追加时已有的不重复。命令只管 `append`，写在共用的 `90-dns.yaml`（排在多数共用文件之后，不被它们整份替换的列表盖掉）；文件中手写的 `delete` 保留。之后的 mixin 仍整份替换了列表时，预览指出是哪个文件。
     - **编辑用内联文本框**：一行一条，比逐条增删的问答直接。按键与 huh 默认相反：Enter 换行、Tab 完成，按习惯想换行时不会把只写了一行的列表提交出去；帮助行写明按键，Ctrl+E 可以转到编辑器。
-    - **菜单里 DNS 是一项**：Traffic 组已满 7 项，模式与 fake-ip-filter 是用户眼里的同一件事，合成一项“DNS”（`tunlr tun dns`），在终端里先显示现状再选改什么；没有终端时 `tun dns` 只显示现状。不放 Config 组：那是按实现（写 mixin）而不是按用户找的地方归类。
+    - **菜单里 DNS 是一项**：模式、问谁与 fake-ip-filter 是用户眼里的同一件事，合成一项“DNS”（`tunlr dns`），在终端里先显示现状再选改什么；没有终端时 `dns` 只显示现状。放在 Traffic 组，TUN 关着时也列出（问谁照样用到）；TUN 与代理端口都开着时 Traffic 正好 7 项。不放 Config 组：那是按实现（写 mixin）而不是按用户找的地方归类。
   - **`mihomo:` 的合并语义**：RFC 7386 JSON Merge Patch，映射逐层合并，标量和列表整体替换，`null` 删除。列表只整体替换：要增删的是订阅的三个列表和 fake-ip-filter，归 `tunlr:`。整体替换 `proxies`、`proxy-groups`、`rules`、`sub-rules` 时警告（订阅更新后机场内容全丢）。
-  - **`tunlr:` 的操作**：`defaults`、`ignore-from-subscription`、`proxy-filter`、`fake-ip-filter`（`append`、`delete`），以及对 `proxies`、`proxy-groups`、`rules`、`sub-rules.<名称>` 的 `prepend`、`append`、`patch`、`delete`；其他键报错。
+  - **`tunlr:` 的操作**：`defaults`、`sub-dns`、`proxy-filter`、`fake-ip-filter`（`append`、`delete`），以及对 `proxies`、`proxy-groups`、`rules`、`sub-rules.<名称>` 的 `prepend`、`append`、`patch`、`delete`；其他键报错。
     - 规则 `append` 插在末尾 `MATCH` 之前，否则永不命中。
     - `patch` 按 `name` 递归修改；列表字段用显式的 `prepend-<字段>` 等，不靠值类型猜。找不到只警告：机场改名很常见。
     - 删节点或组时同时从所有组的 `proxies` 移除。名称可写 `/正则/`。
@@ -308,7 +315,7 @@ sh 的优势（轻量、随处可跑、可随手改）服务于路由器和老�
   - 事实：geo 数据只能由内核自己的更新器重新加载，外部替换文件须重启内核；内核下载后不校验。
   - 设计：tunlr 只下载管理内核和订阅（面板同样交给内核，见第 6 节“信任边界”）；geo 数据由内核按配置下载和更新，tunlr 不下载、不校验，`init` 也不预下载（`mihomo -t` 时内核自己下载），不事后核对——内核每次更新都不校验，发现时篡改文件已被使用，订阅自定义的来源也无从校验。
   - 订阅可指定自己的来源（规则依赖它），所以订阅写了的为准；tunlr 只在 `tunlr:defaults` 中兜底（每周、meta-rules-dat 的 release 分支经 jsDelivr 的 fastly 节点，中国可直接下载，不依赖 GitHub 镜像；各 jsDelivr 节点缓存 12 小时，可能晚一天，对每周的更新无影响。见第 6 节“tunlr 的兜底值”），`geox-url` 按文件替换。设置了镜像时，`geox-url` 中 github.com 的地址最后改为经镜像。
-  - **按订阅调整**：`sub set <订阅> --geo-update/--geo-url` 写入该订阅的受管 geo mixin（见第 6 节“受管 mixin”），只在它启用时生效；排在它之后的用户 mixin 写了同一键时拒绝修改并指出该改的文件，免得改了不生效。菜单中 geo 是订阅的一项属性，不单列。只按订阅调整，因为 geo 数据服务于订阅的规则，订阅自带来源时改兜底无效；覆盖订阅的 mixin 结果确定，不必判断每个键来自哪一层。
+  - **按订阅调整**：`sub set <订阅> --geo-update/--geo-url` 改的是该订阅的 mixin 中现在决定这个键的文件，没有时写进 `<订阅>/20-geo.yaml`（见第 6 节“偏好由命令编辑 mixin 文件”），只在它启用时生效；共用的 mixin 不改，由订阅的覆盖。菜单中 geo 是订阅的一项属性，不单列。只按订阅调整，因为 geo 数据服务于订阅的规则，订阅自带来源时改兜底无效；覆盖订阅的 mixin 结果确定，不必判断每个键来自哪一层。
   - 来源可见：`tunlr update` 和 `config plan` 列出每个键的值来自兜底、订阅还是 mixin。
 - **状态以实际为准**：版本、TUN 状态等一律经 API 查询内核；工具的记录只作“已知可用的历史”。
 - 内核 API 不稳定，调用集中封装在 `pkg/core/mihomo` 的 client 中，随 mihomo 发版做兼容性测试。
@@ -511,7 +518,7 @@ sh 的优势（轻量、随处可跑、可随手改）服务于路由器和老�
 
 命令树按领域组织，检验标准是没看过文档的人能猜对大部分常用操作：
 
-- **顶层只放领域名词和少数总览命令**，动作放在子命令里。`--help` 的分组与主菜单的分类一致。
+- **顶层只放领域名词和少数总览命令**，动作放在子命令里。主菜单的分类比 `--help` 的分组细，每个分类的命令都在同一个分组中；只有 Maintenance 例外，它收了 `doctor`、`init`（诊断与修复）。
 - **不带子命令时只查看**，因此没有 `list` 子命令。查看命令的参数只改变看什么；会改系统的都是子命令，动作不靠参数变成查看或另一个动作（是 `panel reset-secret`、`core rollback`，不是 `panel --reset-secret`、`core upgrade --rollback`）。
 - **几个词各司其职**：`config` 是 mihomo 的配置，`settings` 是工具自己的设置，`update` 是订阅与 geo 数据的定时更新，`upgrade` 升级 tunlr 自身，`core upgrade` 升级内核。
 
@@ -537,12 +544,14 @@ tunlr update run [sub|geo]
 Network
 tunlr tun
 tunlr tun on | off
-tunlr tun dns [fake-ip | redir-host | default]
-tunlr tun dns fake-ip-filter [--add <名称>]... [--remove <名称>]... [--reset]
 tunlr tun gateway on | off
 tunlr proxy
 tunlr proxy lan on | off
 tunlr proxy env [--unset]
+tunlr dns
+tunlr dns servers [--cn <服务器>]... [--other <服务器>]... [--reset]
+tunlr dns mode [fake-ip | redir-host | default]
+tunlr dns fake-ip-filter [--add <名称>]... [--remove <名称>]... [--reset]
 tunlr filter
 tunlr devices
 
@@ -592,8 +601,9 @@ tunlr backup create | restore
 **主菜单**：在终端里只输入 `tunlr` 时进入；非交互模式（包括 `--json`）仍显示帮助。
 
 - 菜单只是子命令的入口，每一项对应一个命令，用户顺便学会命令；不嵌表单，按回车就把终端交给子命令，由子命令自己问、做、报告，因此子命令要能自己问齐答案。
-- 两级，按用户要做的事和操作的对象分类，不按命令树（否则“让手机走代理”要在五个分类里找），每类不超过 7 项；分类与 `--help` 的分组一一对应。huh 的 Select 没有不可选的行，所以靠分类而不是分组标题归类。
-- 需要处理的事项只列“现在就该做、做什么很明确”的（未发布的改动、内核没在运行、订阅抓取失败）；在 tunlr 之外改过的配置要用户先看 diff，新版本只在状态行提示，让用户自己挑时候升级。
+- 两级，按用户要做的事和操作的对象分类，不按命令树（否则“让手机走代理”要在五个分类里找），每类不超过 7 项；分类比 `--help` 的分组细，见第 10 节开头。huh 的 Select 没有不可选的行，所以靠分类而不是分组标题归类。
+- 每类中动作在前，查看的项（列表、details、打开面板）在最后：要选对象的动作自己会列出可选的对象。
+- 需要处理的事项只列“现在就该做、做什么很明确”的（未发布的改动、内核没在运行、订阅抓取失败）；执行的命令与分类中的同一件事相同（抓取失败时是 `sub update`），用户只需记一个。在 tunlr 之外改过的配置要用户先看 diff，新版本只在状态行提示，让用户自己挑时候升级。
 - 状态行只查 systemctl、内核 API 和状态文件，不联网；刷新期间选中的操作等刷新完再执行，避免争用数据。
 - 不进菜单的：`uninstall`（不该顺手按到）、`upgrade`、`proxy env`（给当前 shell 用）、`config plan`（`apply` 先显示同一份 diff）等。
 - 不清屏，输出留在滚动记录里；子命令失败不退出菜单；执行中 Ctrl-C 只中断这一个操作（照常回滚）。

@@ -110,8 +110,10 @@ type Plan struct {
 	Subscription string
 	// Dropped 是订阅中被丢弃的顶层键（仅 KindApply）。
 	Dropped []string
-	// Ignored 是订阅中写了、mixin 要求不采用的顶层键（tunlr.ignore-from-subscription，仅 KindApply）。
-	Ignored []config.IgnoredKey
+	// SubDNS 是采用订阅的 DNS 和嗅探的 mixin 文件（tunlr.sub-dns: true），UnusedDNS 是没有它时订阅中写了、
+	// 没有采用的这几个键（仅 KindApply）。
+	SubDNS    string
+	UnusedDNS []string
 	// Mixins 是按应用顺序排列的 mixin 文件名（仅 KindApply）。
 	Mixins []string
 	// Warnings 是合成时发现、不阻止发布的问题（仅 KindApply）。
@@ -152,11 +154,21 @@ type Plan struct {
 	facts *config.Facts
 	// geoStaged 是暂存的 geo 文件的 sha256（文件名为键），见 GeoReplaced。
 	geoStaged map[string]string
+	// composed 是合成的结果（仅 KindApply），KeySource 从中读出键的来源。
+	composed *config.Result
 }
 
 // Changed 报告 Config 与生效的配置是否不同。
 func (p *Plan) Changed() bool {
 	return p.Current == nil || !bytes.Equal(p.Current, p.Config)
+}
+
+// KeySource 返回 Config 中点分路径 path 的值和来源（见 config.Result.KeySource）；回滚的计划没有来源，From 为空。
+func (p *Plan) KeySource(path string) config.KeySource {
+	if p.composed == nil {
+		return config.KeySource{Path: path}
+	}
+	return p.composed.KeySource(path)
 }
 
 // Plan 用启用的订阅、mixin 和工具设置合成新配置，与生效的配置比较并校验。
@@ -170,7 +182,7 @@ func (p *Pipeline) Plan(ctx context.Context) (*Plan, error) {
 // Plan.Inactive 为真：这样的计划只用来检查，不能发布。订阅不存在时报 core.ErrInvalidArgument。
 // m.Data 为 nil 时按删除了这个文件合成。
 func (p *Pipeline) PlanWithMixin(ctx context.Context, m config.Mixin) (*Plan, error) {
-	opts := planOptions{edited: &m}
+	opts := planOptions{edited: []config.Mixin{m}}
 	if sub, _, ok := strings.Cut(m.Name, "/"); ok {
 		l, err := subscription.LoadList(p.Layout.SubscriptionList())
 		if err != nil {
@@ -184,6 +196,11 @@ func (p *Pipeline) PlanWithMixin(ctx context.Context, m config.Mixin) (*Plan, er
 		}
 	}
 	return p.plan(ctx, opts)
+}
+
+// PlanWithMixins 同 PlanWithMixin，但一次代替几个文件，它们都是共用的或启用的订阅的 mixin。
+func (p *Pipeline) PlanWithMixins(ctx context.Context, ms []config.Mixin) (*Plan, error) {
+	return p.plan(ctx, planOptions{edited: ms})
 }
 
 // PlanSubscription 同 Plan，但按订阅 name 被启用时的样子合成，不改动订阅列表，用于 sub use --dry-run。
@@ -266,12 +283,6 @@ func (p *Pipeline) PlanFilter(ctx context.Context, f state.Filter) (*Plan, error
 	return p.plan(ctx, planOptions{filter: &f})
 }
 
-// PlanDNSMode 同 Plan，但按 DNS 模式开关为 mode（state.DNSFakeIP、state.DNSRedirHost，空字符串为按配置）时的样子合成，
-// 不看状态文件中的开关。调用方在发布前保存它。
-func (p *Pipeline) PlanDNSMode(ctx context.Context, mode string) (*Plan, error) {
-	return p.plan(ctx, planOptions{dnsMode: &mode})
-}
-
 // PlanResetSecret 同 Plan，但换用新生成的 API secret，发布时保存。
 func (p *Pipeline) PlanResetSecret(ctx context.Context) (*Plan, error) {
 	return p.plan(ctx, planOptions{resetSecret: true})
@@ -297,7 +308,7 @@ func (p *Pipeline) Compose(ctx context.Context, sub string) (*Plan, error) {
 
 // ComposeWithMixin 同 Compose（按启用的订阅），但用 m 代替磁盘上的同名 mixin 文件（见 PlanWithMixin）。
 func (p *Pipeline) ComposeWithMixin(ctx context.Context, m config.Mixin) (*Plan, error) {
-	plan, err := p.plan(ctx, planOptions{composeOnly: true, edited: &m})
+	plan, err := p.plan(ctx, planOptions{composeOnly: true, edited: []config.Mixin{m}})
 	if plan != nil {
 		plan.Inactive = true
 	}
@@ -324,15 +335,13 @@ type switches struct {
 	// direct 是走法为直连的设备的地址。
 	direct []string
 	filter state.Filter
-	// dnsMode 是 DNS 模式的开关（state.DNSMode），为空时按配置。
-	dnsMode string
 	// coreUID 是内核用户的 UID，TUN 按它排除内核自己的流量；不知道（尚未 init、测试用的布局）时为 -1。
 	coreUID int
 }
 
 func (p *Pipeline) switchesOf(st *state.State) switches {
 	sw := switches{tun: st.TunEnabled(), panelLAN: st.PanelLAN != nil, proxyLAN: st.ProxyLAN != nil, direct: st.DirectIPs(), filter: st.Filter,
-		dnsMode: st.DNSMode, coreUID: -1}
+		coreUID: -1}
 	if o := p.owner(); o != nil {
 		sw.coreUID = o.UID
 	}
@@ -340,8 +349,8 @@ func (p *Pipeline) switchesOf(st *state.State) switches {
 }
 
 type planOptions struct {
-	// edited 不为 nil 时代替磁盘上的同名 mixin 文件。
-	edited *config.Mixin
+	// edited 代替磁盘上的同名 mixin 文件。
+	edited []config.Mixin
 	// subscription 非空时代替订阅列表中启用的订阅（检查没有启用的订阅的 mixin）。
 	subscription string
 	// tun 不为 nil 时代替状态文件中的透明代理开关。
@@ -356,8 +365,6 @@ type planOptions struct {
 	devices []state.Device
 	// filter 不为 nil 时代替状态文件中的全局过滤项。
 	filter *state.Filter
-	// dnsMode 不为 nil 时代替状态文件中的 DNS 模式开关（空字符串为按配置）。
-	dnsMode *string
 	// settings 不为 nil 时代替设置文件。
 	settings *settings.Settings
 	// restored 不为 nil 时代替设置文件、mixin、订阅与状态中的对应部分（见 Restored）。
@@ -369,7 +376,6 @@ type planOptions struct {
 }
 
 func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
-	edited := opts.edited
 	set := opts.settings
 	if opts.restored != nil {
 		set = opts.restored.Settings
@@ -422,9 +428,6 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	if opts.filter != nil {
 		sw.filter = *opts.filter
 	}
-	if opts.dnsMode != nil {
-		sw.dnsMode = *opts.dnsMode
-	}
 	var sub []byte
 	if opts.restored != nil {
 		sub = opts.restored.Content
@@ -444,8 +447,8 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	if opts.restored != nil {
 		mixins = mixinsFor(opts.restored.Mixins, active)
 	}
-	if edited != nil {
-		mixins = withEdited(mixins, *edited)
+	for _, m := range opts.edited {
+		mixins = withEdited(mixins, m)
 	}
 	for _, m := range mixins {
 		plan.Mixins = append(plan.Mixins, m.Name)
@@ -460,8 +463,8 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan.Config, plan.Dropped, plan.Ignored, plan.facts = res.Config, res.Dropped, res.Ignored, res.Facts
-	plan.GeoSources, plan.DNSSources = res.GeoSources, res.DNSSources
+	plan.Config, plan.Dropped, plan.SubDNS, plan.UnusedDNS, plan.facts = res.Config, res.Dropped, res.SubDNS, res.UnusedDNS, res.Facts
+	plan.GeoSources, plan.DNSSources, plan.composed = res.GeoSources, res.DNSSources, res
 	if opts.composeOnly {
 		return plan, nil
 	}
@@ -978,7 +981,6 @@ const DNSListen = "127.0.0.1:1053"
 //	tunlr:core   内核的 Unix socket，工具经它调用 API
 //	tunlr:tun    透明代理：enable 取自开关，其余是固定值，工具补充的规则、清理和检测依赖它们；
 //	             面板临时打开 TUN 时也按这些值工作；开启时还要求 dns.enable: true，dns-hijack 靠它；
-//	             DNS 模式的开关设了时写 dns.enhanced-mode（tunlr tun dns），没设时不管它；
 //	             防回环的 auto-detect-interface 与 exclude-uid（内核用户，不知道时不写，仍然独占）
 //	tunlr:panel  API 的监听地址（面板的局域网访问开关）和 secret
 //	tunlr:proxy  代理端口的局域网访问开关：开启时 allow-lan: true，lan-allowed-ips 限制为私有地址段
@@ -992,14 +994,7 @@ const DNSListen = "127.0.0.1:1053"
 func managed(secret string, sw switches, set *settings.Settings) []config.Managed {
 	tunDNS := ""
 	if sw.tun {
-		tunDNS += "    enable: true\n"
-	}
-	// DNS 模式只影响内核怎样应答经它解析的设备（TUN 劫持的、网关转发来的 DNS），开关设了才独占它。
-	if sw.dnsMode != "" {
-		tunDNS += "    enhanced-mode: " + sw.dnsMode + "\n"
-	}
-	if tunDNS != "" {
-		tunDNS = "  dns:\n" + tunDNS
+		tunDNS = "  dns:\n    enable: true\n"
 	}
 	// 内核用户的流量不进 TUN：auto-detect-interface 之外的第二道防回环，见 DESIGN.md 8.4。
 	excludeUID := ""
@@ -1036,7 +1031,7 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 
 	list := []config.Managed{
 		{Name: ManagedCore, Data: fmt.Appendf(nil, "mihomo:\n  external-controller-unix: %s\n", paths.CoreSocketName)},
-		{Name: ManagedTun, Command: "tunlr tun on/off, tunlr tun dns", Data: fmt.Appendf(nil, `mihomo:
+		{Name: ManagedTun, Command: "tunlr tun on/off", Data: fmt.Appendf(nil, `mihomo:
   tun:
     enable: %t
     auto-route: true

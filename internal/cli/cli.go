@@ -198,8 +198,8 @@ func (a *app) newRootCommand() *cobra.Command {
 			return c.Help()
 		}})
 
-	// 命令树见 docs/DESIGN.md 第 10 节：顶层只放领域名词和总览命令，--help 按分组显示，分组和顺序与主菜单
-	// 的分类一致。
+	// 命令树见 docs/DESIGN.md 第 10 节：顶层只放领域名词和总览命令，--help 按分组显示。主菜单分得更细，
+	// 每个分类的命令都在同一个分组中（Maintenance 除外）。
 	groups := []struct {
 		id, title string
 		cmds      []*cobra.Command
@@ -207,7 +207,8 @@ func (a *app) newRootCommand() *cobra.Command {
 		{"overview", "Overview:", []*cobra.Command{a.newStatusCommand(), a.newDoctorCommand()}},
 		{"setup", "Setup:", []*cobra.Command{a.newInitCommand(), a.newUpgradeCommand(), a.newUninstallCommand()}},
 		{"config", "Configuration:", []*cobra.Command{a.newSubCommand(), a.newConfigCommand(), a.newUpdateCommand()}},
-		{"network", "Network:", []*cobra.Command{a.newTunCommand(), a.newProxyCommand(), a.newFilterCommand(), a.newDevicesCommand()}},
+		{"network", "Network:", []*cobra.Command{a.newTunCommand(), a.newProxyCommand(), a.newDNSCommand(), a.newFilterCommand(),
+			a.newDevicesCommand()}},
 		{"kernel", "Kernel and panel:", []*cobra.Command{a.newCoreCommand(), a.newPanelCommand()}},
 		{"maintenance", "Maintenance:", []*cobra.Command{a.newSettingsCommand(), a.newBackupCommand()}},
 	}

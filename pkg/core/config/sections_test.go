@@ -47,7 +47,10 @@ func TestDNSSources(t *testing.T) {
 		{"changed by a mixin", Layers{Managed: []Managed{fallbacks, listen}, Mixins: []Mixin{nameserver}},
 			"dns=tunlr:defaults*+10-dns.yaml sniffer=tunlr:defaults*"},
 		{"subscription", Layers{Managed: []Managed{fallbacks, listen}, Subscription: []byte("dns:\n  enable: true\n  nameserver: [8.8.8.8]\n"),
-			Mixins: []Mixin{nameserver}}, "dns=subscription+10-dns.yaml sniffer=tunlr:defaults*"},
+			Mixins: []Mixin{useSubDNS, nameserver}}, "dns=subscription+10-dns.yaml sniffer=tunlr:defaults*"},
+		// 没有 tunlr.sub-dns 时订阅写的 dns 不采用。
+		{"subscription not used", Layers{Managed: []Managed{fallbacks, listen}, Subscription: []byte("dns:\n  enable: true\n  nameserver: [8.8.8.8]\n")},
+			"dns=tunlr:defaults* sniffer=tunlr:defaults*"},
 		{"removed", Layers{Managed: []Managed{fallbacks}, Mixins: []Mixin{mixin("10-a.yaml", "mihomo:\n  sniffer: null\n")}},
 			"dns=tunlr:defaults* sniffer=tunlr:defaults*+10-a.yaml!"},
 		// 后面的文件覆盖了前面的改动时只列后面的。
@@ -57,7 +60,7 @@ func TestDNSSources(t *testing.T) {
 		{"mixin fallbacks", Layers{Managed: []Managed{fallbacks}, Mixins: []Mixin{mixin("05-f.yaml", "tunlr:\n  defaults:\n    dns:\n      ipv6: false\n")}},
 			"dns=tunlr:defaults*+05-f.yaml sniffer=tunlr:defaults*"},
 		{"mixin fallbacks replaced", Layers{Managed: []Managed{fallbacks}, Subscription: []byte("dns:\n  enable: true\n"),
-			Mixins: []Mixin{mixin("05-f.yaml", "tunlr:\n  defaults:\n    dns:\n      ipv6: false\n")}}, "dns=subscription sniffer=tunlr:defaults*"},
+			Mixins: []Mixin{useSubDNS, mixin("05-f.yaml", "tunlr:\n  defaults:\n    dns:\n      ipv6: false\n")}}, "dns=subscription sniffer=tunlr:defaults*"},
 		// 只有 mixin 的 tunlr.defaults 提供时它就是基础；哪里都没有时为空，mixin 加上的列为改动。
 		{"only a mixin", Layers{Mixins: []Mixin{mixin("05-f.yaml", "tunlr:\n  defaults:\n    sniffer:\n      enable: true\n"), nameserver}},
 			"dns=+10-dns.yaml sniffer=05-f.yaml*"},

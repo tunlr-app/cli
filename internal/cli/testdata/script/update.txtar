@@ -54,7 +54,7 @@ exec tunlr update
 stdout '^Geo data settings with "main" active \(tunlr sub set main --geo-update, --geo-url changes them\):$'
 stdout '^  geo-update-interval\s+168\s+fallback \(tunlr:defaults\)$'
 exec tunlr sub set main --geo-update 2d --geo-url geosite=https://cdn.example/geosite.dat --yes
-stdout '^Wrote geo-auto-update, geo-update-interval, geox-url.geosite for "main" to .*20-geo\.yaml\.$'
+stdout '^  main/20-geo.yaml  set geo-auto-update, geo-update-interval, geox-url.geosite$'
 stdout '^\+geo-update-interval: 48$'
 grep '^geo-update-interval: 48$' root/var/lib/tunlr/core/config.yaml
 grep '^  geo-update-interval: 48$' root/etc/tunlr/mixin.d/main/20-geo.yaml
@@ -82,7 +82,7 @@ cp airport-geo.yaml provider/airport.yaml
 exec tunlr update run sub
 grep '^geo-update-interval: 48$' root/var/lib/tunlr/core/config.yaml
 exec tunlr sub set main --geo-update default --geo-url geosite=default --yes
-stdout '^Removed .*20-geo\.yaml: "main" uses what it sets, or else tunlr''s fallbacks\.$'
+stdout '^  main/20-geo.yaml  unset .*geo-update-interval.*; nothing left, so the file is deleted$'
 ! exists root/etc/tunlr/mixin.d/main/20-geo.yaml
 grep '^geo-update-interval: 12$' root/var/lib/tunlr/core/config.yaml
 exec tunlr update
@@ -91,11 +91,16 @@ stdout '^  geo-auto-update\s+true\s+fallback \(tunlr:defaults\)$'
 exec tunlr config plan
 stdout '^Geo data settings not from the fallbacks: geo-update-interval \(subscription\) \(see: tunlr update\)$'
 
-# 订阅的 mixin 中排在 20-geo.yaml 之后的文件写了的键：拒绝修改，改了也不生效；共用的 mixin 不影响
+# 订阅的 mixin 中排在 20-geo.yaml 之后的文件写了的键：改在那个文件里，default 从订阅的 mixin 中删除；
+# 共用的 mixin 写的由订阅的 geo mixin 覆盖
 cp geo.yaml root/etc/tunlr/mixin.d/main/50-geo.yaml
-exitcode 2 tunlr sub set main --geo-update 3d --yes
-stderr 'geo-update-interval is set by the mixin main/50-geo.yaml, which is applied after main/20-geo.yaml; change it there \(tunlr config edit main/50-geo\)'
-rm root/etc/tunlr/mixin.d/main/50-geo.yaml
+exec tunlr sub set main --geo-update 3d --yes
+stdout '^  main/50-geo.yaml  set geo-update-interval$'
+grep '^  geo-update-interval: 72$' root/etc/tunlr/mixin.d/main/50-geo.yaml
+grep '^geo-update-interval: 72$' root/var/lib/tunlr/core/config.yaml
+exec tunlr sub set main --geo-update default --yes
+! exists root/etc/tunlr/mixin.d/main/50-geo.yaml
+! exists root/etc/tunlr/mixin.d/main/20-geo.yaml
 cp geo.yaml root/etc/tunlr/mixin.d/10-geo.yaml
 exec tunlr sub set main --geo-update 3d --yes
 grep '^geo-update-interval: 72$' root/var/lib/tunlr/core/config.yaml
