@@ -200,14 +200,19 @@ func (a *app) newDNSModeCommand() *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			options, initial := dnsModeOptions(m)
-			k, err := a.prompt.Choose(ctx, "Which DNS mode?", options, initial)
-			if stop, err := a.cancelled(err); stop {
-				return err
-			}
-			return a.setDNSMode(ctx, dnsModes[k])
+			return a.chooseDNSMode(ctx, m)
 		},
 	}
+}
+
+// chooseDNSMode 让用户选择 DNS 模式，m 是现在的模式。
+func (a *app) chooseDNSMode(ctx context.Context, m *setup.DNSMode) error {
+	options, initial := dnsModeOptions(m)
+	k, err := a.prompt.Choose(ctx, "Which DNS mode?", options, initial)
+	if stop, err := a.cancelled(err); stop {
+		return err
+	}
+	return a.setDNSMode(ctx, dnsModes[k])
 }
 
 // dnsModeOptions 是选择 DNS 模式的选项（与 dnsModes 对应）和光标的初始位置：模式由 mixin 写定时停在它上面，
@@ -321,34 +326,38 @@ func (a *app) printFakeIPFilter(entries []string) {
 	}
 }
 
-// chooseDNSChange 是终端中不带子命令的 dns（主菜单的“DNS”）：显示现状，让用户选择改模式、问谁还是
-// fake-ip-filter。
+// chooseDNSChange 是终端中不带子命令的 dns（主菜单的“DNS”）：显示现状，让用户选择改模式、IPv6、问谁还是
+// fake-ip-filter；模式和 IPv6 选中后再选取值。
 func (a *app) chooseDNSChange(cmd *cobra.Command, s *setup.DNSStatus) error {
 	a.printDNS(s)
 	fmt.Fprintln(a.stdout)
+	mode := "Mode: fake-ip or redir-host"
+	if s.Mode.Mode != "" {
+		mode += " (now " + s.Mode.Mode + ")"
+	}
 	yours := ""
 	if n := len(s.FakeIPFilter); n > 0 {
 		yours = fmt.Sprintf(" (%d of yours)", n)
 	}
-	options, initial := dnsModeOptions(&s.Mode)
-	options = append(options,
-		"IPv6: off, on or bypass (now "+s.IPv6.Mode+")",
-		"Servers: who answers Chinese domains and other domains",
-		"fake-ip-filter: names that get real addresses in fake-ip mode"+yours)
 	ctx := cmd.Context()
-	k, err := a.prompt.Choose(ctx, "Change which DNS setting?", options, initial)
+	k, err := a.prompt.Choose(ctx, "Change which DNS setting?", []string{
+		mode,
+		"IPv6: off, on or bypass (now " + s.IPv6.Mode + ")",
+		"Servers: who answers Chinese domains and other domains",
+		"fake-ip-filter: names that get real addresses in fake-ip mode" + yours,
+	}, 0)
 	if stop, err := a.cancelled(err); stop {
 		return err
 	}
-	switch k - len(dnsModes) {
+	switch k {
 	case 0:
-		return a.chooseIPv6(ctx, &s.IPv6)
+		return a.chooseDNSMode(ctx, &s.Mode)
 	case 1:
-		return a.editDNSServers(cmd, nil)
+		return a.chooseIPv6(ctx, &s.IPv6)
 	case 2:
-		return a.editFakeIPFilter(cmd, nil)
+		return a.editDNSServers(cmd, nil)
 	}
-	return a.setDNSMode(ctx, dnsModes[k])
+	return a.editFakeIPFilter(cmd, nil)
 }
 
 // publishedView 是 dns 的子命令在 --json 输出中共有的部分。

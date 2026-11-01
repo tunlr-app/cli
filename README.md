@@ -157,7 +157,7 @@ curl -fsSL https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/uninstall.sh | sudo sh
 - 局域网、时间同步、联网检测、STUN、QQ 快捷登录、游戏主机等域名返回真实地址（`fake-ip-filter`）。
 - 嗅探 HTTP、TLS、QUIC：局域网设备自己用 DoH 或写死了 DNS 时，按域名的规则照样生效。
 
-`tunlr dns` 显示 DNS 模式、IPv6 的设置、fake-ip 的地址段、问谁、你加的 fake-ip-filter 条目，以及各来自哪里；在终端里接着选改哪项（主菜单 Traffic 中的 DNS 就是它）。问谁在 TUN 关着时也用到：代理端口来的连接、节点的域名都由 mihomo 自己解析；模式和 fake-ip-filter 只在开了 TUN 时用到。这些命令改的都是 mixin 文件：现在决定那个键的文件，没有时写进 `mixin.d/90-dns.yaml`；预览列出要改的文件和键，确认后发布。自己编辑这些文件效果相同，命令下次读到的就是你改的。
+`tunlr dns` 显示 DNS 模式、IPv6 的设置、fake-ip 的地址段、问谁、你加的 fake-ip-filter 条目，以及各来自哪里；在终端里接着选改哪项，选了模式或 IPv6 再选取值（主菜单 Traffic 中的 DNS 就是它）。问谁在 TUN 关着时也用到：代理端口来的连接、节点的域名都由 mihomo 自己解析；模式和 fake-ip-filter 只在开了 TUN 时用到。这些命令改的都是 mixin 文件：现在决定那个键的文件，没有时写进 `mixin.d/90-dns.yaml`；预览列出要改的文件和键，确认后发布。自己编辑这些文件效果相同，命令下次读到的就是你改的。
 
 - `tunlr dns mode fake-ip|redir-host`：DNS 模式（`dns.enhanced-mode`）；`tunlr dns mode default` 从共用的和启用的订阅的 mixin 中删除它，回到按配置；不给模式时在终端里选。fake-ip 回答假地址（取自 `dns.fake-ip-range`，tunlr 的兜底值是 `198.18.0.1/16`，`tunlr dns` 显示生效的），经代理的域名不必真的解析；有些应用、设备不接受假地址，可以换 redir-host，回答真实地址，按域名的规则靠映射和嗅探照样生效。DNS 模式只影响 mihomo 自己回答的查询：开了 TUN 时本机的，和把这台服务器当网关、DNS 的局域网设备的。
 - `tunlr dns servers`：问谁，分两组。中国的域名（`geosite:cn`）经直连问，也用来解析节点的域名，写进 `dns.nameserver-policy` 的 `geosite:cn`（加 `#DIRECT`）和 `dns.proxy-server-nameserver`；其他域名按规则问，写进 `dns.nameserver`。在终端里打开两个文本框，预填现在用的服务器（没有时填 tunlr 的默认值），一行一个，IP、`udp://`、`tcp://`、`tls://`（DoT）、`https://`（DoH）、`quic://`（DoQ）、`h3://`、`dhcp://<网卡>`、`system` 可以混写；清空一个框就删除你的设置。发布后经 mihomo 解析 `www.baidu.com` 和 `www.google.com`，不通时问你是否放回原来的服务器。没有终端时用 `--cn`、`--other`（可重复，替换整组）或 `--reset`。

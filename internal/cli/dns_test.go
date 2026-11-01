@@ -9,7 +9,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/setup"
 )
 
-// TestDNSChooses 验证终端中不带子命令的 dns：先选改什么；fake-ip-filter 在文本框中编辑你自己的条目，
+// TestDNSChooses 验证终端中不带子命令的 dns：先选改什么（模式、IPv6 选中后再选取值）；fake-ip-filter 在文本框中编辑你自己的条目，
 // 预先填好现在的，说明里给出配置的列表已有几条；取消时什么都不改。
 func TestDNSChooses(t *testing.T) {
 	et := newEditTest(t)
@@ -20,7 +20,7 @@ func TestDNSChooses(t *testing.T) {
 	et.prompt.texts = []string{"nas.example.com\n\n+.lan\n printer.example.com \n"}
 	et.run(0, "dns", "--yes")
 	opts := et.prompt.asked[0]
-	if len(opts) != 6 || opts[2] != "Let the configuration decide (now: fake-ip)" || et.prompt.initials[0] != 2 {
+	if len(opts) != 4 || opts[0] != "Mode: fake-ip or redir-host (now fake-ip)" || et.prompt.initials[0] != 0 {
 		t.Errorf("options = %q, cursor %d", opts, et.prompt.initials[0])
 	}
 	if shown := et.prompt.textShown[0]; !strings.HasPrefix(shown, "|Only your own names; the configuration's list already has ") {
@@ -53,22 +53,23 @@ func TestDNSChooses(t *testing.T) {
 		t.Errorf("output:\n%s", et.stdout)
 	}
 
-	// 选模式时走 dns mode <模式> 的流程。
+	// 先选 Mode，再选模式（光标停在“按配置”上），走 dns mode <模式> 的流程。
 	et.stdout.Reset()
-	et.prompt.picks = []string{"redir-host"}
+	et.prompt.picks = []string{"Mode:", "redir-host"}
 	et.run(0, "dns", "--yes")
 	if !strings.Contains(et.stdout.String(), "mihomo answers DNS queries in redir-host mode now.") {
 		t.Errorf("output:\n%s", et.stdout)
 	}
-	if opts := et.prompt.asked[len(et.prompt.asked)-1]; opts[1] != "redir-host: answer with real addresses" {
-		t.Errorf("options = %q", opts)
+	last := len(et.prompt.asked) - 1
+	if opts := et.prompt.asked[last]; len(opts) != 3 || opts[2] != "Let the configuration decide (now: fake-ip)" || et.prompt.initials[last] != 2 {
+		t.Errorf("options = %q, cursor %d", opts, et.prompt.initials[last])
 	}
 
 	// 不给模式的 dns mode 只选模式，光标停在 mixin 写定的那个上。
 	et.stdout.Reset()
 	et.prompt.picks = []string{"Let the configuration decide"}
 	et.run(0, "dns", "mode", "--yes")
-	last := len(et.prompt.asked) - 1
+	last = len(et.prompt.asked) - 1
 	if opts := et.prompt.asked[last]; len(opts) != 3 || opts[1] != "redir-host: answer with real addresses (now)" || et.prompt.initials[last] != 1 {
 		t.Errorf("options = %q, cursor %d", opts, et.prompt.initials[last])
 	}
