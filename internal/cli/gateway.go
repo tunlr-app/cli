@@ -228,6 +228,8 @@ func (a *app) gatewayOn(ctx context.Context, iface string) error {
 		addrs := strings.Join(res.Addresses, " or ")
 		fmt.Fprintf(a.stdout, "On LAN devices, set the gateway and DNS server to %s\n", addrs)
 		fmt.Fprintln(a.stdout, "(by hand, or in the DHCP settings of your router).")
+		fmt.Fprintln(a.stdout, "The DNS server must be this server too, not the router: names asked elsewhere bypass mihomo,")
+		fmt.Fprintln(a.stdout, "so the ISP can see them (tunlr status reports devices that ask no DNS here).")
 		return nil
 	})
 }

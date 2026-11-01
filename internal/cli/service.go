@@ -610,6 +610,10 @@ func (a *app) printStatus(s *setup.Status) {
 	if s.SubDNS != "" {
 		fmt.Fprintf(w, "DNS:           %s's own where it sets one (tunlr.sub-dns in %s; details: tunlr dns)\n", s.Subscription, s.SubDNS)
 	}
+	// 没有发布过配置时（没有漂移）不显示：还没有可查的。
+	if s.Drift != nil {
+		a.printDNSLeaks(s.DNSLeaks)
+	}
 	if s.Installed {
 		fmt.Fprintf(w, "Panel:         %s (open it with: tunlr panel)\n", a.describePanelLAN(s.PanelLAN))
 		fmt.Fprintf(w, "Proxy port:    %s (details: tunlr proxy)\n", a.describeProxyLAN(s.ProxyLAN))
@@ -622,6 +626,23 @@ func (a *app) printStatus(s *setup.Status) {
 	}
 	if s.Filter != nil {
 		fmt.Fprintf(w, "Filters:       %s (details: tunlr filter)\n", a.describeFilter(s.Filter))
+	}
+}
+
+// printDNSLeaks 输出 status 中可能的 DNS 泄露：一行总数，下面每项一行，附上怎样改。
+func (a *app) printDNSLeaks(leaks []setup.DNSLeak) {
+	w := a.stdout
+	if len(leaks) == 0 {
+		fmt.Fprintf(w, "DNS leaks:     %s\n", a.style.good("none found"))
+		return
+	}
+	fmt.Fprintf(w, "DNS leaks:     %s (details: tunlr doctor)\n", a.style.warn(fmt.Sprintf("%d possible", len(leaks))))
+	for _, l := range leaks {
+		line := l.Message
+		if l.Hint != "" {
+			line += " (" + l.Hint + ")"
+		}
+		fmt.Fprintf(w, "%15s%s\n", "", line)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/tunlr-app/cli/pkg/core/config"
 )
 
 // 生效的配置相对于现在发布会得到的配置的状态（tunlr status 的漂移）。
@@ -29,6 +31,8 @@ type Drift struct {
 	Sections []string `json:"sections,omitempty"`
 	// Error 是无法合成的原因（DriftError）。
 	Error string `json:"error,omitempty"`
+	// DNSLeaks 报告现在发布会得到的配置是否仍以明文直连问 DNS（config.DNSLeaks），无法合成时为 false。
+	DNSLeaks bool `json:"-"`
 }
 
 // Drift 比较生效的配置与现在发布会得到的配置：只合成并比较，不运行 mihomo -t。还没有发布过配置时
@@ -52,7 +56,8 @@ func (p *Pipeline) Drift(ctx context.Context) (*Drift, error) {
 	if plan.Current == nil {
 		return nil, nil
 	}
-	d := &Drift{State: DriftNone}
+	plain, off := config.DNSLeaks(plan.Config)
+	d := &Drift{State: DriftNone, DNSLeaks: off || len(plain) > 0}
 	switch {
 	case !plan.Changed():
 	case rev == 0:
@@ -66,6 +71,24 @@ func (p *Pipeline) Drift(ctx context.Context) (*Drift, error) {
 		}
 	}
 	return d, nil
+}
+
+// DNSLeakMessage 是配置以明文直连问 DNS（config.DNSLeaks 的结果）时预览的警告，附上 DNSLeakHint。
+func DNSLeakMessage(plain []config.PlainDNS, off bool, sub, subDNS string) string {
+	return "DNS leak: " + config.DNSLeakText(plain, off) + ", so the ISP can see and change the answers (" +
+		DNSLeakHint(off, sub, subDNS) + ")"
+}
+
+// DNSLeakHint 说明怎样改掉明文直连的 DNS：sub 是启用的订阅，subDNS 是让它采用自己的 DNS 的 mixin（为空时用
+// tunlr 的 DNS，问谁由 tunlr dns servers 或 mixin 决定）。
+func DNSLeakHint(off bool, sub, subDNS string) string {
+	switch {
+	case subDNS != "":
+		return fmt.Sprintf("this is the subscription's DNS; tunlr sub set %s --dns tunlr uses tunlr's", sub)
+	case off:
+		return "a mixin sets dns.enable: false; tunlr config shows which"
+	}
+	return "change them with tunlr dns servers or in the mixin that sets them"
 }
 
 // DriftKey 是漂移的输入（状态、设置、订阅、mixin、生效的配置和历史）的指纹：按文件的大小和修改时间

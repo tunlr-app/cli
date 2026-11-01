@@ -12,6 +12,7 @@ import (
 	"github.com/tunlr-app/cli/pkg/core"
 	"github.com/tunlr-app/cli/pkg/core/config"
 	"github.com/tunlr-app/cli/pkg/core/pipeline"
+	"github.com/tunlr-app/cli/pkg/core/subscription"
 )
 
 // TestSetSubscriptionDNS 验证按订阅选择用谁的 DNS：默认用 tunlr 的；sub 写进订阅的 dns mixin（tunlr.sub-dns: true），
@@ -88,6 +89,20 @@ func TestSetSubscriptionDNS(t *testing.T) {
 	}
 	if _, err := i.SetSubscriptionDNS(ctx, "home", "mine"); !errors.Is(err, core.ErrInvalidArgument) {
 		t.Errorf("unknown choice: %v", err)
+	}
+
+	// 没有启用的订阅不发布，按它的内容提醒明文直连的 DNS；启用的由预览的警告提醒。
+	l := &subscription.List{Active: "home", Subscriptions: []subscription.Def{{Name: "home", URL: "https://example.net/home"}, {Name: "away", URL: "https://example.net/away"}}}
+	if err := subscription.SaveList(i.Layout.SubscriptionList(), l); err != nil {
+		t.Fatal(err)
+	}
+	writeFileIn(t, i.Layout.SubscriptionFile("away"), "proxies: []\ndns:\n  enable: true\n  nameserver: [192.0.2.53]\n")
+	if w, err := i.SetSubscriptionDNS(ctx, "away", DNSFromSubscription); err != nil || w.Active ||
+		!strings.HasPrefix(w.Leak, "DNS leak: dns.nameserver has 1 plain server asked directly (192.0.2.53)") || !strings.Contains(w.Leak, "tunlr sub set away --dns tunlr") {
+		t.Errorf("inactive: %+v, %v", w, err)
+	}
+	if w, err := i.SetSubscriptionDNS(ctx, "home", DNSFromSubscription); err != nil || w.Leak != "" {
+		t.Errorf("active: %+v, %v", w, err)
 	}
 }
 

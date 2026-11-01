@@ -86,6 +86,9 @@ func (a *app) writeSubDNS(cmd *cobra.Command, sub, from string) (*setup.DNSWrite
 		} else {
 			fmt.Fprintf(a.stdout, "%q uses the DNS and sniffer it sets while it is active, tunlr's where it sets none.\n", sub)
 		}
+		if w.Leak != "" {
+			fmt.Fprintf(a.stdout, "%s %s\n", a.style.warn("Warning:"), w.Leak)
+		}
 	}
 	return w, nil
 }

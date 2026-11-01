@@ -881,7 +881,7 @@ func TestMirrorNoRules(t *testing.T) {
 }
 
 // TestSubscriptionDNS 验证采用订阅的 dns（tunlr.sub-dns）：listen 由 tunlr:dns 提供、用户的 mixin 可以覆盖，
-// 开启 TUN 时强制 enable，指向本机没有的网卡的 DNS 服务器给出警告。
+// 开启 TUN 时强制 enable，指向本机没有的网卡的 DNS 服务器和明文直连的 DNS 给出警告。
 func TestSubscriptionDNS(t *testing.T) {
 	p, _, _ := newPipeline(t)
 	ctx := context.Background()
@@ -900,7 +900,9 @@ func TestSubscriptionDNS(t *testing.T) {
 	if !slices.Contains(plan.Dropped, "dns.listen") {
 		t.Errorf("dropped = %v", plan.Dropped)
 	}
-	if len(plan.Warnings) != 0 {
+	// DNS 关着时内核经系统的解析设置直连询问，提醒泄露并指出改用 tunlr 的 DNS。
+	if len(plan.Warnings) != 1 || !strings.HasPrefix(plan.Warnings[0].Message, "DNS leak: the DNS of mihomo is off") ||
+		!strings.Contains(plan.Warnings[0].Message, "tunlr sub set main --dns tunlr") {
 		t.Errorf("warnings with DNS off = %+v", plan.Warnings)
 	}
 	plan, err := p.PlanTun(ctx, true)
@@ -910,7 +912,8 @@ func TestSubscriptionDNS(t *testing.T) {
 	if !strings.Contains(string(plan.Config), "\ndns:\n  enable: true\n  nameserver: ['dhcp://tunlr-test-none0']\n  listen: 127.0.0.1:1053\n") {
 		t.Errorf("TUN did not turn DNS on:\n%s", plan.Config)
 	}
-	if len(plan.Warnings) != 1 || !strings.Contains(plan.Warnings[0].Message, "no network interface tunlr-test-none0") {
+	if len(plan.Warnings) != 2 || !strings.Contains(plan.Warnings[0].Message, "no network interface tunlr-test-none0") ||
+		!strings.HasPrefix(plan.Warnings[1].Message, "DNS leak: dns.nameserver has 1 plain server asked directly (dhcp://tunlr-test-none0)") {
 		t.Errorf("warnings = %+v", plan.Warnings)
 	}
 

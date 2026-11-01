@@ -8,7 +8,8 @@ tunlr:
       mmdb: https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb
       asn: https://fastly.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb
     # 中国的域名经直连问阿里、腾讯，其他的按规则（通常经代理）问 Cloudflare、Google；
-    # 节点的域名经直连解析。不返回 IPv6 地址，免得设备经 IPv6 绕过代理。
+    # 节点的域名经直连解析；局域网的名字问本机的解析设置（通常是路由器）。上游全用加密的
+    # DoH，免得运营商看到、改写问了什么。不返回 IPv6 地址，免得设备经 IPv6 绕过代理。
     dns:
       enable: true
       ipv6: false
@@ -37,8 +38,8 @@ tunlr:
         - "+.xboxlive.com"
       respect-rules: true
       default-nameserver:
-        - 223.5.5.5
-        - 119.29.29.29
+        - https://223.5.5.5/dns-query
+        - https://1.12.12.12/dns-query
       nameserver:
         - https://1.1.1.1/dns-query
         - https://8.8.8.8/dns-query
@@ -46,6 +47,7 @@ tunlr:
         "geosite:cn":
           - https://223.5.5.5/dns-query#DIRECT
           - https://1.12.12.12/dns-query#DIRECT
+        "+.lan,+.home.arpa": system
       proxy-server-nameserver:
         - https://223.5.5.5/dns-query
         - https://1.12.12.12/dns-query

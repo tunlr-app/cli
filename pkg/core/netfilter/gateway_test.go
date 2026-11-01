@@ -11,6 +11,26 @@ import (
 	"testing"
 )
 
+// TestIPv6Egress 验证从 ip -6 route get 的输出读出 IPv6 的出口网卡：没有路由、不可达类的路由时为空。
+func TestIPv6Egress(t *testing.T) {
+	for out, want := range map[string]string{
+		"2001:4860:4860::8888 from :: via fe80::1 dev ens3 proto ra src 2001:db8::2 metric 100 pref medium\n":       "ens3",
+		"2001:4860:4860::8888 from :: dev tunlr0 table 2022 src fdfe:dcba:9876::1 metric 1024 pref medium\n":        "tunlr0",
+		"unreachable 2001:4860:4860::8888 from :: dev lo table unspec proto kernel metric 4294967295 pref medium\n": "",
+		"": "",
+	} {
+		r := &Rules{Run: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+			if out == "" {
+				return nil, fmt.Errorf("RTNETLINK answers: Network is unreachable")
+			}
+			return []byte(out), nil
+		}}
+		if got := r.IPv6Egress(context.Background()); got != want {
+			t.Errorf("IPv6Egress(%q) = %q, want %q", out, got, want)
+		}
+	}
+}
+
 // TestRenderGateway 把生成的脚本与 testdata/gateway.nft 逐字比对；用 -update 重新生成。
 func TestRenderGateway(t *testing.T) {
 	got, err := RenderGateway("ens3")

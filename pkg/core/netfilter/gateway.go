@@ -165,6 +165,8 @@ type Interface struct {
 	PointToPoint bool
 	// IPv4 是网卡的 IPv4 地址（不含前缀长度）。
 	IPv4 []string
+	// IPv6 是网卡的 IPv6 地址中可以路由的（全球单播和 ULA，不含链路本地地址）。
+	IPv6 []string
 }
 
 // LookupInterface 返回名为 name 的网卡；不存在时返回错误。
@@ -179,11 +181,38 @@ func LookupInterface(name string) (*Interface, error) {
 		return nil, err
 	}
 	for _, a := range addrs {
-		if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil {
+		ipn, ok := a.(*net.IPNet)
+		switch {
+		case !ok:
+		case ipn.IP.To4() != nil:
 			res.IPv4 = append(res.IPv4, ipn.IP.String())
+		case ipn.IP.IsGlobalUnicast():
+			res.IPv6 = append(res.IPv6, ipn.IP.String())
 		}
 	}
 	return res, nil
+}
+
+// ipv6Probe 是查 IPv6 出口时用的公网地址（Google Public DNS），只查路由，不发包。
+const ipv6Probe = "2001:4860:4860::8888"
+
+// IPv6Egress 返回本机（root 的连接）访问 IPv6 公网时经过的网卡，没有 IPv6 路由时为空。ip route get 的输出形如
+// “2001:4860:4860::8888 from :: via fe80::1 dev ens3 proto ra src 2001:db8::2 metric 100 pref medium”。
+func (r *Rules) IPv6Egress(ctx context.Context) string {
+	out, err := r.run(ctx, nil, "ip", "-6", "route", "get", ipv6Probe)
+	if err != nil {
+		return ""
+	}
+	f := strings.Fields(string(out))
+	if len(f) > 0 && slices.Contains([]string{"unreachable", "prohibit", "blackhole", "throw"}, f[0]) {
+		return ""
+	}
+	for i := 0; i+1 < len(f); i++ {
+		if f[i] == "dev" && f[i+1] != "lo" {
+			return f[i+1]
+		}
+	}
+	return ""
 }
 
 // GatewayWindow 是 inet tunlr_gateway 记住局域网设备新连接的时长（见 templates/nft/gateway.nft）。

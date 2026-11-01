@@ -52,6 +52,9 @@ type DNSWrite struct {
 	Subscription string         `json:"subscription"`
 	// Active 报告订阅是否为启用的订阅：是时调用方随后发布配置，否则修改在它启用时生效。
 	Active bool `json:"active"`
+	// Leak 是改为采用订阅的 DNS、订阅没有启用时，按订阅的内容看出的 DNS 泄露（pipeline.DNSLeakMessage），
+	// 没有时为空。启用的订阅随后发布，预览的警告会报告它。
+	Leak string `json:"leak,omitempty"`
 }
 
 // SubscriptionDNS 返回订阅 sub 启用时用谁的 DNS：它的 mixin（共用的和它自己的）中最后写了 tunlr.sub-dns 的为 true
@@ -164,6 +167,14 @@ func (i *Installer) SetSubscriptionDNS(ctx context.Context, sub, from string) (*
 	}
 	if err := writeChanges(dir, w.Changes); err != nil {
 		return nil, err
+	}
+	if from == DNSFromSubscription && !w.Active {
+		// 只看订阅本身，不算 mixin 对 dns 的改动：没有启用的订阅合成不出它的配置。
+		if content, err := os.ReadFile(i.Layout.SubscriptionFile(sub)); err == nil && config.HasDNS(content) {
+			if plain, off := config.DNSLeaks(content); off || len(plain) > 0 {
+				w.Leak = pipeline.DNSLeakMessage(plain, off, sub, own)
+			}
+		}
 	}
 	return w, nil
 }

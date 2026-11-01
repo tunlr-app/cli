@@ -3,6 +3,8 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -123,6 +125,133 @@ func DNSLacks(cfg []byte) []string {
 	return lacks
 }
 
+// PlainDNS 是一台以明文直连询问的上游 DNS 服务器。Key 是它所在的设置：dns.nameserver、dns.fallback，或
+// nameserver-policy 中的一项，如 dns.nameserver-policy["+.google.com"]。
+type PlainDNS struct {
+	Key    string `json:"key"`
+	Server string `json:"server"`
+}
+
+// DNSLeaks 找出 tunlr 生成的配置 cfg 中会以明文、不经代理询问的上游 DNS 服务器：运营商能看到、改写问了哪些
+// 域名（DNS 泄露）。off 报告没有开启内核的 DNS，这时内核经系统的解析设置直连询问。
+//
+// 只看决定一般域名问谁的 nameserver、fallback 和 nameserver-policy：只含中国、局域网域名的 policy 项（见
+// localPolicy），以及只解析节点、直连域名的 proxy-server-nameserver、default-nameserver、direct-nameserver 不算。
+// 明文是不写协议、udp://、tcp://、dhcp:// 和 system。经代理是指服务器带 #节点名（#DIRECT 为直连），或开启了
+// respect-rules（system、dhcp 总是直连）；respect-rules 下规则仍可能让它直连，这里不再解析规则。
+func DNSLeaks(cfg []byte) (plain []PlainDNS, off bool) {
+	d := dnsSection(cfg)
+	if !d.Enable {
+		return nil, true
+	}
+	add := func(key string, n yaml.Node) {
+		for _, s := range serverList(n) {
+			if plainDirect(s, d.RespectRules) {
+				plain = append(plain, PlainDNS{Key: key, Server: s})
+			}
+		}
+	}
+	add("dns.nameserver", d.Nameserver)
+	add("dns.fallback", d.Fallback)
+	for _, k := range slices.Sorted(maps.Keys(d.Policy)) {
+		if !localPolicy(k) {
+			add(fmt.Sprintf("dns.nameserver-policy[%q]", k), d.Policy[k])
+		}
+	}
+	return plain, false
+}
+
+// HasDNS 报告配置 cfg 是否写了顶层的 dns（订阅没写时，采用订阅的 DNS 也用 tunlr 的兜底值）。
+func HasDNS(cfg []byte) bool {
+	for line := range bytes.Lines(cfg) {
+		if bytes.HasPrefix(line, []byte("dns:")) {
+			return true
+		}
+	}
+	return false
+}
+
+// DNSLeakText 用一句话说明 DNSLeaks 的结果，没有泄露时为空。
+func DNSLeakText(plain []PlainDNS, off bool) string {
+	if off {
+		return "the DNS of mihomo is off (dns.enable): it looks names up through the system's resolver, asked directly in plain text"
+	}
+	var keys []string
+	servers := map[string][]string{}
+	for _, p := range plain {
+		if _, ok := servers[p.Key]; !ok {
+			keys = append(keys, p.Key)
+		}
+		servers[p.Key] = append(servers[p.Key], p.Server)
+	}
+	var parts []string
+	for _, k := range keys {
+		s := servers[k]
+		noun := "server"
+		if len(s) > 1 {
+			noun = "servers"
+		}
+		parts = append(parts, fmt.Sprintf("%s has %d plain %s asked directly (%s)", k, len(s), noun, strings.Join(s, ", ")))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// plainDirect 报告上游服务器 s 是否以明文直连询问，respectRules 是 dns.respect-rules。
+func plainDirect(s string, respectRules bool) bool {
+	addr, frag, _ := strings.Cut(s, "#")
+	scheme, _, ok := strings.Cut(addr, "://")
+	if !ok {
+		scheme = ""
+		if addr == "system" {
+			scheme = "system"
+		}
+	}
+	switch strings.ToLower(scheme) {
+	case "system", "dhcp":
+		return true
+	case "", "udp", "tcp":
+	default:
+		return false
+	}
+	// # 后面是节点名，再用 & 连接参数；只写参数时（如 #ecs=...）没有节点名。
+	proxy, _, _ := strings.Cut(frag, "&")
+	if strings.Contains(proxy, "=") {
+		proxy = ""
+	}
+	if proxy != "" {
+		return proxy == "DIRECT"
+	}
+	return !respectRules
+}
+
+// localSuffixes 是只在局域网中、或属于中国的域名后缀。
+var localSuffixes = []string{"cn", "lan", "local", "localdomain", "localhost", "internal", "arpa"}
+
+// localPolicy 报告 nameserver-policy 的键 key 是否只含中国或局域网的域名（问中国的服务器、路由器不算泄露）。
+// 键可以用逗号连接多项；geosite: 后用逗号连接的是多个分类，与 mihomo 的解读相同。
+func localPolicy(key string) bool {
+	prefix := ""
+	for p := range strings.SplitSeq(strings.ToLower(key), ",") {
+		p = strings.TrimSpace(p)
+		for _, pre := range []string{"geosite:", "rule-set:"} {
+			if rest, ok := strings.CutPrefix(p, pre); ok {
+				prefix, p = pre, rest
+			}
+		}
+		if prefix != "" {
+			if p != "cn" && p != "private" && !strings.HasSuffix(p, "-cn") && !strings.HasSuffix(p, "@cn") && !strings.HasSuffix(p, "_cn") {
+				return false
+			}
+			continue
+		}
+		name := strings.TrimLeft(p, "+*.")
+		if !slices.ContainsFunc(localSuffixes, func(s string) bool { return name == s || strings.HasSuffix(name, "."+s) }) {
+			return false
+		}
+	}
+	return true
+}
+
 // serverList 读出一项服务器的设置：列表，或只写了一个时的字符串。
 func serverList(n yaml.Node) []string {
 	var list []string
@@ -142,6 +271,7 @@ type dnsFields struct {
 	Mode         string               `yaml:"enhanced-mode"`
 	FakeIPFilter []string             `yaml:"fake-ip-filter"`
 	Nameserver   yaml.Node            `yaml:"nameserver"`
+	Fallback     yaml.Node            `yaml:"fallback"`
 	Policy       map[string]yaml.Node `yaml:"nameserver-policy"`
 	RespectRules bool                 `yaml:"respect-rules"`
 }

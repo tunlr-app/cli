@@ -58,6 +58,8 @@ type fakeHost struct {
 	// 的输出（为空时没有其他表）。
 	uses    map[string][]string
 	ruleset string
+	// ipv6Route 是 ip -6 route get 的输出，为空时没有 IPv6 路由（命令失败）。
+	ipv6Route string
 }
 
 func (h *fakeHost) systemd(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -134,6 +136,11 @@ func (h *fakeHost) netfilter(_ context.Context, stdin []byte, name string, args 
 		return []byte(h.neigh), nil
 	case cmd == "ip -4 route show default":
 		return []byte("default via 192.0.2.1 dev ens3 proto dhcp src 192.0.2.10 metric 100\n"), nil
+	case strings.HasPrefix(cmd, "ip -6 route get "):
+		if h.ipv6Route == "" {
+			return nil, errors.New("RTNETLINK answers: Network is unreachable")
+		}
+		return []byte(h.ipv6Route), nil
 	case name == "iptables":
 		if h.docker == nil {
 			return nil, errors.New("iptables: No chain/target/match by that name.")

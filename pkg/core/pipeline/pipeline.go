@@ -469,6 +469,9 @@ func (p *Pipeline) plan(ctx context.Context, opts planOptions) (*Plan, error) {
 		return plan, nil
 	}
 	res.Warnings = append(res.Warnings, config.DNSWarnings(res.Facts, hasInterface)...)
+	if plain, off := config.DNSLeaks(res.Config); off || len(plain) > 0 {
+		res.Warnings = append(res.Warnings, config.Warning{Message: DNSLeakMessage(plain, off, active, res.SubDNS)})
+	}
 	// 只在重新合成时检查端口安全；回滚和重写独占的键不经过这里，以免旧配置无法恢复。
 	if err := config.CheckExposure(res.Config); err != nil {
 		return nil, err

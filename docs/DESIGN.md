@@ -211,9 +211,11 @@ sh 的优势（轻量、随处可跑、可随手改）服务于路由器和老�
   - **mixin 的兜底值：`tunlr.defaults`**：写法同 `mihomo:`，但在订阅之前合并，只在订阅没写时生效（如自己的 geo 地址、订阅不带 DNS 时的 DNS）；写了独占键不报错。放在 mixin 而非工具设置：它改的是配置，工具设置只放工具行为。用通用的 `defaults` 而非专用 `geo`：会被订阅整段替换的只有 DNS 和 geo，白名单加键不用加语法。
     - **tunlr 的兜底值是受管 mixin `tunlr:defaults`**（`templates/defaults.yaml`），不在模板中：模板里看不出值是兜底还是系统设置，作为受管 mixin 能逐键报告来源。随 tunlr 升级更新。
     - **兜底的 DNS**（参考 ShellCrash 的分流模式）：fake-ip；`geosite:cn` 的域名经直连（`#DIRECT`，不依赖订阅的规则）问中国的 DoH，其余问境外的 DoH 并开 `respect-rules`。境外 DoH 从中国直连多被阻断，tunlr 又不知道订阅的策略组名，写不出 `#组名`，`respect-rules` 是唯一不依赖组名的经代理写法；它要求 `proxy-server-nameserver`，节点的域名经直连解析。代价：节点都不可用时境外域名解析失败，那时连接本来也不通。
-      - DoH 都写 IP（证书含 IP），不依赖 bootstrap 解析。不写 `direct-nameserver`：它对所有直连生效、不看 `nameserver-policy`。
+      - DoH 都写 IP（证书含 IP），不依赖 bootstrap 解析。不写 `direct-nameserver`：它对所有直连生效、不看 `nameserver-policy`。`default-nameserver` 也用 DoH（写 IP 的加密 DNS 可以作 bootstrap）：平时用不到，万一用到也不留明文查询。
+      - `+.lan`、`+.home.arpa` 问 `system`（本机的解析设置，通常是路由器）：只有路由器知道局域网设备的名字，它们本来就在 `fake-ip-filter` 中。
       - `ipv6: false`：fake-ip 只给 A 记录假地址，AAAA 返回真实地址时，有 IPv6 出口的设备会绕过代理。
       - 嗅探默认开启（HTTP、TLS、QUIC）：网关模式下设备自己用 DoH 或写死 DNS 时，只有它能认出域名。
+    - **DNS 泄露只检查、只提醒**（doctor 的 `dns-*` 几项，都是 warn；`tunlr status` 一行，`--json` 的 `dns_leaks`）：不联网，只看生效的配置、路由和网关记下的流量，主菜单刷新 status 时也做得起。四项：配置以明文直连问上游；TUN 开着时本机 IPv6 不经 `tunlr0`；网关所在的局域网有 IPv6（网关只转发 IPv4，路由器经 RA 发的 IPv6 DNS 绕过它）；经网关上网、却没经它问 DNS 的设备（多半直接问路由器，用 DoH、只用缓存的也会列出，只说可能）。明文直连的判断只看决定一般域名的 `nameserver`、`fallback` 和 `nameserver-policy`，只含中国、局域网域名的 policy 项不算；`respect-rules` 下当作经代理，不再解析规则。订阅的 DNS 不自动改写：用户选了 `--dns sub` 就是要它，预览、`sub set --dns sub`（订阅没启用时按它的内容）和 status 提醒并给出 `--dns tunlr`。不做联网的泄露测试（要依赖第三方的检测服务）、代理端口来的设备和 TUN 关着时本机程序的查询。
     - **来源提示**：dns、sniffer 由订阅整段替换，plan 和 `tunlr config` 用一行说明各来自订阅还是兜底值、被哪些 mixin 改过（`--json` 的 `dns_sources`），否则看不出生效的是哪一份。
     - **用谁的 DNS 按订阅选，默认用 tunlr 的**：机场的 DNS 为桌面客户端而写，常缺 `respect-rules`、`nameserver-policy`，在服务器上未必合适；订阅写了 dns 时 `mihomo:` 又只能在它上面改，退不回兜底值。所以订阅的 `dns`、`sniffer` 默认不采用（plan 列出没有采用的），mixin 写了 `tunlr.sub-dns: true` 才整段采用；`hosts` 照常采用。开关按文件顺序最后写的为准，`false` 或 `null` 取消前面的。`tunlr sub set <订阅> --dns tunlr|sub` 像 geo 一样写进订阅自己的 mixin（`20-dns.yaml`），dns 和 sniffer 一起换：兜底的嗅探是配合兜底的 DNS 调的。共用的 mixin 写了 true 时，`--dns tunlr` 在订阅的 mixin 中写 false。启用的订阅用自己的 DNS 时 `tunlr status` 多一行，免得出了问题想不到这里。
     - **DNS 是顶层命令**（`tunlr dns`），不在 `tun` 下：问谁在 TUN 关着时也用到（代理端口来的连接、节点的域名都由 mihomo 自己解析），只有模式和 fake-ip-filter 依赖 TUN。TUN 关着时 `tunlr dns` 注明这两项现在用不到。

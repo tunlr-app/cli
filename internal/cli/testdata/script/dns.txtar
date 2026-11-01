@@ -1,14 +1,20 @@
 # 订阅写了 dns：默认不采用，用 tunlr 的兜底值，plan 说明
 cp airport-dns.yaml provider/airport.yaml
+cp airport-plain.yaml provider/plain.yaml
 exec tunlr sub add main $PROVIDER/airport.yaml
-exec tunlr sub add spare $PROVIDER/airport.yaml
+exec tunlr sub add spare $PROVIDER/plain.yaml
 install-mihomo
 exec tunlr config apply --yes
 stdout '^Not taken from the subscription: dns \(tunlr''s are used; tunlr sub set main --dns sub takes them\)$'
+! stdout 'DNS leak'
 ! grep '192.0.2.53' root/var/lib/tunlr/core/config.yaml
 grep 'geosite:cn' root/var/lib/tunlr/core/config.yaml
 exec tunlr config
 stdout '^DNS settings: dns, sniffer from the fallbacks$'
+exec tunlr status
+stdout '^DNS leaks: +none found$'
+exec tunlr status --json
+stdout '"dns_leaks": \[\]'
 
 # sub set --dns sub 写进订阅的 dns mixin（mixin.d/<订阅>/20-dns.yaml），启用的订阅随即发布
 exec tunlr sub set main --dns sub --yes
@@ -23,9 +29,27 @@ stdout '^DNS: +main''s own where it sets one \(tunlr.sub-dns in main/20-dns.yaml
 exec tunlr sub set main --dns sub --yes
 stdout 'Already so for "main"; nothing to change\.'
 
-# 不是启用的订阅：只写文件，它启用时生效；共用的 mixin 让它采用订阅的时，--dns tunlr 在它的 mixin 中写 false
+# 明文直连的 DNS：预览警告，status 列出并指出怎样改；改回而没有发布时提示发布
+cp plain-dns.yaml root/etc/tunlr/mixin.d/main/30-plain.yaml
+exec tunlr config apply --yes
+stdout '^  DNS leak: dns.nameserver has 1 plain server asked directly \(192.0.2.55\), so the ISP can see and change the answers \(this is the subscription''s DNS; tunlr sub set main --dns tunlr uses tunlr''s\)$'
+exec tunlr status
+stdout '^DNS leaks: +1 possible \(details: tunlr doctor\)$'
+stdout '^ +dns.nameserver has 1 plain server asked directly \(192.0.2.55\) \(this is the subscription''s DNS; tunlr sub set main --dns tunlr uses tunlr''s\)$'
+exec tunlr status --json
+stdout '"id": "dns-servers"'
+rm root/etc/tunlr/mixin.d/main/30-plain.yaml
+exec tunlr status
+stdout '^ +dns.nameserver has 1 plain server asked directly \(192.0.2.55\) \(tunlr config apply publishes a configuration without them\)$'
+exec tunlr config apply --yes
+exec tunlr status
+stdout '^DNS leaks: +none found$'
+
+# 不是启用的订阅：只写文件，它启用时生效，按它的内容提醒明文直连的 DNS；共用的 mixin 让它采用订阅的时，
+# --dns tunlr 在它的 mixin 中写 false
 exec tunlr sub set spare --dns sub --yes
 stdout '^"spare" is not the active subscription; the change applies when it is \(tunlr sub use spare\)\.$'
+stdout '^Warning: DNS leak: dns.nameserver has 2 plain servers asked directly \(192.0.2.54, system\), so the ISP can see and change the answers \(this is the subscription''s DNS; tunlr sub set spare --dns tunlr uses tunlr''s\)$'
 exists root/etc/tunlr/mixin.d/spare/20-dns.yaml
 exec tunlr sub set spare --dns tunlr --yes
 ! exists root/etc/tunlr/mixin.d/spare/20-dns.yaml
@@ -195,6 +219,22 @@ dns:
   enhanced-mode: redir-host
   nameserver:
     - https://192.0.2.53/dns-query
+-- airport-plain.yaml --
+proxies:
+  - {name: a, type: ss, server: a.example.net, port: 1, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: g, type: select, proxies: [a]}
+rules:
+  - MATCH,g
+dns:
+  enable: true
+  nameserver: [192.0.2.54, system, 'https://192.0.2.53/dns-query']
+  nameserver-policy:
+    "+.lan": 192.168.1.1
+-- plain-dns.yaml --
+mihomo:
+  dns:
+    nameserver: [192.0.2.55]
 -- sub-dns.yaml --
 tunlr:
   sub-dns: true

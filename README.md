@@ -151,7 +151,8 @@ curl -fsSL https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/uninstall.sh | sudo sh
 默认用 tunlr 的 DNS 和嗅探，订阅写了 `dns`、`sniffer` 也不用（`hosts` 照常采用）：机场的 DNS 是为桌面客户端写的，在服务器上常常不合适。tunlr 的兜底值：
 
 - fake-ip 模式，不返回 IPv6 地址，免得设备经 IPv6 绕过代理。
-- `geosite:cn` 的域名经直连问阿里、腾讯的 DoH。其他域名问 Cloudflare、Google 的 DoH，按订阅的规则连接（`respect-rules`），通常经代理：查询不经过中国的解析器，`GEOIP,CN` 这类规则也不会因被污染的地址判错。节点的域名经直连用阿里、腾讯解析。节点都不可用时境外的域名解析不出来，但这时连接本来也不通。
+- `geosite:cn` 的域名经直连问阿里、腾讯的 DoH。其他域名问 Cloudflare、Google 的 DoH，按订阅的规则连接（`respect-rules`），通常经代理：查询不经过中国的解析器，`GEOIP,CN` 这类规则也不会因被污染的地址判错。节点的域名经直连用阿里、腾讯解析。节点都不可用时境外的域名解析不出来，但这时连接本来也不通。上游全是加密的 DoH（`default-nameserver` 也是），运营商看不到、改不了问了什么。
+- `+.lan`、`+.home.arpa` 的名字问本机的解析设置（`system`，通常是路由器），局域网设备的名字照样解析得出。
 - 局域网、时间同步、联网检测、STUN、QQ 快捷登录、游戏主机等域名返回真实地址（`fake-ip-filter`）。
 - 嗅探 HTTP、TLS、QUIC：局域网设备自己用 DoH 或写死了 DNS 时，按域名的规则照样生效。
 
@@ -167,7 +168,18 @@ curl -fsSL https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/uninstall.sh | sudo sh
     sub-dns: true
   ```
 
-  `sub-dns` 也可以写在共用的 mixin 里，对所有订阅生效；按文件顺序最后写的为准，`false` 取消前面的。用订阅的 DNS 时 `tunlr status` 多一行 `DNS:`；这时切到 redir-host，订阅的 DNS 缺 `respect-rules` 或 `nameserver-policy` 会提醒。
+  `sub-dns` 也可以写在共用的 mixin 里，对所有订阅生效；按文件顺序最后写的为准，`false` 取消前面的。用订阅的 DNS 时 `tunlr status` 多一行 `DNS:`；这时切到 redir-host，订阅的 DNS 缺 `respect-rules` 或 `nameserver-policy` 会提醒。订阅的 DNS 以明文直连问上游时，预览和 `status` 会提醒（见下文），但不替你改写。
+
+### DNS 泄露
+
+DNS 泄露指查询绕过 mihomo、或以明文直连问上游：运营商能看到、改写你问了哪些域名，按域名的规则也可能因此判错。`tunlr status` 有一行 `DNS leaks:`，`--json` 中是 `dns_leaks`；`tunlr doctor` 的 install 组有对应的几项（都是 warn）。不联网，只看配置、路由和网关记下的流量：
+
+- `dns-servers`：生效的配置以明文直连问上游。明文是不写协议的 IP、`udp://`、`tcp://`、`dhcp://` 和 `system`；带 `#节点名` 或开了 `respect-rules` 的算经代理（`#DIRECT`、`system`、`dhcp://` 总是直连）。只看 `nameserver`、`fallback` 和 `nameserver-policy`：只含中国、局域网域名的 policy 项（`geosite:cn`、`*-cn`、`geosite:private`、`+.cn`、`+.lan` 等），以及只解析节点、直连域名的 `proxy-server-nameserver`、`default-nameserver`、`direct-nameserver` 不算。`dns.enable: false` 也算：mihomo 经系统的解析设置直连询问。`respect-rules` 下规则仍可能让 DNS 直连，这里不解析规则。
+- `dns-tun-ipv6`：TUN 开着，本机访问 IPv6 公网却不经 `tunlr0`，经 IPv6 的查询和连接都绕过 mihomo。
+- `dns-gateway-ipv6`：网关开着，局域网有 IPv6。网关只转发 IPv4，路由器经 IPv6 发给设备的 DNS 服务器（RDNSS、DHCPv6）和路由都绕过这台服务器；关掉路由器的 IPv6，至少关掉它发的 IPv6 DNS。
+- `dns-gateway-devices`：最近 5 分钟经网关上网、却没有经它问 DNS 的设备，多半直接问路由器。设备的 DNS 要设成这台服务器，不能是路由器；用 DoH、DoT 的设备、这段时间里只用了缓存的设备也会列出，所以只说可能。
+
+代理端口来的设备、TUN 关着时本机程序自己的查询不在检查之内。
 
 `tunlr config plan` 和 `tunlr config` 有一行 `DNS settings:`，说明 dns、sniffer 来自订阅还是兜底值、被哪些 mixin 改过；`tunlr config` 还列出兜底值的完整内容。命令没有覆盖的键直接写 mixin（`tunlr config edit 10-dns`），映射逐层合并，只写要改的键：
 

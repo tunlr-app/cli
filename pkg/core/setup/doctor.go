@@ -195,6 +195,7 @@ func (i *Installer) installChecks(ctx context.Context, h *doctor.Host, quick boo
 	i.checkTun(ctx, c, st, running != "")
 	i.checkLoop(ctx, c, owner, running != "")
 	i.checkGateway(ctx, c, st)
+	i.checkDNSLeaks(ctx, c, st)
 	i.checkExposure(c)
 	i.checkPanelLAN(c, st)
 	i.checkProxyLAN(c, st)

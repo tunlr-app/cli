@@ -44,6 +44,8 @@ type Status struct {
 	Drift *pipeline.Drift `json:"drift,omitempty"`
 	// Devices 汇总使用本机的局域网设备，网关和代理端口的局域网访问都关闭时为 nil。
 	Devices *DeviceSummary `json:"devices,omitempty"`
+	// DNSLeaks 是可能的 DNS 泄露（doctor 中 dns-* 的 warn 项），没有时为空列表。
+	DNSLeaks []DNSLeak `json:"dns_leaks"`
 	// Filter 是全局过滤项，还没有状态文件时为 nil。
 	Filter *FilterStatus `json:"filter,omitempty"`
 	// UpdateCheck 是最近一次版本查询的结果和据此可用的更新，还没有查询过时为 nil。
@@ -174,5 +176,6 @@ func (i *Installer) Status(ctx context.Context) (*Status, error) {
 	}
 	s.Revision, s.Drift = cfg.Revision, cfg.Drift
 	s.Devices = i.deviceSummary(ctx, st)
+	s.DNSLeaks = i.DNSLeaks(ctx, st)
 	return s, nil
 }
