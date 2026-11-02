@@ -98,8 +98,8 @@ Configuration
 Network
   tun                         透明代理与网关模式；tun on|off、tun gateway on|off
   proxy                       代理端口的地址；proxy lan on|off、proxy env
-  dns                         mihomo 问谁、怎么回答 DNS 查询；dns servers、dns mode、dns fake-ip-filter
-  ipv6                        IPv6 怎么走；ipv6 off|on|bypass|default
+  dns                         mihomo 问谁、怎么回答 DNS 查询；dns servers、dns mode、dns ipv6、dns fake-ip-filter
+  ipv6                        连 IPv6 地址的连接经不经 mihomo；ipv6 rules|bypass
   filter                      流量过滤：source 网段直连、quic 拒绝 QUIC、ports 只代理常用端口
   devices                     使用本机的局域网设备，终端里选中一台再起名、设直连或忘记；name、route、forget、--all
 
@@ -151,13 +151,13 @@ curl -fsSL https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/uninstall.sh | sudo sh
 
 默认用 tunlr 的 DNS 和嗅探，订阅写了 `dns`、`sniffer` 也不用（`hosts` 照常采用）：机场的 DNS 是为桌面客户端写的，在服务器上常常不合适。tunlr 的兜底值：
 
-- fake-ip 模式，假地址取自 `198.18.0.1/16`；不返回 IPv6 地址（`tunlr ipv6 on` 可以打开），程序只经 IPv4 连接。
+- fake-ip 模式，假地址取自 `198.18.0.1/16`；不返回 IPv6 地址（`tunlr dns ipv6 on` 可以打开），程序只经 IPv4 连接。
 - `geosite:cn` 的域名经直连问阿里、腾讯的 DoH。其他域名问 Cloudflare、Google 的 DoH，按订阅的规则连接（`respect-rules`），通常经代理：查询不经过中国的解析器，`GEOIP,CN` 这类规则也不会因被污染的地址判错。节点的域名经直连用阿里、腾讯解析。节点都不可用时境外的域名解析不出来，但这时连接本来也不通。上游全是加密的 DoH（`default-nameserver` 也是），运营商看不到、改不了问了什么。
 - `+.lan`、`+.home.arpa` 的名字问本机的解析设置（`system`，通常是路由器），局域网设备的名字照样解析得出。
 - 局域网、时间同步、联网检测、STUN、QQ 快捷登录、游戏主机等域名返回真实地址（`fake-ip-filter`）。
 - 嗅探 HTTP、TLS、QUIC：局域网设备自己用 DoH 或写死了 DNS 时，按域名的规则照样生效。
 
-`tunlr dns` 显示 DNS 模式、IPv6 的设置、fake-ip 的地址段、问谁、你加的 fake-ip-filter 条目，以及各来自哪里；在终端里接着选改哪项，选了模式或 IPv6 再选取值（主菜单 Traffic 中的 DNS 就是它）。问谁在 TUN 关着时也用到：代理端口来的连接、节点的域名都由 mihomo 自己解析；模式和 fake-ip-filter 只在开了 TUN 时用到。这些命令改的都是 mixin 文件：现在决定那个键的文件，没有时写进 `mixin.d/90-dns.yaml`；预览列出要改的文件和键，确认后发布。自己编辑这些文件效果相同，命令下次读到的就是你改的。
+`tunlr dns` 显示 DNS 模式、IPv6 的设置、fake-ip 的地址段、问谁、你加的 fake-ip-filter 条目，以及各来自哪里；在终端里接着选改哪项，选了模式再选取值，选了 IPv6 再分两步选（主菜单 Traffic 中的 DNS 就是它）。问谁在 TUN 关着时也用到：代理端口来的连接、节点的域名都由 mihomo 自己解析；模式和 fake-ip-filter 只在开了 TUN 时用到。这些命令改的都是 mixin 文件：现在决定那个键的文件，没有时写进 `mixin.d/90-dns.yaml`；预览列出要改的文件和键，确认后发布。自己编辑这些文件效果相同，命令下次读到的就是你改的。
 
 - `tunlr dns mode fake-ip|redir-host`：DNS 模式（`dns.enhanced-mode`）；`tunlr dns mode default` 从共用的和启用的订阅的 mixin 中删除它，回到按配置；不给模式时在终端里选。fake-ip 回答假地址（取自 `dns.fake-ip-range`，tunlr 的兜底值是 `198.18.0.1/16`，`tunlr dns` 显示生效的），经代理的域名不必真的解析；有些应用、设备不接受假地址，可以换 redir-host，回答真实地址，按域名的规则靠映射和嗅探照样生效。DNS 模式只影响 mihomo 自己回答的查询：开了 TUN 时本机的，和把这台服务器当网关、DNS 的局域网设备的。
 - `tunlr dns servers`：问谁，分两组。中国的域名（`geosite:cn`）经直连问，也用来解析节点的域名，写进 `dns.nameserver-policy` 的 `geosite:cn`（加 `#DIRECT`）和 `dns.proxy-server-nameserver`；其他域名按规则问，写进 `dns.nameserver`。在终端里打开两个文本框，预填现在用的服务器（没有时填 tunlr 的默认值），一行一个，IP、`udp://`、`tcp://`、`tls://`（DoT）、`https://`（DoH）、`quic://`（DoQ）、`h3://`、`dhcp://<网卡>`、`system` 可以混写；清空一个框就删除你的设置。发布后经 mihomo 解析 `www.baidu.com` 和 `www.google.com`，不通时问你是否放回原来的服务器。没有终端时用 `--cn`、`--other`（可重复，替换整组）或 `--reset`。
@@ -173,22 +173,33 @@ curl -fsSL https://cdn.jsdelivr.net/gh/tunlr-app/cli@main/uninstall.sh | sudo sh
 
 ### IPv6
 
-`tunlr ipv6` 显示设置，在终端里接着选；`tunlr ipv6 off|on|bypass|default` 直接改（主菜单 DNS 里也有）。它在开着 TUN 时起作用，这时本机的程序经 mihomo 解析域名、连接也经过它：
+IPv6 分两层设置，在开着 TUN 时起作用，这时本机的程序经 mihomo 解析域名、连接也经过它：
 
-| 设置 | 域名解析出 IPv6 地址 | 连 IPv6 地址的连接 |
-|---|---|---|
-| `off` | 否 | 经 mihomo，按规则 |
-| `on` | 是 | 经 mihomo，按规则 |
-| `bypass` | 否 | 按系统路由直连，不经 mihomo |
+| 层 | 管什么 | 命令 | 存在哪 |
+|---|---|---|---|
+| 流量 | 连 IPv6 地址的连接经不经 mihomo（顶层 `ipv6`） | `tunlr ipv6 rules\|bypass` | tunlr 的状态 |
+| 回答 | 域名解不解析出 IPv6 地址（`dns.ipv6`） | `tunlr dns ipv6 on\|off\|default` | mixin |
 
-- `off`：tunlr 的兜底值（`dns.ipv6: false`）。程序查域名只拿到 IPv4 地址，只经 IPv4 连接；写死在程序里的 IPv6 DNS 服务器和 IPv6 地址仍进 TUN、经 mihomo，不会泄露。
+`tunlr ipv6` 显示两层，在终端里接着分两步选：先选流量，选了 rules 再选回答，在第二步按 Esc 回到第一步；两层一起改时只确认、发布一次（主菜单 DNS 中的 IPv6 也是这样）。`tunlr dns ipv6` 不给取值时只选回答。两层的取值不能混用，`tunlr ipv6 on` 会提示改用 `tunlr dns ipv6 on`。
+
+流量：
+
+- `rules`（默认）：mihomo 接管 IPv6，连 IPv6 地址的连接进 TUN、经 mihomo 按规则走；写死在程序里的 IPv6 DNS 服务器和 IPv6 地址也一样，本机以后有了 IPv6 也不会绕过代理。
+- `bypass`：mihomo 不接管 IPv6（顶层 `ipv6: false`），自己也不用 IPv6。域名仍只解析出 IPv4 地址：mihomo 不回答 IPv6 地址（回答设了 on 也一样），本机发往 IPv6 DNS 服务器的查询也被拒绝（`inet tunlr` 中的一条规则），改问 IPv4 的服务器、由 mihomo 回答。所以查域名的程序照样经 mihomo、走 IPv4，只有直接连 IPv6 地址的连接按系统路由直连，不经代理、也不按规则。只配了 IPv6 DNS 服务器、因此解析不了时，tunlr 改回原来的设置（退出码 4）；在 TUN 关着时设了 bypass，之后 `tun on` 的 dns 检测会因此失败并说明原因。本机没有 IPv6 出口时看不出区别，有了 IPv6 之后 IPv6 的连接就不经代理。开着时 `tunlr status` 多一行 `IPv6: bypass`。
+
+回答：
+
+- `off`：tunlr 的兜底值（`dns.ipv6: false`）。程序查域名只拿到 IPv4 地址，只经 IPv4 连接。
 - `on`：`dns.ipv6: true`。fake-ip 下域名拿到 `dns.fake-ip-range6` 中的假 IPv6 地址（配置中没有时写 `fdfe:dcba:9876::1/64`），只有 IPv6 的域名也能访问，本机没有 IPv6 也行；redir-host 下拿到真实地址，直连它们要本机有 IPv6 出口（嗅探出域名的除外），经代理的要节点能访问 IPv6。网关只转发 IPv4：网关开着时打开它，经路由器有 IPv6 的局域网设备会把 IPv6 的连接发给路由器（fake-ip 下连不上、等一会儿才改用 IPv4，redir-host 下绕过 mihomo），命令、`tunlr dns`、`tun gateway on` 和 doctor 的 `gateway-ipv6` 都会提醒。
-- `bypass`：mihomo 不接管 IPv6（顶层 `ipv6: false`），自己也不用 IPv6。域名仍只解析出 IPv4 地址：mihomo 不回答 IPv6 地址（`dns.ipv6` 写了 true 也一样），本机发往 IPv6 DNS 服务器的查询也被拒绝（`inet tunlr` 中的一条规则），改问 IPv4 的服务器、由 mihomo 回答。所以查域名的程序照样经 mihomo、走 IPv4，只有直接连 IPv6 地址的连接按系统路由直连，不经代理、也不按规则。只配了 IPv6 DNS 服务器、因此解析不了时，tunlr 改回原来的设置（退出码 4）；在 TUN 关着时设了 bypass，之后 `tun on` 的 dns 检测会因此失败并说明原因。本机没有 IPv6 出口时它与 off 差不多。开关存在 tunlr 的状态中，不改 mixin 文件；开着时 `tunlr status` 多一行 `IPv6: bypass`。
-- `default`：结束 bypass，是否解析出 IPv6 地址回到按配置（兜底值 off，或 `--dns sub` 时订阅写的）。
+- `default`：回到按配置（兜底值 off，或 `--dns sub` 时订阅写的）。
 
-TUN 关着时本机的程序不经 mihomo，这个设置只影响 mihomo 自己发出的连接（代理端口来的、连节点的）。
+bypass 时回答不起作用，照样可以改：写进 mixin，换回 rules 后生效，`tunlr ipv6` 在回答一行注明 `not used while IPv6 bypasses mihomo`。
 
-off、on 写 `dns.ipv6`（off 同时删去 mixin 中的 `fake-ip-range6`，default 删去两者），写在现在决定它的 mixin，没有时写进 `90-dns.yaml`。顶层的 `ipv6` 由这个命令决定（受管 mixin `tunlr:ipv6`），mixin 写了会拒绝发布。
+不想让 IPv6 绕过代理（包括本机现在没有 IPv6、以后可能有的情况）：流量 `rules`，回答 `off`，也就是默认值。用了订阅的 DNS（`--dns sub`）时，明确写 `tunlr dns ipv6 off`，免得订阅的 `dns.ipv6: true` 生效。
+
+TUN 关着时本机的程序不经 mihomo，这些设置只影响 mihomo 自己发出的连接（代理端口来的、连节点的）。
+
+回答写 `dns.ipv6`（off 同时删去 mixin 中的 `fake-ip-range6`，default 删去两者），写在现在决定它的 mixin，没有时写进 `90-dns.yaml`。流量存在 tunlr 的状态中，顶层的 `ipv6` 由它决定（受管 mixin `tunlr:ipv6`），mixin 写了会拒绝发布。
 
 ### DNS 泄露
 

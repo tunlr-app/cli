@@ -27,7 +27,7 @@ import (
 const DNSMixinFile = "90-dns.yaml"
 
 // dnsHead 是 DNSMixinFile 开头的注释。
-const dnsHead = "DNS settings for all subscriptions, written by tunlr dns and tunlr ipv6: the mode (dns.enhanced-mode),\n" +
+const dnsHead = "DNS settings for all subscriptions, written by tunlr dns: the mode (dns.enhanced-mode),\n" +
 	"whether names get IPv6 addresses (dns.ipv6, with dns.fake-ip-range6), the servers (dns.nameserver, the\n" +
 	"geosite:cn entry of dns.nameserver-policy, dns.proxy-server-nameserver) and the names added to\n" +
 	"dns.fake-ip-filter. You may edit it too; tunlr dns shows what you write here. What is not here\n" +

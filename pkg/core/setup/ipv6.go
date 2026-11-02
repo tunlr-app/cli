@@ -16,23 +16,28 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/state"
 )
 
-// IPv6 的设置（tunlr ipv6），见 DESIGN.md 8.3。
+// IPv6 分两层设置，见 DESIGN.md 8.3。流量（tunlr ipv6）：连 IPv6 地址的连接经不经 mihomo，存在状态文件中。
 const (
-	// IPv6Off：TUN 接管 IPv6，内核的 DNS 不回答 IPv6 地址（dns.ipv6: false，tunlr 的兜底值），程序只经 IPv4 连接；
-	// 写死的 IPv6 DNS 服务器和地址照样经过 mihomo。
-	IPv6Off = "off"
-	// IPv6On：也回答 IPv6 地址（dns.ipv6: true）。
-	IPv6On = "on"
+	// IPv6Rules：mihomo 接管 IPv6（顶层 ipv6: true），TUN 开着时 IPv6 的连接和写死的 IPv6 DNS 查询都经过它，按规则走。
+	IPv6Rules = "rules"
 	// IPv6Bypass：mihomo 不接管 IPv6（顶层 ipv6: false），自己也不用 IPv6、不回答 IPv6 地址（dns.ipv6 为 true 也
 	// 一样，8.7 实测）。TUN 开着时拒绝本机经 IPv6 的 DNS 查询，解析改问 IPv4 的服务器、经 TUN 由 mihomo 回答，所以
 	// 域名仍只解析出 IPv4 地址；只有直接连 IPv6 地址的连接按系统路由直连，不经代理。
 	IPv6Bypass = "bypass"
-	// IPv6Default 只用于修改：不 bypass，是否回答 IPv6 地址交给订阅或兜底值。
+)
+
+// 回答（tunlr dns ipv6）：域名解不解析出 IPv6 地址，写在 mixin 中；bypass 时不起作用，换回 rules 时再用到。
+const (
+	// IPv6Off：内核的 DNS 不回答 IPv6 地址（dns.ipv6: false，tunlr 的兜底值），程序只经 IPv4 连接。
+	IPv6Off = "off"
+	// IPv6On：也回答 IPv6 地址（dns.ipv6: true）。
+	IPv6On = "on"
+	// IPv6Default 只用于修改：是否回答 IPv6 地址交给订阅或兜底值。
 	IPv6Default = "default"
 )
 
 // IPv6 的回答在配置中的键：dns.ipv6 让内核的 DNS 也返回 IPv6 地址（AAAA），fake-ip 模式下 IPv6 的假地址取自
-// dns.fake-ip-range6。tunlr ipv6 on|off|default 一起改这两个键。
+// dns.fake-ip-range6。tunlr dns ipv6 on|off|default 一起改这两个键。
 const (
 	dnsIPv6Key      = "dns.ipv6"
 	fakeIPRange6Key = "dns.fake-ip-range6"
@@ -53,23 +58,38 @@ type DNSIPv6 struct {
 	Fallback     bool   `json:"fallback,omitempty"`
 	Subscription string `json:"subscription,omitempty"`
 	// Files 是共用的和启用的订阅的 mixin 中写了 dns.ipv6 或 dns.fake-ip-range6 的文件，按应用的顺序；
-	// ipv6 default 从这些文件中删除它们。
+	// dns ipv6 default 从这些文件中删除它们。
 	Files []string `json:"files,omitempty"`
+	// Active 报告这项设置在起作用：IPv6 的流量为 bypass 时内核不回答 IPv6 地址，dns.ipv6 留到换回 rules 时再用。
+	Active bool `json:"active"`
 }
 
-// Pinned 报告 dns.ipv6 由 mixin 写定（tunlr ipv6 on|off 写的，或手写的），而不是来自订阅或兜底值。
+// Pinned 报告 dns.ipv6 由 mixin 写定（tunlr dns ipv6 on|off 写的，或手写的），而不是来自订阅或兜底值。
 func (d *DNSIPv6) Pinned() bool { return !d.Fallback && slices.Contains(d.Files, d.From) }
 
-// IPv6Status 是 IPv6 的设置。
+// Value 是 dns.ipv6 对应的 IPv6On 或 IPv6Off（没有写时内核不回答，为 IPv6Off）。
+func (d *DNSIPv6) Value() string {
+	if d.On {
+		return IPv6On
+	}
+	return IPv6Off
+}
+
+// IPv6Status 是 IPv6 两层的设置。
 type IPv6Status struct {
-	// Mode 是 IPv6Bypass，或按 Answers 的 IPv6On、IPv6Off。
-	Mode string `json:"mode"`
-	// Answers 是 dns.ipv6 和决定它的地方；Mode 为 bypass 时它不起作用（顶层 ipv6: false 时内核不回答 IPv6 地址），
-	// 换回 off、on 时再用到。
+	// Traffic 是 IPv6Rules 或 IPv6Bypass。
+	Traffic string `json:"traffic"`
+	// Answers 是 dns.ipv6 和决定它的地方；Traffic 为 bypass 时它不起作用（Active 为 false）。
 	Answers DNSIPv6 `json:"answers"`
 	// Tun 报告透明代理（TUN）的开关是否打开；关着时本机的程序不经 mihomo，设置只影响 mihomo 自己的连接。
 	Tun bool `json:"tun"`
 }
+
+// Bypass 报告 IPv6 不经 mihomo（tunlr ipv6 bypass）。
+func (s *IPv6Status) Bypass() bool { return s.Traffic == IPv6Bypass }
+
+// Answering 报告内核回答 IPv6 地址：dns.ipv6 为 true，且 IPv6 经 mihomo。
+func (s *IPv6Status) Answering() bool { return s.Answers.On && s.Answers.Active }
 
 // ipv6Of 返回 plan（按启用的订阅合成的）中的 IPv6 设置，mixins 是共用的和它的 mixin，st 是状态（还没有时为 nil）。
 func ipv6Of(plan *pipeline.Plan, mixins []config.Mixin, st *state.State) *IPv6Status {
@@ -80,13 +100,11 @@ func ipv6Of(plan *pipeline.Plan, mixins []config.Mixin, st *state.State) *IPv6St
 			d.Files = append(d.Files, m.Name)
 		}
 	}
-	s := &IPv6Status{Mode: IPv6Off, Answers: d, Tun: st != nil && st.TunEnabled()}
-	switch {
-	case st != nil && st.IPv6Bypass:
-		s.Mode = IPv6Bypass
-	case d.On:
-		s.Mode = IPv6On
+	s := &IPv6Status{Traffic: IPv6Rules, Answers: d, Tun: st != nil && st.TunEnabled()}
+	if st != nil && st.IPv6Bypass {
+		s.Traffic = IPv6Bypass
 	}
+	s.Answers.Active = !s.Bypass()
 	return s
 }
 
@@ -103,19 +121,29 @@ func (i *Installer) IPv6(ctx context.Context) (*IPv6Status, error) {
 	return ipv6Of(plan, mixins, st), nil
 }
 
+// IPv6Change 是要改的 IPv6 设置，为空的一层不改。
+type IPv6Change struct {
+	// Traffic 是 IPv6Rules 或 IPv6Bypass（tunlr ipv6）。
+	Traffic string `json:"traffic,omitempty"`
+	// Answers 是 IPv6On、IPv6Off 或 IPv6Default（tunlr dns ipv6）。
+	Answers string `json:"answers,omitempty"`
+}
+
 // IPv6Edit 是 PlanIPv6 准备的修改，由 SaveIPv6 写入。
 type IPv6Edit struct {
 	Before IPv6Status `json:"before"`
-	// Set 是要设的：IPv6Off、IPv6On、IPv6Bypass 或 IPv6Default。
-	Set string `json:"set"`
-	// Changes 是要改的 mixin 文件。bypass 不改文件：dns.ipv6 留着，换回 off、on 时再用到。
+	// Set 是要改的。
+	Set IPv6Change `json:"set"`
+	// Changes 是要改的 mixin 文件，只由回答这一层产生：流量这一层只改状态。
 	Changes []*MixinChange `json:"changes"`
-	// Bypass 是改后的开关；Changed 报告有要改的（文件或开关），没有时已经是这样。
+	// Bypass 是改后的流量这一层；Changed 报告有要改的（文件或开关），没有时已经是这样。
 	Bypass  bool `json:"bypass"`
 	Changed bool `json:"changed"`
 	// After 报告按修改合成的配置是否回答 IPv6 地址，DNSMode 是其中的 DNS 模式（没有写时为空）。
 	After   bool   `json:"after"`
 	DNSMode string `json:"dns_mode,omitempty"`
+	// Unused 报告改了回答，而 IPv6 不经 mihomo（Bypass）：写进 mixin，换回 rules 后才起作用。
+	Unused bool `json:"unused,omitempty"`
 	// Gateway 是网关开着、After 为 true 时的提醒（gatewayIPv6Warning），否则为空。
 	Gateway string `json:"gateway,omitempty"`
 	// NoRoute 报告 After 为 true、模式不是 fake-ip，而本机没有 IPv6 出口（netfilter.Rules.IPv6Route）：程序拿到真实
@@ -128,13 +156,18 @@ type IPv6Edit struct {
 // Tun 报告透明代理（TUN）开着，同 IPv6Status.Tun。
 func (e *IPv6Edit) Tun() bool { return e.Before.Tun }
 
-// PlanIPv6 准备把 IPv6 设为 set（IPv6Off、IPv6On、IPv6Bypass、IPv6Default），返回修改和按它合成的计划
-// （pipeline.PlanIPv6）。off、on、default 同时取消 bypass：on 写 dns.ipv6: true，配置中没有 IPv6 假地址段时也写
-// dns.fake-ip-range6: FakeIPRange6；off 写 dns.ipv6: false，并删除 mixin 中的 fake-ip-range6（用不到）；default 删去
-// 两者。各键写进现在决定它的 mixin，没有时写进 DNSMixinFile。已经是这样时 Changed 为 false，计划为 nil。
-func (i *Installer) PlanIPv6(ctx context.Context, set string) (*IPv6Edit, *pipeline.Plan, error) {
-	if !slices.Contains([]string{IPv6Off, IPv6On, IPv6Bypass, IPv6Default}, set) {
-		return nil, nil, fmt.Errorf("%w: ipv6 takes %s, %s, %s or %s, got %q", core.ErrInvalidArgument, IPv6Off, IPv6On, IPv6Bypass, IPv6Default, set)
+// PlanIPv6 准备按 set 修改 IPv6 的两层设置，一起合成一份计划（pipeline.PlanIPv6），返回修改和计划。流量这一层只改
+// 状态中的开关；回答这一层：on 写 dns.ipv6: true，配置中没有 IPv6 假地址段时也写 dns.fake-ip-range6: FakeIPRange6；
+// off 写 dns.ipv6: false，并删除 mixin 中的 fake-ip-range6（用不到）；default 删去两者。各键写进现在决定它的 mixin，
+// 没有时写进 DNSMixinFile。已经是这样时 Changed 为 false，计划为 nil。
+func (i *Installer) PlanIPv6(ctx context.Context, set IPv6Change) (*IPv6Edit, *pipeline.Plan, error) {
+	switch {
+	case set.Traffic == "" && set.Answers == "":
+		return nil, nil, fmt.Errorf("%w: nothing to change about IPv6", core.ErrInvalidArgument)
+	case set.Traffic != "" && set.Traffic != IPv6Rules && set.Traffic != IPv6Bypass:
+		return nil, nil, fmt.Errorf("%w: ipv6 takes %s or %s, got %q", core.ErrInvalidArgument, IPv6Rules, IPv6Bypass, set.Traffic)
+	case set.Answers != "" && !slices.Contains([]string{IPv6Off, IPv6On, IPv6Default}, set.Answers):
+		return nil, nil, fmt.Errorf("%w: dns ipv6 takes %s, %s or %s, got %q", core.ErrInvalidArgument, IPv6On, IPv6Off, IPv6Default, set.Answers)
 	}
 	cur, mixins, err := i.composeActive(ctx)
 	if err != nil {
@@ -145,10 +178,13 @@ func (i *Installer) PlanIPv6(ctx context.Context, set string) (*IPv6Edit, *pipel
 		return nil, nil, err
 	}
 	bypassNow := st != nil && st.IPv6Bypass
-	e := &IPv6Edit{Before: *ipv6Of(cur, mixins, st), Set: set, Changes: []*MixinChange{}, Bypass: set == IPv6Bypass}
-	if set != IPv6Bypass {
+	e := &IPv6Edit{Before: *ipv6Of(cur, mixins, st), Set: set, Changes: []*MixinChange{}, Bypass: bypassNow}
+	if set.Traffic != "" {
+		e.Bypass = set.Traffic == IPv6Bypass
+	}
+	if set.Answers != "" {
 		values := map[string]any{dnsIPv6Key: nil, fakeIPRange6Key: nil}
-		switch set {
+		switch set.Answers {
 		case IPv6On:
 			values[dnsIPv6Key] = true
 			if r := cur.KeySource(fakeIPRange6Key); r.Value != "" {
@@ -172,6 +208,7 @@ func (i *Installer) PlanIPv6(ctx context.Context, set string) (*IPv6Edit, *pipel
 		return nil, nil, err
 	}
 	e.After, e.DNSMode = config.DNSIPv6(plan.Config), config.DNSMode(plan.Config)
+	e.Unused = e.Bypass && len(e.Changes) > 0
 	if e.After {
 		if st != nil && st.Gateway != nil {
 			e.Gateway = gatewayIPv6Warning(plan.Config)

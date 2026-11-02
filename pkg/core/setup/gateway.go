@@ -306,7 +306,7 @@ func (i *Installer) GatewayPreflight(ctx context.Context, iface string) (*Gatewa
 			"IPv6 DNS server and connect over IPv6 directly. Turn IPv6 off on the router, or at least the IPv6 DNS it hands out (RDNSS, DHCPv6)")
 	}
 	if w := i.publishedGatewayIPv6Warning(); w != "" {
-		p.Warnings = append(p.Warnings, w+". tunlr ipv6 off turns the IPv6 answers off")
+		p.Warnings = append(p.Warnings, w+". tunlr dns ipv6 off turns the IPv6 answers off")
 	}
 	if s.On {
 		p.Current = s

@@ -1062,7 +1062,7 @@ func managed(secret string, sw switches, set *settings.Settings) []config.Manage
 %s%s`, sw.tun, netfilter.Device, netfilter.RouteTable, netfilter.RuleIndex, excludeUID, tunDNS), Owns: []string{"tun.exclude-uid"}},
 		{Name: ManagedPanel, Command: "tunlr panel lan on/off, tunlr panel reset-secret", Data: panel},
 		{Name: ManagedProxy, Command: "tunlr proxy lan on/off", Data: proxy, Owns: []string{"allow-lan", "lan-allowed-ips"}},
-		{Name: ManagedIPv6, Command: "tunlr ipv6 off/on/bypass", Data: fmt.Appendf(nil, "mihomo:\n  ipv6: %t\n", !sw.ipv6Bypass)},
+		{Name: ManagedIPv6, Command: "tunlr ipv6 rules/bypass", Data: fmt.Appendf(nil, "mihomo:\n  ipv6: %t\n", !sw.ipv6Bypass)},
 		DefaultsManaged(),
 		{Name: ManagedDNS, Default: true, Data: fmt.Appendf(nil, "mihomo:\n  dns:\n    listen: %s\n", DNSListen)},
 		mirrorManaged,

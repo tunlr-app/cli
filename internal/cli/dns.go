@@ -134,9 +134,10 @@ func (a *app) newDNSCommand() *cobra.Command {
 			"this server and those of LAN devices that use it as their gateway and DNS.\n" +
 			"  servers         whom mihomo asks: one group for Chinese domains, one for the others\n" +
 			"  mode            how it answers the queries TUN catches: fake-ip or redir-host\n" +
+			"  ipv6            whether names get IPv6 addresses (connections to them: tunlr ipv6)\n" +
 			"  fake-ip-filter  your names that get real addresses in fake-ip mode\n" +
 			"Whose DNS a subscription uses, tunlr's (the default) or its own, is set with\n" +
-			"tunlr sub set <sub> --dns; whether it answers IPv6 addresses, with tunlr ipv6.\n\n" +
+			"tunlr sub set <sub> --dns.\n\n" +
 			"These commands edit the mixin file that now sets the key, or else mixin.d/" + setup.DNSMixinFile + ", and\n" +
 			"publish the configuration after you confirm; editing the files yourself works the same.\n\n" +
 			"Without a subcommand, show the DNS settings and where they come from; in a terminal, then\n" +
@@ -160,7 +161,7 @@ func (a *app) newDNSCommand() *cobra.Command {
 		},
 	}
 	cmd.AddCommand(a.withFullDiff(a.newDNSServersCommand()), a.withFullDiff(a.newDNSModeCommand()),
-		a.withFullDiff(a.newFakeIPFilterCommand()))
+		a.withFullDiff(a.newDNSIPv6Command()), a.withFullDiff(a.newFakeIPFilterCommand()))
 	return cmd
 }
 
@@ -278,7 +279,7 @@ func (a *app) printDNS(s *setup.DNSStatus) {
 		if ranges == "" {
 			ranges = "198.18.0.1/16 " + a.style.dim("(mihomo's default)")
 		}
-		if s.IPv6.Mode == setup.IPv6On {
+		if s.IPv6.Answering() {
 			r6 := s.FakeIPRange6
 			if r6 == "" {
 				r6 = a.style.warn("no IPv6 range (dns.fake-ip-range6)")
@@ -310,7 +311,7 @@ func (a *app) printDNS(s *setup.DNSStatus) {
 		fmt.Fprintln(w, a.style.dim("TUN is off, so the mode, IPv6 and fake-ip-filter are not used by this server's programs now; the servers are."))
 	}
 	if s.GatewayIPv6 != "" {
-		fmt.Fprintf(w, "%s %s (tunlr ipv6 off).\n", a.style.warn("Warning:"), s.GatewayIPv6)
+		fmt.Fprintf(w, "%s %s (tunlr dns ipv6 off).\n", a.style.warn("Warning:"), s.GatewayIPv6)
 	}
 }
 
@@ -327,7 +328,7 @@ func (a *app) printFakeIPFilter(entries []string) {
 }
 
 // chooseDNSChange 是终端中不带子命令的 dns（主菜单的“DNS”）：显示现状，让用户选择改模式、IPv6、问谁还是
-// fake-ip-filter；模式和 IPv6 选中后再选取值。
+// fake-ip-filter；模式选中后再选取值，IPv6 再分两步选流量和回答（chooseIPv6）。
 func (a *app) chooseDNSChange(cmd *cobra.Command, s *setup.DNSStatus) error {
 	a.printDNS(s)
 	fmt.Fprintln(a.stdout)
@@ -342,7 +343,7 @@ func (a *app) chooseDNSChange(cmd *cobra.Command, s *setup.DNSStatus) error {
 	ctx := cmd.Context()
 	k, err := a.prompt.Choose(ctx, "Change which DNS setting?", []string{
 		mode,
-		"IPv6: off, on or bypass (now " + s.IPv6.Mode + ")",
+		"IPv6: traffic and answers (now " + describeIPv6(&s.IPv6) + ")",
 		"Servers: who answers Chinese domains and other domains",
 		"fake-ip-filter: names that get real addresses in fake-ip mode" + yours,
 	}, 0)

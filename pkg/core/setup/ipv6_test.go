@@ -14,8 +14,8 @@ import (
 	"github.com/tunlr-app/cli/pkg/core/netfilter"
 )
 
-// setIPv6 用 PlanIPv6、SaveIPv6 把 IPv6 设为 set，返回修改和 SaveIPv6 的错误。
-func setIPv6(t *testing.T, i *Installer, set string) (*IPv6Edit, error) {
+// setIPv6 用 PlanIPv6、SaveIPv6 按 set 修改 IPv6，返回修改和 SaveIPv6 的错误。
+func setIPv6(t *testing.T, i *Installer, set IPv6Change) (*IPv6Edit, error) {
 	t.Helper()
 	e, plan, err := i.PlanIPv6(context.Background(), set)
 	if err != nil {
@@ -24,6 +24,10 @@ func setIPv6(t *testing.T, i *Installer, set string) (*IPv6Edit, error) {
 	_, err = i.SaveIPv6(context.Background(), e, plan)
 	return e, err
 }
+
+// answers、traffic 是只改一层的 IPv6Change。
+func answers(v string) IPv6Change { return IPv6Change{Answers: v} }
+func traffic(v string) IPv6Change { return IPv6Change{Traffic: v} }
 
 func published(t *testing.T, i *Installer) []byte {
 	t.Helper()
@@ -41,7 +45,7 @@ func TestIPv6Answers(t *testing.T) {
 	ctx := context.Background()
 	set := func(v string) *IPv6Edit {
 		t.Helper()
-		e, err := setIPv6(t, i, v)
+		e, err := setIPv6(t, i, answers(v))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -59,7 +63,7 @@ func TestIPv6Answers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.IPv6.Mode != IPv6Off || s.IPv6.Answers.On || !s.IPv6.Answers.Fallback || s.FakeIPRange != "198.18.0.1/16" || s.FakeIPRange6 != "" {
+	if s.IPv6.Traffic != IPv6Rules || !s.IPv6.Answers.Active || s.IPv6.Answering() || s.IPv6.Answers.Value() != IPv6Off || !s.IPv6.Answers.Fallback || s.FakeIPRange != "198.18.0.1/16" || s.FakeIPRange6 != "" {
 		t.Errorf("fallback: %+v, ranges %q %q", s.IPv6, s.FakeIPRange, s.FakeIPRange6)
 	}
 
@@ -72,13 +76,13 @@ func TestIPv6Answers(t *testing.T) {
 	if cfg := published(t, i); !config.DNSIPv6(cfg) || !strings.Contains(string(cfg), "fake-ip-range6: fd00:1::/64") {
 		t.Errorf("published:\n%s", cfg)
 	}
-	if s, _ := i.IPv6(ctx); s.Mode != IPv6On || !s.Answers.Pinned() || !slices.Equal(s.Answers.Files, []string{"10-range.yaml", DNSMixinFile}) {
+	if s, _ := i.IPv6(ctx); !s.Answering() || s.Answers.Value() != IPv6On || !s.Answers.Pinned() || !slices.Equal(s.Answers.Files, []string{"10-range.yaml", DNSMixinFile}) {
 		t.Errorf("on: %+v", s)
 	}
 	if s, _ := i.DNSStatus(ctx); s.FakeIPRange6 != "fd00:1::/64" {
 		t.Errorf("on: range %q", s.FakeIPRange6)
 	}
-	if e, plan, _ := i.PlanIPv6(ctx, IPv6On); e.Changed || plan != nil {
+	if e, plan, _ := i.PlanIPv6(ctx, answers(IPv6On)); e.Changed || plan != nil {
 		t.Errorf("on again: %s", changes(e))
 	}
 
@@ -108,11 +112,13 @@ func TestIPv6Answers(t *testing.T) {
 	if got := changes(e); got != DNSMixinFile+" set  unset dns.ipv6" || !e.Changes[0].Removed {
 		t.Errorf("default: %s", got)
 	}
-	if s, _ := i.IPv6(ctx); s.Mode != IPv6Off || s.Answers.Pinned() || len(s.Answers.Files) != 0 {
+	if s, _ := i.IPv6(ctx); s.Answering() || s.Answers.Pinned() || len(s.Answers.Files) != 0 {
 		t.Errorf("default: %+v", s)
 	}
-	if _, _, err := i.PlanIPv6(ctx, "yes"); !errors.Is(err, core.ErrInvalidArgument) {
-		t.Errorf("invalid: %v", err)
+	for _, ch := range []IPv6Change{answers("yes"), traffic(IPv6On), {}} {
+		if _, _, err := i.PlanIPv6(ctx, ch); !errors.Is(err, core.ErrInvalidArgument) {
+			t.Errorf("invalid %+v: %v", ch, err)
+		}
 	}
 }
 
@@ -126,7 +132,7 @@ func TestIPv6Bypass(t *testing.T) {
 	h.ipv6Route = "2001:4860:4860::8888 from :: via fe80::1 dev ens3 proto ra metric 100 pref medium\n"
 	rejects := func() bool { return strings.Contains(h.tunlr, "chain "+netfilter.IPv6DNSChain+" {") }
 
-	e, err := setIPv6(t, i, IPv6Bypass)
+	e, err := setIPv6(t, i, traffic(IPv6Bypass))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,10 +145,10 @@ func TestIPv6Bypass(t *testing.T) {
 	if !tunSwitch(t, i).IPv6Bypass || !rejects() {
 		t.Errorf("state %+v, inet tunlr:\n%s", tunSwitch(t, i), h.tunlr)
 	}
-	if s, _ := i.IPv6(ctx); s.Mode != IPv6Bypass {
+	if s, _ := i.IPv6(ctx); !s.Bypass() || s.Answers.Active {
 		t.Errorf("status: %+v", s)
 	}
-	if e, plan, _ := i.PlanIPv6(ctx, IPv6Bypass); e.Changed || plan != nil {
+	if e, plan, _ := i.PlanIPv6(ctx, traffic(IPv6Bypass)); e.Changed || plan != nil {
 		t.Errorf("bypass again: %+v", e)
 	}
 
@@ -181,12 +187,24 @@ func TestIPv6Bypass(t *testing.T) {
 		t.Errorf("TUN on again does not reject:\n%s", h.tunlr)
 	}
 
-	// off：dns.ipv6 写进 90-dns.yaml，顶层 ipv6 回到 true。
-	e, err = setIPv6(t, i, IPv6Off)
+	// bypass 时改回答：写进 mixin，不起作用，顶层 ipv6 仍为 false。
+	e, err = setIPv6(t, i, answers(IPv6On))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.Bypass || len(e.Changes) != 1 || tunSwitch(t, i).IPv6Bypass || rejects() || !config.TopIPv6(published(t, i)) {
+	if !e.Unused || !e.Bypass || e.After || len(e.Changes) != 1 || config.TopIPv6(published(t, i)) || !tunSwitch(t, i).IPv6Bypass {
+		t.Errorf("answers while bypassed: %+v", e)
+	}
+	if s, _ := i.IPv6(ctx); !s.Answers.On || s.Answers.Active || s.Answering() {
+		t.Errorf("answers while bypassed: %+v", s)
+	}
+
+	// 两层一起改：换回 rules，dns.ipv6 改为 false，一份计划；顶层 ipv6 回到 true。
+	e, err = setIPv6(t, i, IPv6Change{Traffic: IPv6Rules, Answers: IPv6Off})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Bypass || e.Unused || len(e.Changes) != 1 || tunSwitch(t, i).IPv6Bypass || rejects() || !config.TopIPv6(published(t, i)) {
 		t.Errorf("off: %+v, inet tunlr:\n%s", e, h.tunlr)
 	}
 
@@ -194,7 +212,7 @@ func TestIPv6Bypass(t *testing.T) {
 	i.CheckResolve = func(context.Context) TunCheck {
 		return TunCheck{Name: "dns", Status: StepFailed, Message: "no such host"}
 	}
-	if _, err := setIPv6(t, i, IPv6Bypass); !errors.Is(err, core.ErrRolledBack) || !strings.Contains(err.Error(), "no such host") {
+	if _, err := setIPv6(t, i, traffic(IPv6Bypass)); !errors.Is(err, core.ErrRolledBack) || !strings.Contains(err.Error(), "no such host") {
 		t.Errorf("rollback: %v", err)
 	}
 	if tunSwitch(t, i).IPv6Bypass || rejects() || !config.TopIPv6(published(t, i)) {

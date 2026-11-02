@@ -480,7 +480,7 @@ func (i *Installer) checkGateway(ctx context.Context, c *doctor.Checker, st *sta
 	}
 	// IPv6 回答关着（兜底值）时不列出这一项。
 	if w := i.publishedGatewayIPv6Warning(); w != "" {
-		c.Add("gateway-ipv6", doctor.Warn, "IPv6 answers", w, "tunlr ipv6 off")
+		c.Add("gateway-ipv6", doctor.Warn, "IPv6 answers", w, "tunlr dns ipv6 off")
 	}
 }
 

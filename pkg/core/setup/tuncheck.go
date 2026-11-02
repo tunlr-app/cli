@@ -38,7 +38,7 @@ func (i *Installer) checkNetwork(ctx context.Context, opts TunOptions) []TunChec
 	if dns.Status == StepFailed && i.ipv6Bypassed() {
 		// 只配了 IPv6 的 DNS 服务器时，拒绝经 IPv6 的查询的规则让解析失败（DESIGN.md 8.3）。
 		dns.Message += "; this server's IPv6 DNS queries are rejected (tunlr ipv6 bypass), so with IPv6 DNS servers only " +
-			"it cannot look names up: tunlr ipv6 off sends them through mihomo instead"
+			"it cannot look names up: tunlr ipv6 rules sends them through mihomo instead"
 	}
 	return []TunCheck{
 		i.checkTunUp(ctx),

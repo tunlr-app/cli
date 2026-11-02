@@ -511,7 +511,7 @@ func (a *app) restoreSwitches(ctx context.Context, s setup.SwitchSuggestion) err
 	}
 	if s.IPv6Bypass {
 		steps = append(steps, step{"IPv6 bypass (connections to IPv6 addresses go out directly, not through mihomo)", "IPv6 bypass",
-			func() error { return a.setIPv6(ctx, setup.IPv6Bypass) }})
+			func() error { return a.setIPv6(ctx, setup.IPv6Change{Traffic: setup.IPv6Bypass}) }})
 	}
 	options := make([]string, len(steps))
 	all := make([]int, len(steps))

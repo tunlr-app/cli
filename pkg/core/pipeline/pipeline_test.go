@@ -729,7 +729,7 @@ func TestManagedConflicts(t *testing.T) {
 		// 测试用的布局不知道内核用户，exclude-uid 不写，仍然独占。
 		{"mihomo:\n  tun:\n    exclude-uid: [1000]\n", "mixin 10-a.yaml:3: tun.exclude-uid is managed by tunlr:tun"},
 		{"mihomo:\n  external-controller-unix: x.sock\n", "mixin 10-a.yaml:2: external-controller-unix is managed by tunlr:core (tunlr needs it to work)"},
-		{"mihomo:\n  ipv6: false\n", "mixin 10-a.yaml:2: ipv6 is managed by tunlr:ipv6 (change it with: tunlr ipv6 off/on/bypass)"},
+		{"mihomo:\n  ipv6: false\n", "mixin 10-a.yaml:2: ipv6 is managed by tunlr:ipv6 (change it with: tunlr ipv6 rules/bypass)"},
 	} {
 		writeFile(t, filepath.Join(p.Layout.MixinDir(), "10-a.yaml"), tt.mixin)
 		var me *config.MixinError

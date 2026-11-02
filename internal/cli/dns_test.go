@@ -109,20 +109,56 @@ func TestDNSChooses(t *testing.T) {
 		t.Errorf("after emptying: %q\n%s", other, et.stdout)
 	}
 
-	// IPv6：先选这一项，再选设置；光标停在“按配置”上（tunlr 的兜底值为 off）。
+	// IPv6：先选这一项，再选流量（光标停在现在的 rules 上），再选回答（光标停在“按配置”上，tunlr 的兜底值为 off）。
 	et.stdout.Reset()
-	et.prompt.picks = []string{"IPv6:", "On"}
+	first := len(et.prompt.asked)
+	et.prompt.picks = []string{"IPv6:", "By the rules", "On"}
 	et.run(0, "dns", "--yes")
-	last = len(et.prompt.asked) - 1
-	if opts := et.prompt.asked[last]; len(opts) != 4 || opts[3] != "Let the configuration decide whether names get IPv6 addresses (now: off)" || et.prompt.initials[last] != 3 {
-		t.Errorf("options = %q, cursor %d", opts, et.prompt.initials[last])
+	if opt := et.prompt.asked[first][1]; opt != "IPv6: traffic and answers (now rules, answers off)" {
+		t.Errorf("menu option %q", opt)
+	}
+	if opts := et.prompt.asked[first+1]; len(opts) != 2 || !strings.HasSuffix(opts[0], " (now)") || et.prompt.initials[first+1] != 0 {
+		t.Errorf("traffic options = %q, cursor %d", opts, et.prompt.initials[first+1])
+	}
+	if opts := et.prompt.asked[first+2]; len(opts) != 3 || opts[2] != "Let the configuration decide (now: off)" || et.prompt.initials[first+2] != 2 {
+		t.Errorf("answer options = %q, cursor %d", opts, et.prompt.initials[first+2])
 	}
 	if out := et.stdout.String(); !strings.Contains(out, "  90-dns.yaml  set dns.fake-ip-range6, dns.ipv6\n") ||
-		!strings.Contains(out, "Names get IPv6 addresses too now; IPv6 goes through mihomo.") {
+		!strings.Contains(out, "Names get IPv6 addresses too now.") {
 		t.Errorf("output:\n%s", out)
 	}
 	cfg, _ = os.ReadFile(et.a.layout.CoreConfig())
 	if !config.DNSIPv6(cfg) || !strings.Contains(string(cfg), "fake-ip-range6: "+setup.FakeIPRange6) {
+		t.Errorf("published:\n%s", cfg)
+	}
+
+	// 选 bypass 时不问回答。
+	et.stdout.Reset()
+	first = len(et.prompt.asked)
+	et.prompt.picks = []string{"IPv6:", "Bypass"}
+	et.run(0, "dns", "--yes")
+	if len(et.prompt.asked) != first+2 || !strings.Contains(et.stdout.String(), "IPv6 bypasses mihomo now.") {
+		t.Errorf("bypass: asked %d, output:\n%s", len(et.prompt.asked)-first, et.stdout)
+	}
+
+	// 从 bypass 换回 rules，同时关掉回答：一份计划，只发布一次；回答的光标停在留着的 on 上。
+	et.stdout.Reset()
+	first = len(et.prompt.asked)
+	et.prompt.picks = []string{"IPv6:", "By the rules", "Off"}
+	et.run(0, "dns", "--yes")
+	if opt := et.prompt.asked[first][1]; !strings.HasSuffix(opt, "(now bypass; answers on, not used)") {
+		t.Errorf("menu option %q", opt)
+	}
+	if et.prompt.initials[first+1] != 1 || et.prompt.initials[first+2] != 1 {
+		t.Errorf("cursors %v", et.prompt.initials[first:])
+	}
+	out = et.stdout.String()
+	if strings.Count(out, "Published revision") != 1 || !strings.Contains(out, "  90-dns.yaml  set dns.ipv6; unset dns.fake-ip-range6\n") ||
+		!strings.Contains(out, "IPv6 goes through mihomo again, by the rules. Names get IPv4 addresses only now.") {
+		t.Errorf("output:\n%s", out)
+	}
+	cfg, _ = os.ReadFile(et.a.layout.CoreConfig())
+	if config.DNSIPv6(cfg) || !config.TopIPv6(cfg) {
 		t.Errorf("published:\n%s", cfg)
 	}
 }
